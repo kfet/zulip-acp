@@ -1604,3 +1604,37 @@ func TestRescueFailuresAreLogged(t *testing.T) {
 		t.Fatalf("logs = %v", hh2.logs)
 	}
 }
+
+// TestSupersededTurnReadsAsSuperseded: cancelling a running turn is
+// something the relay did on purpose, so it must not surface as
+// "error: context canceled" — noise pointing at nothing the user can
+// act on.
+func TestSupersededTurnReadsAsSuperseded(t *testing.T) {
+	agent := newAgent("half an answer")
+	agent.block = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+	msg := func(text string) zulipproto.Event {
+		return zulipproto.Event{Type: zulipproto.EventMessage, Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: text,
+			StreamID: 4, Topic: "busy", Type: "stream",
+		}}
+	}
+	hh.h.Handle(context.Background(), msg(mention("something slow")))
+	<-agent.entered
+	agent.mu.Lock()
+	agent.block = nil
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), msg("actually, this instead"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	all := strings.Join(hh.z.stored(), "\n")
+	if !strings.Contains(all, "superseded by your next message") {
+		t.Fatalf("stored = %q", all)
+	}
+	if strings.Contains(all, "context canceled") {
+		t.Fatalf("raw cancellation leaked to the surface: %q", all)
+	}
+}

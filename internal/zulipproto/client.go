@@ -499,13 +499,27 @@ func (c *Client) send(req *http.Request, out any) error {
 	return nil
 }
 
-// NarrowChannel builds the /register narrow entry for one channel.
+// NarrowChannels builds the /register narrow for the given channels.
 //
-// TRAP, measured on Zulip 12.2: the operand must be the channel NAME,
-// not its id. Passing the id as a string (`{"channel", "4"}`) is
-// accepted — POST /register returns a perfectly good queue_id — and
-// then delivers NOTHING, because Zulip matches the operand as a
-// channel name. There is no error at any layer; the relay simply
-// never receives an event. Use this helper rather than hand-rolling
-// the pair.
-func NarrowChannel(name string) [2]string { return [2]string{"channel", name} }
+// Two traps live here, both measured on Zulip 12.2, and both of which
+// fail by SILENTLY DELIVERING NOTHING — the queue registers fine and
+// simply never produces an event.
+//
+//  1. The operand must be the channel NAME, not its id. `{"channel",
+//     "4"}` is accepted and then matches a channel literally called
+//     "4".
+//  2. Narrow terms are a CONJUNCTION. Two channel terms mean "in
+//     channel A *and* in channel B", which no message ever satisfies.
+//     There is no way to express a channel union in a /register
+//     narrow.
+//
+// So: exactly one channel gets a narrow; anything else gets none, and
+// the caller filters by channel itself. Over-delivery is cheap and the
+// relay already has a channel allowlist it must enforce regardless —
+// under-delivery is silent and unrecoverable.
+func NarrowChannels(names []string) [][2]string {
+	if len(names) != 1 {
+		return nil
+	}
+	return [][2]string{{"channel", names[0]}}
+}

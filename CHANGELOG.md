@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: a relay bridging a self-hosted Zulip server to an
   ACP-speaking coding agent (`fir --mode acp`) over stdio.
+- `zulipproto.NarrowChannels`, which encodes two Zulip `/register` traps that
+  both fail by silently delivering nothing: the channel operand must be a NAME,
+  and narrow terms are a conjunction (so more than one channel cannot be
+  narrowed at all — the queue is left unnarrowed and the channel allowlist
+  filters).
 - `internal/zulipproto`: HTTP Basic API client (send/edit/get messages,
   one-shot multipart uploads, stream resolution) plus the
   `POST /register` + `GET /events` long-poll runner with `last_event_id`
@@ -36,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Output rescue: if a message cannot be posted inline — a closed edit window, a
   server hiccup, or Zulip refusing a legal-length body it cannot render — the
   whole transcript is uploaded as `answer.md` and linked, so no output is lost.
+- A turn superseded by a follow-up reads as `*(superseded by your next
+  message)*` rather than leaking `error: context canceled`.
 - On startup any unsealed tail message the relay authored is marked
   `*(relay restarted — turn interrupted)*`.
 - `test/live_test.go`: integration tests against a real server (`ZULIP_LIVE=1`)

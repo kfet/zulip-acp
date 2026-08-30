@@ -509,12 +509,19 @@ func TestServerErrorsPropagate(t *testing.T) {
 	}
 }
 
-// TestNarrowChannel pins the operand shape. Getting this wrong is
-// silent: the queue registers fine and then delivers nothing.
-func TestNarrowChannel(t *testing.T) {
-	got := NarrowChannel("fleet")
-	if got[0] != "channel" || got[1] != "fleet" {
-		t.Fatalf("NarrowChannel = %v", got)
+// TestNarrowChannels pins both silent-delivery traps: the operand is a
+// channel NAME, and narrow terms are a conjunction, so more than one
+// channel cannot be narrowed at all.
+func TestNarrowChannels(t *testing.T) {
+	got := NarrowChannels([]string{"fleet"})
+	if len(got) != 1 || got[0][0] != "channel" || got[0][1] != "fleet" {
+		t.Fatalf("one channel = %v", got)
+	}
+	if got := NarrowChannels([]string{"fleet", "ops"}); got != nil {
+		t.Fatalf("two channels must not be narrowed (a narrow is a conjunction; the queue would deliver nothing), got %v", got)
+	}
+	if got := NarrowChannels(nil); got != nil {
+		t.Fatalf("no channels = %v", got)
 	}
 }
 

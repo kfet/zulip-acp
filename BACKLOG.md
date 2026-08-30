@@ -46,7 +46,27 @@ Things deliberately not done in v1, with the reason.
   possible when one line exceeds the whole budget) can break a span. Cosmetic
   and rare; documented rather than fixed.
 
+## Recorded from the brief, not built
+
+- **Relay-initiated session naming.** The brief prescribes `<slug> · <4-char-id>`
+  for topics the *relay* creates. v1 has no code path that starts a topic — the
+  human always names it — so the rule has nothing to apply to. It is recorded
+  here so that whenever a relay-initiated path appears (a scheduled digest, an
+  agent proactively opening a session) it uses that convention rather than
+  inventing another.
+
 ## Known limits, accepted
+
+- **Messages posted while the event queue is dead are never seen.** Between a
+  queue expiring (`BAD_EVENT_QUEUE_ID`, server restart, idle GC) and the
+  re-register, anything posted is missed: the new queue starts at its own
+  `last_event_id` and the relay never learns those messages existed. This is
+  exactly the cursor discipline the brief prescribes, and persisting the old
+  cursor would not help — the queue backing it is gone. A future backfill has an
+  anchor if it wants one: `/register` returns `max_message_id`, so a relay could
+  diff it against the last id it processed and replay the gap through
+  `/messages`. Not done: it needs a dedup rule and a bound on how much history
+  to replay, and neither is obvious.
 
 - **Bot senders are snapshotted at startup.** `GET /users` is read once to
   learn which realm users are bots, so a bot created while the relay is running

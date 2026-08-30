@@ -147,7 +147,20 @@ relay simply never receives an event.
 | `[["channel","fleet"]]` | ✅ success | ✅ yes |
 | `[["stream","fleet"]]` | ✅ success | ✅ yes |
 
-Use `zulipproto.NarrowChannel(name)`.
+### ⚠️ Trap: narrow terms are a CONJUNCTION
+
+`narrow=[["channel","fleet"],["channel","Zulip"]]` also registers happily and
+also **delivers nothing** — it means "in `fleet` **and** in `Zulip`", which no
+message satisfies. There is no way to express a channel *union* in a `/register`
+narrow.
+
+Verified live: a queue narrowed to two channels received no event after a
+message was posted in one of them.
+
+So a relay serving more than one channel must register **without** a channel
+narrow and filter for itself. Over-delivery is cheap; under-delivery is silent
+and unrecoverable. Both traps are handled by `zulipproto.NarrowChannels(names)`,
+which narrows exactly one channel and otherwise returns nil.
 
 ### ⚠️ Trap: there is no `timeout` parameter
 

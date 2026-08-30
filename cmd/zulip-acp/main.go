@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -134,13 +135,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	names := make([]string, 0, len(served))
-	narrow := make([][2]string, 0, len(served))
+	labels := make([]string, 0, len(served))
+	channelNames := make([]string, 0, len(served))
 	for id, name := range served {
-		names = append(names, fmt.Sprintf("#%s (%d)", name, id))
-		narrow = append(narrow, zulipproto.NarrowChannel(name))
+		labels = append(labels, fmt.Sprintf("#%s (%d)", name, id))
+		channelNames = append(channelNames, name)
 	}
-	log.Printf("zulip-acp: serving %s", strings.Join(names, ", "))
+	sort.Strings(labels)
+	sort.Strings(channelNames)
+	// Narrowing the event queue is an optimisation, not the allowlist:
+	// a /register narrow cannot express a union of channels, so with
+	// more than one served channel the queue is left unnarrowed and
+	// the handler filters. See zulipproto.NarrowChannels.
+	narrow := zulipproto.NarrowChannels(channelNames)
+	log.Printf("zulip-acp: serving %s", strings.Join(labels, ", "))
+	if narrow == nil {
+		log.Printf("zulip-acp: %d channels served, so the event queue is not narrowed; the channel allowlist filters", len(served))
+	}
 
 	jr, err := journal.Open(filepath.Join(cfg.StateDir, "journal.json"))
 	if err != nil {

@@ -402,9 +402,18 @@ func (h *Handler) rescue(ctx context.Context, post *topicPoster, transcript stri
 
 // failTurn reports an agent error into the topic instead of leaving a
 // placeholder hanging forever.
+//
+// A superseded turn is not a fault and does not read as one: when a
+// follow-up arrives the relay cancels the running turn on purpose, so
+// "error: context canceled" would be noise pointing at nothing the
+// user can act on.
 func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollover.Splitter, cause error) error {
+	suffix := fmt.Sprintf("\n\n*error: %v*", cause)
+	if errors.Is(cause, context.Canceled) {
+		suffix = "\n\n*(superseded by your next message)*"
+	}
 	fctx := context.WithoutCancel(ctx)
-	if err := split.Close(fctx, fmt.Sprintf("\n\n*error: %v*", cause)); err != nil {
+	if err := split.Close(fctx, suffix); err != nil {
 		h.cfg.Logf("handler: reporting error into %s: %v", conv.ID, err)
 	}
 	h.clearTail(conv.ID)
@@ -421,6 +430,15 @@ func (h *Handler) trackTail(convID string, split *rollover.Splitter) {
 	}
 }
 
+// clearTail forgets the tail message for a conversation, so a later
+// restart does not mark a finished turn as interrupted.
+//
+// Benign race, deliberately not locked: a turn that has just been
+// superseded can clear the tail its replacement already recorded. The
+// cost is one missed "interrupted" marker if the relay dies inside
+// that window; the replacement's own watchdog re-records the tail on
+// its next flush. Serialising it would mean holding a lock across the
+// whole turn for no correctness gain.
 func (h *Handler) clearTail(convID string) {
 	if err := h.cfg.Journal.SetTail(convID, 0); err != nil {
 		h.cfg.Logf("handler: clearing tail for %s: %v", convID, err)

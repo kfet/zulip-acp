@@ -186,6 +186,11 @@ The correct behaviour is therefore *not* to resume it:
 - The next inbound message in the topic goes through `state.Manager`, which
   resumes or recreates the ACP session against the conversation's stable cwd.
 
+A queue narrow cannot express a union of channels (narrow terms are a
+conjunction), so a relay serving more than one channel registers an
+**unnarrowed** queue and filters with the channel allowlist it must enforce
+anyway. Over-delivery is cheap; under-delivery is silent.
+
 Event queues get the same treatment. `queue_id` and `last_event_id` are held in
 memory only — queues die on server restart, so persisting them is false comfort.
 `BAD_EVENT_QUEUE_ID` is **routine**: re-register, reset the cursor, log at info.
