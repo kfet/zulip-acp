@@ -67,7 +67,11 @@ brews:
       name: goreleaserbot
       email: bot@goreleaser.com
     commit_msg_template: "zulip-acp: update to {{ .Tag }}"
-    skip_upload: auto
+    # Skip the tap push when no token is configured, instead of failing
+    # the whole release. A fresh clone or a fork has no
+    # HOMEBREW_TAP_TOKEN, and a missing formula update is not a reason
+    # to withhold the binaries. "auto" additionally skips prereleases.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_TOKEN") "" }}true{{ else }}auto{{ end }}'
     test: |
       system "#{bin}/zulip-acp", "--version"
     # The downloaded artifact is named zulip-acp-<os>-<arch> (archives.formats=binary
