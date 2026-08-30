@@ -1494,3 +1494,113 @@ func TestWatchdogPublishesMidTurn(t *testing.T) {
 		t.Fatal("tail not cleared after the turn")
 	}
 }
+
+// TestSystemBotAndOtherBotsAreRefused pins the second half of the
+// self-loop guard. Zulip posts topic moves and welcome messages as
+// cross-realm system bots; those land in an engaged topic and would
+// otherwise burn a full agent turn on "This topic was moved here
+// from …". Cross-realm bots do not appear in GET /users, so the realm
+// string is the only signal that catches them.
+func TestSystemBotAndOtherBotsAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  zulipproto.Message
+	}{
+		{"system bot", zulipproto.Message{
+			SenderID: 6, SenderName: "Notification Bot", Type: "stream",
+			SenderRealm: zulipproto.SystemBotRealm, Client: "Internal",
+			Content:  "This topic was moved here from #**fleet>old**.",
+			StreamID: 4, Topic: "engaged",
+		}},
+		{"another realm bot", zulipproto.Message{
+			SenderID: 77, SenderName: "Other Relay", Type: "stream",
+			Content: mention("hello from a peer relay"), StreamID: 4, Topic: "engaged",
+		}},
+	}
+	for _, c := range cases {
+		hh := newHarness(t, newAgent("ok"), func(cfg *Config) {
+			cfg.BotSenderIDs = map[int64]struct{}{77: {}}
+		})
+		// Engage the topic first, so only the sender check can stop it.
+		hh.deliver(t, "engaged", mention("hi"))
+		posted := hh.z.count()
+
+		m := c.msg
+		hh.h.Handle(context.Background(), zulipproto.Event{Type: zulipproto.EventMessage, Message: &m})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := hh.h.WaitIdle(ctx); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		cancel()
+		if hh.z.count() != posted {
+			t.Fatalf("%s: relay reacted to a bot message", c.name)
+		}
+		if len(hh.a.prompts) != 1 {
+			t.Fatalf("%s: a bot message reached the agent: %v", c.name, hh.a.prompts)
+		}
+	}
+}
+
+// TestRescueUploadsOutputWhenPostingFails is the "never drop output"
+// backstop. Zulip can refuse a body that is legal by length but too
+// expensive to render (HTTP 400 "Unable to render message"), and the
+// realm can close its edit window. Neither may cost the agent's work.
+func TestRescueUploadsOutputWhenPostingFails(t *testing.T) {
+	agent := newAgent("an answer worth keeping")
+	hh := newHarness(t, agent, nil)
+	// The placeholder posts fine; every later write fails.
+	hh.z.mu.Lock()
+	hh.z.editErr = errors.New("Unable to render message")
+	hh.z.mu.Unlock()
+	hh.deliver(t, "doomed", mention("hi"))
+
+	hh.z.mu.Lock()
+	rescued, ok := hh.z.uploads["answer.md"]
+	hh.z.mu.Unlock()
+	if !ok {
+		t.Fatalf("output was dropped; uploads = %v", hh.z.uploads)
+	}
+	if !strings.Contains(string(rescued), "an answer worth keeping") {
+		t.Fatalf("rescued the wrong thing: %q", rescued)
+	}
+	if !hh.logged("rescued") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+	// And the topic learns where the answer went.
+	if !strings.Contains(strings.Join(hh.z.stored(), "\n"), "[answer.md](/user_uploads/2/ab/answer.md)") {
+		t.Fatalf("no notice posted: %v", hh.z.stored())
+	}
+}
+
+func TestRescueFailuresAreLogged(t *testing.T) {
+	// Nothing to rescue: silent.
+	hh := newHarness(t, newAgent("x"), nil)
+	post := &topicPoster{client: hh.z, streamID: 4, topic: "t"}
+	hh.h.rescue(context.Background(), post, "   ", errors.New("cause"))
+	hh.z.mu.Lock()
+	n := len(hh.z.uploads)
+	hh.z.mu.Unlock()
+	if n != 0 {
+		t.Fatal("an empty transcript was uploaded")
+	}
+
+	// The upload itself fails: logged, never escalated.
+	hh.z.mu.Lock()
+	hh.z.uploadEr = errors.New("upload refused")
+	hh.z.mu.Unlock()
+	hh.h.rescue(context.Background(), post, "real output", errors.New("cause"))
+	if !hh.logged("could not rescue") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+
+	// The upload works but the announcement does not.
+	hh2 := newHarness(t, newAgent("x"), nil)
+	hh2.z.mu.Lock()
+	hh2.z.sendErr = errors.New("zulip down")
+	hh2.z.mu.Unlock()
+	hh2.h.rescue(context.Background(), &topicPoster{client: hh2.z, streamID: 4, topic: "t"},
+		"real output", errors.New("cause"))
+	if !hh2.logged("could not announce it") {
+		t.Fatalf("logs = %v", hh2.logs)
+	}
+}

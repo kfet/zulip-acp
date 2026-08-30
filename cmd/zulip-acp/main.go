@@ -112,6 +112,20 @@ func main() {
 	}
 	log.Printf("zulip-acp %s: authenticated as %s (user %d)", version, me.FullName, me.UserID)
 
+	// Snapshot the realm's bots so the relay never answers one. The
+	// cross-realm system bots are not in this list; they are caught by
+	// their sender realm instead.
+	users, err := zc.Users(ctx)
+	if err != nil {
+		log.Fatalf("zulip: list users: %v", err)
+	}
+	bots := map[int64]struct{}{}
+	for _, u := range users {
+		if u.IsBot {
+			bots[u.UserID] = struct{}{}
+		}
+	}
+
 	streams, err := zc.Streams(ctx)
 	if err != nil {
 		log.Fatalf("zulip: list channels: %v", err)
@@ -159,6 +173,7 @@ func main() {
 		Journal:            jr,
 		BotUserID:          me.UserID,
 		BotFullName:        me.FullName,
+		BotSenderIDs:       bots,
 		Channels:           served,
 		AllowedUsers:       cfg.AllowedUsers(),
 		PromptTimeout:      cfg.PromptTimeout(),

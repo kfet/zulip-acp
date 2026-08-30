@@ -21,6 +21,13 @@
 //   - Uploads are a single multipart round-trip returning a relative
 //     URL to interpolate into message markdown. No extension allowlist,
 //     no MIME sniffing.
+//   - LENGTH IS NOT THE ONLY LIMIT. A body that is legal by length can
+//     still be refused with HTTP 400 "Unable to render message" if the
+//     server-side markdown/Pygments pass chokes on it. Measured: ~1000
+//     consecutive emoji is enough, while 9000 CJK characters render
+//     fine. This failure is LOUD, which makes it far kinder than the
+//     silent truncation above — the relay surfaces it and falls back
+//     to attaching the text as a file rather than losing it.
 package zulipproto
 
 import (
@@ -169,7 +176,22 @@ type Message struct {
 	Topic       string `json:"subject"`
 	Type        string `json:"type"`
 	Timestamp   int64  `json:"timestamp"`
+	// SenderRealm is the sender's realm string. Zulip's own system
+	// bots — Notification Bot, Welcome Bot, the email gateway — are
+	// cross-realm and always report SystemBotRealm. They do NOT appear
+	// in GET /users, so this field is the only reliable way to
+	// recognise them from a message event.
+	SenderRealm string `json:"sender_realm_str"`
+	// Client is the posting client's name ("website", "curl", and
+	// "Internal" for server-generated messages).
+	Client string `json:"client"`
 }
+
+// SystemBotRealm is the realm Zulip's cross-realm system bots live in.
+// A topic move, for instance, posts a "This topic was moved here from
+// …" notice as Notification Bot, which a relay must not treat as a
+// human turn.
+const SystemBotRealm = "zulipinternal"
 
 // Stream is a Zulip channel.
 type Stream struct {
@@ -188,6 +210,22 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 		return User{}, err
 	}
 	return resp.User, nil
+}
+
+// Users lists the realm's users. Used at startup to learn which
+// senders are bots, so the relay never answers one.
+//
+// NOTE: cross-realm system bots (Notification Bot and friends) are NOT
+// in this list — match Message.SenderRealm against SystemBotRealm for
+// those.
+func (c *Client) Users(ctx context.Context) ([]User, error) {
+	var resp struct {
+		Members []User `json:"members"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/users", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Members, nil
 }
 
 // Streams lists the channels the bot can see.

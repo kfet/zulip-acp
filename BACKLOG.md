@@ -46,6 +46,20 @@ Things deliberately not done in v1, with the reason.
   possible when one line exceeds the whole budget) can break a span. Cosmetic
   and rare; documented rather than fixed.
 
+## Known limits, accepted
+
+- **Bot senders are snapshotted at startup.** `GET /users` is read once to
+  learn which realm users are bots, so a bot created while the relay is running
+  is not recognised until it restarts. The bots that actually post unprompted —
+  Zulip's cross-realm system bots — are caught by their sender realm instead,
+  so the practical gap is narrow.
+- **Zulip can refuse a legal-length message.** ~1000 consecutive emoji trips
+  the server-side renderer with HTTP 400 "Unable to render message" even though
+  the body is far under 10000 code points (9000 CJK characters render fine).
+  The relay does not try to be clever about it: it uploads the whole answer as
+  `answer.md` and posts a link, so no output is lost. Pinned by
+  `test/live_test.go:TestRenderCanFailBelowTheLengthLimit`.
+
 ## Operational
 
 - **Mobile push notifications are OFF.** Self-hosted Zulip cannot push to iOS

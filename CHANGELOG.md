@@ -31,8 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming sink that coalesces edits on a ~300ms tick.
 - `internal/statusline`: Zulip-markdown renderer for the
   `dev.acp-kit.status-line/v1` mood/plan header.
+- Outbox attachments: files the agent leaves in `<cwd>/outbox/` are uploaded
+  at the end of the turn and linked from the answer.
+- Output rescue: if a message cannot be posted inline — a closed edit window, a
+  server hiccup, or Zulip refusing a legal-length body it cannot render — the
+  whole transcript is uploaded as `answer.md` and linked, so no output is lost.
 - On startup any unsealed tail message the relay authored is marked
   `*(relay restarted — turn interrupted)*`.
+- `test/live_test.go`: integration tests against a real server (`ZULIP_LIVE=1`)
+  pinning silent truncation, code-point counting, edit throughput, upload
+  round-trips and event-queue semantics. Excluded from the coverage gate.
+- `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
 [Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/kfet/zulip-acp/releases/tag/v0.1.0

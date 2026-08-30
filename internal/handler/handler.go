@@ -87,6 +87,12 @@ type Config struct {
 	// BotFullName is the bot's display name, used to recognise
 	// @-mentions in raw markdown.
 	BotFullName string
+	// BotSenderIDs are user ids whose messages are never treated as a
+	// human turn: every bot in the realm, snapshotted at startup. A
+	// bot that appears later is not in the set, but the cross-realm
+	// system bots — the ones that actually post unprompted — are
+	// caught by the SenderRealm check instead.
+	BotSenderIDs map[int64]struct{}
 
 	// Channels is the resolved allowlist: stream id → channel name.
 	// The relay answers nowhere else.
@@ -186,6 +192,16 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	// guard, before any allowlist, so a widened allowlist can never
 	// reorder it.
 	if m.SenderID == h.cfg.BotUserID {
+		return
+	}
+	// Nor on any other bot's. Zulip posts topic moves, stream
+	// creations and welcome messages as cross-realm system bots, which
+	// land in a topic the relay is engaged in and would otherwise burn
+	// a full agent turn on "This topic was moved here from …".
+	if m.SenderRealm == zulipproto.SystemBotRealm {
+		return
+	}
+	if _, isBot := h.cfg.BotSenderIDs[m.SenderID]; isBot {
 		return
 	}
 	if m.Type != "stream" {
@@ -349,8 +365,39 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		suffix += fmt.Sprintf("\n\n*(stopped: %s)*", stop)
 	}
 	cerr := split.Close(fctx, suffix)
+	if cerr != nil {
+		h.rescue(fctx, post, split.Transcript(), cerr)
+	}
 	h.clearTail(conv.ID)
 	return cerr
+}
+
+// rescue is the last line of defence for the rule that matters most:
+// NEVER drop output.
+//
+// Posting can fail for reasons the splitter cannot foresee — the realm
+// closed its edit window, the server is briefly down, or (measured on
+// Zulip 12.2) the markdown renderer refuses a body that is legal by
+// length but expensive to render, e.g. a long run of emoji, which
+// comes back as HTTP 400 "Unable to render message". Rather than log
+// the failure and lose the agent's work, upload the whole transcript
+// as a file and post a short message linking it. Uploads are raw bytes
+// and never rendered, so this path cannot fail the same way.
+func (h *Handler) rescue(ctx context.Context, post *topicPoster, transcript string, cause error) {
+	if strings.TrimSpace(transcript) == "" {
+		return
+	}
+	url, err := h.cfg.Client.Upload(ctx, "answer.md", strings.NewReader(transcript))
+	if err != nil {
+		h.cfg.Logf("handler: could not rescue %d chars of output: %v (original failure: %v)", len(transcript), err, cause)
+		return
+	}
+	notice := fmt.Sprintf("*(the answer could not be posted inline: %v — the full text is attached)*\n\n[answer.md](%s)", cause, url)
+	if _, err := post.Post(ctx, notice); err != nil {
+		h.cfg.Logf("handler: rescued output to %s but could not announce it: %v", url, err)
+		return
+	}
+	h.cfg.Logf("handler: posting failed (%v); rescued %d chars of output to %s", cause, len(transcript), url)
 }
 
 // failTurn reports an agent error into the topic instead of leaving a

@@ -517,3 +517,28 @@ func TestNarrowChannel(t *testing.T) {
 		t.Fatalf("NarrowChannel = %v", got)
 	}
 }
+
+func TestUsers(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"members":[{"user_id":8,"email":"a@b","is_bot":false},{"user_id":9,"email":"bot@b","is_bot":true}]`)
+	})
+	got, err := newClient(t, ts).Users(context.Background())
+	if err != nil {
+		t.Fatalf("Users: %v", err)
+	}
+	if len(got) != 2 || got[1].UserID != 9 || !got[1].IsBot {
+		t.Fatalf("users = %+v", got)
+	}
+	if ts.requests()[0].path != "/api/v1/users" {
+		t.Fatalf("path = %q", ts.requests()[0].path)
+	}
+}
+
+func TestUsersError(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 500, `{"result":"error","msg":"down"}`
+	})
+	if _, err := newClient(t, ts).Users(context.Background()); err == nil {
+		t.Fatal("want error")
+	}
+}
