@@ -674,3 +674,126 @@ func countFenceLines(s string) int {
 	}
 	return n
 }
+
+func TestUpdatePlaceholder(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 500})
+	ctx := context.Background()
+
+	// Before Start there is no message to animate.
+	if alive, err := s.UpdatePlaceholder(ctx, "frame"); alive || err != nil {
+		t.Fatalf("UpdatePlaceholder before Start = %v, %v", alive, err)
+	}
+	if err := s.Start(ctx, "_thinking…_"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if alive, err := s.UpdatePlaceholder(ctx, "_thinking._"); !alive || err != nil {
+		t.Fatalf("UpdatePlaceholder = %v, %v", alive, err)
+	}
+	if f.bodies[1] != "_thinking._" {
+		t.Fatalf("frame not written: %q", f.bodies[1])
+	}
+	// An oversized frame is refused but keeps the animation alive.
+	if alive, err := s.UpdatePlaceholder(ctx, strings.Repeat("x", 600)); !alive || err == nil {
+		t.Fatalf("oversized frame = %v, %v", alive, err)
+	}
+	// A failing edit surfaces but does not disarm.
+	f.editErr = errors.New("edit failed")
+	if alive, err := s.UpdatePlaceholder(ctx, "_thinking.._"); !alive || err == nil {
+		t.Fatalf("failing edit = %v, %v", alive, err)
+	}
+	f.editErr = nil
+	// Once real text lands the placeholder window is closed for good.
+	s.Append("answer")
+	if alive, err := s.UpdatePlaceholder(ctx, "_thinking..._"); alive || err != nil {
+		t.Fatalf("UpdatePlaceholder after text = %v, %v", alive, err)
+	}
+	if err := s.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if f.bodies[1] != "answer" {
+		t.Fatalf("body = %q", f.bodies[1])
+	}
+}
+
+// TestUpdatePlaceholderAfterRollover: once the chain has more than one
+// message the first is sealed, so the animation must be disarmed.
+func TestUpdatePlaceholderAfterRollover(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 200})
+	ctx := context.Background()
+	if err := s.Start(ctx, "_thinking…_"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append(strings.Repeat("a\n", 300))
+	if err := s.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if alive, _ := s.UpdatePlaceholder(ctx, "frame"); alive {
+		t.Fatal("placeholder must be dead after rollover")
+	}
+}
+
+// TestConcurrentFlushDoesNotDoublePost is the regression test for the
+// race ioMu exists to close: Flush releases the plan mutex around each
+// network call, so two concurrent flushes could otherwise both see the
+// same unposted message and both Post it.
+func TestConcurrentFlushDoesNotDoublePost(t *testing.T) {
+	f := newFake()
+	// Block inside Post until both flushers are known to be in flight.
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	f.postHook = func(string) error {
+		entered <- struct{}{}
+		<-release
+		return nil
+	}
+	s := mustNew(t, Config{Poster: f, Budget: 500})
+	s.Append("the one and only message")
+
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { done <- s.Flush(context.Background()) }()
+	}
+	// Exactly one flusher may be inside Post; the other must be
+	// serialised behind ioMu.
+	<-entered
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+	}
+	if f.posts != 1 {
+		t.Fatalf("posted %d times, want 1", f.posts)
+	}
+	checkInvariant(t, s, f)
+}
+
+// TestConcurrentAppendAndFlush exercises the lock discipline under the
+// race detector with a live streaming shape.
+func TestConcurrentAppendAndFlush(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 400})
+	ctx := context.Background()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 300; i++ {
+			s.Append(fmt.Sprintf("line %d\n", i))
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		if err := s.Flush(ctx); err != nil {
+			t.Errorf("Flush: %v", err)
+		}
+	}
+	<-done
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	checkInvariant(t, s, f)
+	if got := strings.Join(s.RawSlices(), ""); got != s.Transcript() {
+		t.Fatal("invariant broken under concurrency")
+	}
+}

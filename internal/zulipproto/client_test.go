@@ -508,3 +508,12 @@ func TestServerErrorsPropagate(t *testing.T) {
 		t.Fatal("GetEvents: want error")
 	}
 }
+
+// TestNarrowChannel pins the operand shape. Getting this wrong is
+// silent: the queue registers fine and then delivers nothing.
+func TestNarrowChannel(t *testing.T) {
+	got := NarrowChannel("fleet")
+	if got[0] != "channel" || got[1] != "fleet" {
+		t.Fatalf("NarrowChannel = %v", got)
+	}
+}

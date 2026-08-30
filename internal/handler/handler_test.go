@@ -1,0 +1,1496 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/state"
+	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/rollover"
+	"github.com/kfet/zulip-acp/internal/statusline"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
+)
+
+const (
+	botID   = int64(9)
+	botName = "fir-relay"
+	humanID = int64(8)
+)
+
+// --- fakes ---------------------------------------------------------------
+
+// fakeZulip models the surface: a message store plus an upload store.
+type fakeZulip struct {
+	mu       sync.Mutex
+	next     int64
+	bodies   map[int64]string
+	topics   map[int64]string
+	order    []int64
+	uploads  map[string][]byte
+	sendErr  error
+	editErr  error
+	getErr   error
+	uploadEr error
+	// posted is signalled after every Post or Edit, so tests can
+	// synchronise on surface state instead of polling a clock.
+	posted chan struct{}
+}
+
+func newZulip() *fakeZulip {
+	return &fakeZulip{
+		bodies:  map[int64]string{},
+		topics:  map[int64]string{},
+		uploads: map[string][]byte{},
+		posted:  make(chan struct{}, 256),
+	}
+}
+
+func (z *fakeZulip) signal() {
+	select {
+	case z.posted <- struct{}{}:
+	default:
+	}
+}
+
+func (z *fakeZulip) SendMessage(_ context.Context, _ int64, topic, content string) (int64, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.sendErr != nil {
+		return 0, z.sendErr
+	}
+	z.next++
+	z.bodies[z.next] = content
+	z.topics[z.next] = topic
+	z.order = append(z.order, z.next)
+	z.signal()
+	return z.next, nil
+}
+
+func (z *fakeZulip) EditMessage(_ context.Context, id int64, content string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.editErr != nil {
+		return z.editErr
+	}
+	if _, ok := z.bodies[id]; !ok {
+		return fmt.Errorf("no such message %d", id)
+	}
+	z.bodies[id] = content
+	z.signal()
+	return nil
+}
+
+func (z *fakeZulip) GetMessage(_ context.Context, id int64) (zulipproto.Message, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.getErr != nil {
+		return zulipproto.Message{}, z.getErr
+	}
+	body, ok := z.bodies[id]
+	if !ok {
+		return zulipproto.Message{}, fmt.Errorf("no such message %d", id)
+	}
+	return zulipproto.Message{ID: id, Content: body, SenderID: botID}, nil
+}
+
+func (z *fakeZulip) Upload(_ context.Context, filename string, r io.Reader) (string, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.uploadEr != nil {
+		return "", z.uploadEr
+	}
+	z.uploads[filename] = b
+	return "/user_uploads/2/ab/" + filename, nil
+}
+
+func (z *fakeZulip) stored() []string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	out := make([]string, 0, len(z.order))
+	for _, id := range z.order {
+		out = append(out, z.bodies[id])
+	}
+	return out
+}
+
+func (z *fakeZulip) body(id int64) string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.bodies[id]
+}
+
+func (z *fakeZulip) count() int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return len(z.order)
+}
+
+// fakeAgent plays the ACP agent: it replays a scripted reply through
+// whatever sink the session manager installed.
+type fakeAgent struct {
+	mu       sync.Mutex
+	sink     client.SessionUpdateSink
+	chunks   []string
+	thoughts []string
+	meta     map[string]any
+	stop     acp.StopReason
+	err      error
+	model    string
+	prompts  []string
+	// block, when non-nil, holds Prompt until closed — used to test
+	// cancellation of an in-flight turn.
+	block chan struct{}
+	// hold, when non-nil, keeps Prompt running AFTER the chunks have
+	// been emitted, so the coalescing watchdog gets a chance to
+	// publish mid-turn.
+	hold chan struct{}
+	// entered is signalled when Prompt starts.
+	entered chan struct{}
+}
+
+func newAgent(chunks ...string) *fakeAgent {
+	return &fakeAgent{chunks: chunks, stop: acp.StopReasonEndTurn, entered: make(chan struct{}, 8)}
+}
+
+func (a *fakeAgent) Models() ([]client.ModelInfo, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return nil, a.model
+}
+
+func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
+	a.mu.Lock()
+	a.prompts = append(a.prompts, blocks[0].Text.Text)
+	sink, chunks, thoughts, meta := a.sink, a.chunks, a.thoughts, a.meta
+	block, hold, stop, err := a.block, a.hold, a.stop, a.err
+	a.mu.Unlock()
+	select {
+	case a.entered <- struct{}{}:
+	default:
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	for _, th := range thoughts {
+		_ = sink.OnUpdate(ctx, thoughtNotification(th, meta))
+	}
+	for _, c := range chunks {
+		if err := sink.OnUpdate(ctx, chunkNotification(c, meta)); err != nil {
+			return "", err
+		}
+	}
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return stop, err
+}
+
+func chunkNotification(text string, meta map[string]any) acp.SessionNotification {
+	return acp.SessionNotification{
+		Meta: meta,
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.TextBlock(text)},
+		},
+	}
+}
+
+func thoughtNotification(text string, meta map[string]any) acp.SessionNotification {
+	return acp.SessionNotification{
+		Meta: meta,
+		Update: acp.SessionUpdate{
+			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{Content: acp.TextBlock(text)},
+		},
+	}
+}
+
+// fakeSessions plays acp-kit's state.Manager.
+type fakeSessions struct {
+	mu       sync.Mutex
+	agent    *fakeAgent
+	dir      string
+	sessions map[string]*state.Session
+	err      error
+	pending  string
+	cancels  []string
+}
+
+func newSessions(t *testing.T, a *fakeAgent) *fakeSessions {
+	t.Helper()
+	return &fakeSessions{agent: a, dir: t.TempDir(), sessions: map[string]*state.Session{}}
+}
+
+func (s *fakeSessions) GetOrCreate(_ context.Context, key string, sink client.SessionUpdateSink) (*state.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	s.agent.mu.Lock()
+	s.agent.sink = sink
+	s.agent.mu.Unlock()
+	if sess, ok := s.sessions[key]; ok {
+		return sess, nil
+	}
+	cwd := filepath.Join(s.dir, key)
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		return nil, err
+	}
+	sess := &state.Session{Key: key, SessionID: acp.SessionId("sid-" + key), Cwd: cwd}
+	s.sessions[key] = sess
+	return sess, nil
+}
+
+func (s *fakeSessions) Touch(*state.Session) {}
+
+func (s *fakeSessions) Cancel(_ context.Context, key string) {
+	s.mu.Lock()
+	s.cancels = append(s.cancels, key)
+	s.mu.Unlock()
+}
+
+func (s *fakeSessions) TakePendingSystemPrompt(*state.Session) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pending
+	s.pending = ""
+	return p
+}
+
+// --- harness -------------------------------------------------------------
+
+type harness struct {
+	h     *Handler
+	z     *fakeZulip
+	a     *fakeAgent
+	s     *fakeSessions
+	j     *journal.Journal
+	jdir  string
+	logs  []string
+	logMu sync.Mutex
+}
+
+// breakJournal makes every subsequent journal write fail, by removing
+// write permission from the directory holding it. Used to drive the
+// persistence-failure branches without reaching into the package.
+func (hh *harness) breakJournal(t *testing.T) {
+	t.Helper()
+	if err := os.Chmod(hh.jdir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hh.jdir, 0o700) })
+}
+
+func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
+	t.Helper()
+	z := newZulip()
+	sess := newSessions(t, agent)
+	jdir := t.TempDir()
+	j, err := journal.Open(filepath.Join(jdir, "journal.json"))
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	hh := &harness{z: z, a: agent, s: sess, j: j, jdir: jdir}
+	cfg := Config{
+		Client:         z,
+		Agent:          agent,
+		Sessions:       sess,
+		Journal:        j,
+		BotUserID:      botID,
+		BotFullName:    botName,
+		Channels:       map[int64]string{4: "fleet"},
+		EditInterval:   time.Millisecond,
+		SilentSentinel: "<<SILENT>>",
+		Logf: func(format string, args ...any) {
+			hh.logMu.Lock()
+			hh.logs = append(hh.logs, fmt.Sprintf(format, args...))
+			hh.logMu.Unlock()
+		},
+	}
+	if tune != nil {
+		tune(&cfg)
+	}
+	h, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	hh.h = h
+	return hh
+}
+
+// deliver feeds a channel message and waits for the turn to finish.
+func (hh *harness) deliver(t *testing.T, topic, content string) {
+	t.Helper()
+	hh.deliverAs(t, humanID, topic, content)
+}
+
+func (hh *harness) deliverAs(t *testing.T, sender int64, topic, content string) {
+	t.Helper()
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			ID: 1, SenderID: sender, SenderName: "Kfet", Content: content,
+			StreamID: 4, Topic: topic, Type: "stream",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("turn did not finish: %v", err)
+	}
+}
+
+func (hh *harness) logged(sub string) bool {
+	hh.logMu.Lock()
+	defer hh.logMu.Unlock()
+	for _, l := range hh.logs {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func mention(rest string) string { return "@**" + botName + "** " + rest }
+
+// --- construction --------------------------------------------------------
+
+func TestNewValidation(t *testing.T) {
+	if _, err := New(Config{}); err == nil {
+		t.Fatal("want error on missing dependencies")
+	}
+	z := newZulip()
+	a := newAgent()
+	s := newSessions(t, a)
+	j, err := journal.Open(filepath.Join(t.TempDir(), "j.json"))
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	h, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if h.cfg.PromptTimeout != 10*time.Minute || h.cfg.EditInterval != 300*time.Millisecond {
+		t.Fatalf("defaults not applied: %+v", h.cfg)
+	}
+	h.cfg.Logf("smoke %d", 1) // default no-op logger must be callable
+	if h.sealMarker() != rollover.DefaultSealMarker {
+		t.Fatalf("seal marker = %q", h.sealMarker())
+	}
+	h2, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j, SealMarker: "~fin~"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if h2.sealMarker() != "~fin~" {
+		t.Fatalf("seal marker = %q", h2.sealMarker())
+	}
+}
+
+// --- gating --------------------------------------------------------------
+
+func TestSelfAuthoredMessageIsRefused(t *testing.T) {
+	hh := newHarness(t, newAgent("should never run"), nil)
+	// The relay's own message, WITH a mention of itself and in an
+	// allowed channel: the self-guard runs first and unconditionally.
+	hh.deliverAs(t, botID, "loop", mention("do it again"))
+	if hh.z.count() != 0 {
+		t.Fatal("relay answered its own message — self-loop")
+	}
+	if len(hh.j.Convs()) != 0 {
+		t.Fatal("self-authored message created a conversation")
+	}
+}
+
+func TestGatingDrops(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   zulipproto.Message
+	}{
+		{"direct message", zulipproto.Message{SenderID: humanID, Type: "private", Content: mention("hi"), StreamID: 4, Topic: "t"}},
+		{"other channel", zulipproto.Message{SenderID: humanID, Type: "stream", Content: mention("hi"), StreamID: 99, Topic: "t"}},
+		{"empty text", zulipproto.Message{SenderID: humanID, Type: "stream", Content: "   ", StreamID: 4, Topic: "t"}},
+		{"no mention, unknown topic", zulipproto.Message{SenderID: humanID, Type: "stream", Content: "just chatting", StreamID: 4, Topic: "t"}},
+	}
+	for _, c := range cases {
+		hh := newHarness(t, newAgent("nope"), nil)
+		m := c.ev
+		hh.h.Handle(context.Background(), zulipproto.Event{Type: zulipproto.EventMessage, Message: &m})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := hh.h.WaitIdle(ctx); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		cancel()
+		if hh.z.count() != 0 {
+			t.Fatalf("%s: relay answered anyway", c.name)
+		}
+	}
+	// A nil message payload and an unknown event type are both no-ops.
+	hh := newHarness(t, newAgent("nope"), nil)
+	hh.h.Handle(context.Background(), zulipproto.Event{Type: zulipproto.EventMessage})
+	hh.h.Handle(context.Background(), zulipproto.Event{Type: "reaction"})
+	if hh.z.count() != 0 {
+		t.Fatal("relay answered a malformed event")
+	}
+}
+
+func TestUserAllowlist(t *testing.T) {
+	hh := newHarness(t, newAgent("hello"), func(c *Config) {
+		c.AllowedUsers = map[int64]struct{}{42: {}}
+	})
+	hh.deliverAs(t, humanID, "t", mention("hi"))
+	if hh.z.count() != 0 {
+		t.Fatal("relay answered a user outside the allowlist")
+	}
+	if !hh.logged("not allowed") {
+		t.Fatal("expected an allowlist log")
+	}
+	hh.deliverAs(t, 42, "t", mention("hi"))
+	if hh.z.count() != 1 {
+		t.Fatal("allowlisted user was not answered")
+	}
+}
+
+func TestMentionVariants(t *testing.T) {
+	for _, form := range []string{
+		"@**fir-relay**",
+		"@**fir-relay|9**",
+		"@_**fir-relay**_",
+		"@_**fir-relay|9**_",
+	} {
+		hh := newHarness(t, newAgent("ok"), nil)
+		hh.deliver(t, "t-"+form, form+" ping")
+		if hh.z.count() != 1 {
+			t.Fatalf("mention form %q was not recognised", form)
+		}
+		// The addressing syntax is stripped; the sender is named.
+		if got := hh.a.prompts[0]; got != "[Kfet] ping" {
+			t.Fatalf("prompt = %q", got)
+		}
+	}
+	// A message that is ONLY a mention still reaches the agent rather
+	// than becoming an empty prompt.
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "bare", "@**fir-relay**")
+	if got := hh.a.prompts[0]; got != "[Kfet] @**fir-relay**" {
+		t.Fatalf("bare mention prompt = %q", got)
+	}
+	// With no bot name configured nothing can be a mention.
+	hh2 := newHarness(t, newAgent("ok"), func(c *Config) { c.BotFullName = "" })
+	hh2.deliver(t, "t", "@**fir-relay** hi")
+	if hh2.z.count() != 0 {
+		t.Fatal("mention matched with no bot name configured")
+	}
+}
+
+// --- the happy path ------------------------------------------------------
+
+func TestAddressedTurnStreamsAndAnswers(t *testing.T) {
+	agent := newAgent("Hello, ", "world.")
+	agent.model = "anthropic/claude-sonnet-4"
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "session: greet", mention("say hello"))
+
+	if hh.z.count() != 1 {
+		t.Fatalf("expected exactly one message, got %d", hh.z.count())
+	}
+	body := hh.z.body(1)
+	if !strings.HasSuffix(body, "Hello, world.") {
+		t.Fatalf("body = %q", body)
+	}
+	// The provider emoji resolved from the agent's current model shows
+	// up in the status header.
+	if !strings.HasPrefix(body, "> *") {
+		t.Fatalf("status header missing: %q", body)
+	}
+	// A conversation was recorded, and its tail was cleared when the
+	// turn completed.
+	convs := hh.j.Convs()
+	if len(convs) != 1 || convs[0].Topic != "session: greet" || convs[0].StreamID != 4 {
+		t.Fatalf("journal = %+v", convs)
+	}
+	if len(hh.j.OpenTails()) != 0 {
+		t.Fatal("tail not cleared after a completed turn")
+	}
+}
+
+func TestFollowUpReusesTheSameSession(t *testing.T) {
+	agent := newAgent("first")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "session: memory", mention("remember ZEBRA"))
+	convID := hh.j.Convs()[0].ID
+
+	// A follow-up with no mention: the topic is engaged, so it is
+	// answered, and it must land on the SAME session key.
+	agent.mu.Lock()
+	agent.chunks = []string{"ZEBRA"}
+	agent.mu.Unlock()
+	hh.deliver(t, "session: memory", "what was the codeword?")
+
+	if got := len(hh.s.sessions); got != 1 {
+		t.Fatalf("%d sessions created, want 1", got)
+	}
+	if _, ok := hh.s.sessions[convID]; !ok {
+		t.Fatalf("session key is not the conv-id: %v", hh.s.sessions)
+	}
+	if len(hh.j.Convs()) != 1 {
+		t.Fatalf("journal grew: %+v", hh.j.Convs())
+	}
+}
+
+func TestNewTopicIsANewSession(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "session: one", mention("hi"))
+	hh.deliver(t, "session: two", mention("hi"))
+	if len(hh.s.sessions) != 2 {
+		t.Fatalf("%d sessions, want 2 independent ones", len(hh.s.sessions))
+	}
+	convs := hh.j.Convs()
+	if len(convs) != 2 || convs[0].ID == convs[1].ID {
+		t.Fatalf("conversations = %+v", convs)
+	}
+}
+
+// TestSameTopicInTwoChannelsAreTwoSessions pins that the conv-key is
+// (stream_id, topic), never topic alone.
+func TestSameTopicInTwoChannelsAreTwoSessions(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), func(c *Config) {
+		c.Channels = map[int64]string{4: "fleet", 5: "ops"}
+	})
+	for _, stream := range []int64{4, 5} {
+		hh.h.Handle(context.Background(), zulipproto.Event{
+			Type: zulipproto.EventMessage,
+			Message: &zulipproto.Message{
+				SenderID: humanID, SenderName: "Kfet", Content: mention("hi"),
+				StreamID: stream, Topic: "standup", Type: "stream",
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := hh.h.WaitIdle(ctx); err != nil {
+			t.Fatalf("WaitIdle: %v", err)
+		}
+		cancel()
+	}
+	if len(hh.s.sessions) != 2 {
+		t.Fatalf("%d sessions, want 2", len(hh.s.sessions))
+	}
+}
+
+func TestSystemPromptIsInlinedOnce(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.s.pending = "SYSTEM RULES"
+	hh.deliver(t, "t", mention("hi"))
+	if got := hh.a.prompts[0]; !strings.HasPrefix(got, "SYSTEM RULES\n\n") {
+		t.Fatalf("prompt = %q", got)
+	}
+	hh.deliver(t, "t", "follow up")
+	if got := hh.a.prompts[1]; strings.Contains(got, "SYSTEM RULES") {
+		t.Fatalf("system prompt re-inlined: %q", got)
+	}
+}
+
+// --- ambient / abstain ---------------------------------------------------
+
+func TestAmbientAbstainPostsNothing(t *testing.T) {
+	agent := newAgent("hello")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	posted := hh.z.count()
+
+	agent.mu.Lock()
+	agent.chunks = []string{"<<SILENT>>"}
+	agent.mu.Unlock()
+	hh.deliver(t, "t", "some chatter not aimed at the bot")
+
+	if hh.z.count() != posted {
+		t.Fatalf("abstained turn posted a message: %v", hh.z.stored())
+	}
+	if !hh.logged("abstained") {
+		t.Fatal("expected an abstain log")
+	}
+	// The prompt still reached the agent, so it stays caught up.
+	if len(agent.prompts) != 2 {
+		t.Fatalf("prompts = %v", agent.prompts)
+	}
+}
+
+func TestAmbientAnswerIsPostedInOneMessage(t *testing.T) {
+	agent := newAgent("first")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+
+	agent.mu.Lock()
+	agent.chunks = []string{"a real ", "answer"}
+	agent.thoughts = []string{"pondering"}
+	agent.mu.Unlock()
+	hh.deliver(t, "t", "and what about X?")
+
+	if hh.z.count() != 2 {
+		t.Fatalf("expected a second message, got %d", hh.z.count())
+	}
+	body := hh.z.body(2)
+	if !strings.Contains(body, "a real answer") {
+		t.Fatalf("body = %q", body)
+	}
+	// Thoughts are force-hidden on the abstain path: one that reached
+	// the surface before the verdict could not be retracted.
+	if strings.Contains(body, "pondering") {
+		t.Fatalf("thought leaked past the abstain verdict: %q", body)
+	}
+	// No eager placeholder on the ambient path.
+	if strings.Contains(body, "Thinking") {
+		t.Fatalf("ambient turn posted a placeholder: %q", body)
+	}
+}
+
+// TestAmbientWithoutSentinelStreams: with no sentinel configured there
+// is no abstain verdict to wait for, so ambient turns stream like
+// addressed ones.
+func TestAmbientWithoutSentinelStreams(t *testing.T) {
+	agent := newAgent("streamed")
+	hh := newHarness(t, agent, func(c *Config) { c.SilentSentinel = "" })
+	hh.deliver(t, "t", mention("hi"))
+	hh.deliver(t, "t", "follow up")
+	if hh.z.count() != 2 {
+		t.Fatalf("messages = %d", hh.z.count())
+	}
+}
+
+// --- rollover through the handler ---------------------------------------
+
+func TestLongAnswerRollsOverWithNoTextLost(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&sb, "line %03d of a very long answer\n", i)
+	}
+	full := sb.String()
+	agent := newAgent(full)
+	hh := newHarness(t, agent, func(c *Config) { c.Budget = 500 })
+	hh.deliver(t, "long", mention("write a lot"))
+
+	if hh.z.count() < 3 {
+		t.Fatalf("expected 3+ messages, got %d", hh.z.count())
+	}
+	// Reconstruct: strip the decorations and assert nothing was lost.
+	var got strings.Builder
+	bodies := hh.z.stored()
+	for i, b := range bodies {
+		b = strings.TrimSuffix(b, rollover.DefaultSealMarker)
+		if i > 0 {
+			b = strings.TrimPrefix(b, rollover.DefaultContMarker)
+		}
+		got.WriteString(b)
+	}
+	if !strings.Contains(got.String(), full) {
+		t.Fatalf("text was lost in rollover: reconstructed %d chars, agent wrote %d",
+			len(got.String()), len(full))
+	}
+	// Every message respects the budget, in code points.
+	for i, b := range bodies {
+		if n := len([]rune(b)); n > 500 {
+			t.Fatalf("message %d is %d code points", i, n)
+		}
+	}
+}
+
+// --- errors --------------------------------------------------------------
+
+func TestSplitterConfigError(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), func(c *Config) {
+		c.Budget = 50 // too small for the markers
+	})
+	hh.deliver(t, "t", mention("hi"))
+	if hh.z.count() != 0 {
+		t.Fatal("a broken splitter must not post")
+	}
+	if !hh.logged("splitter") {
+		t.Fatal("expected a splitter error log")
+	}
+}
+
+func TestSessionCreationErrorIsReported(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.s.err = errors.New("agent is dead")
+	hh.deliver(t, "t", mention("hi"))
+	// The placeholder is resolved into an error rather than left
+	// hanging forever.
+	if got := hh.z.body(1); !strings.Contains(got, "agent is dead") {
+		t.Fatalf("body = %q", got)
+	}
+	if len(hh.j.OpenTails()) != 0 {
+		t.Fatal("tail not cleared after a failed turn")
+	}
+}
+
+func TestPromptErrorIsReported(t *testing.T) {
+	agent := newAgent("partial")
+	agent.err = errors.New("model exploded")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	if got := hh.z.body(1); !strings.Contains(got, "model exploded") {
+		t.Fatalf("body = %q", got)
+	}
+	if !hh.logged("failed") {
+		t.Fatal("expected a turn-failure log")
+	}
+}
+
+func TestAbstainPromptErrorIsReported(t *testing.T) {
+	agent := newAgent("first")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	agent.mu.Lock()
+	agent.err = errors.New("ambient boom")
+	agent.mu.Unlock()
+	hh.deliver(t, "t", "follow up")
+	if !strings.Contains(strings.Join(hh.z.stored(), "\n"), "ambient boom") {
+		t.Fatalf("stored = %v", hh.z.stored())
+	}
+}
+
+func TestPlaceholderPostFailureIsNonFatal(t *testing.T) {
+	hh := newHarness(t, newAgent("answer"), nil)
+	hh.z.mu.Lock()
+	hh.z.sendErr = errors.New("zulip down")
+	hh.z.mu.Unlock()
+	hh.deliver(t, "t", mention("hi"))
+	if !hh.logged("placeholder post failed") {
+		t.Fatal("expected a placeholder log")
+	}
+}
+
+func TestStopReasonIsSurfaced(t *testing.T) {
+	agent := newAgent("partial answer")
+	agent.stop = acp.StopReasonMaxTokens
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	if got := hh.z.body(1); !strings.Contains(got, "stopped: max_tokens") {
+		t.Fatalf("body = %q", got)
+	}
+}
+
+func TestTailTrackingErrorsAreLogged(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "t", mention("hi"))
+	// A journal that no longer knows the conversation makes both tail
+	// writes fail; neither may escalate.
+	hh.h.trackTail("nosuchconv", mustSplitter(t, hh.z))
+	hh.h.clearTail("nosuchconv")
+	if !hh.logged("recording tail") || !hh.logged("clearing tail") {
+		t.Fatalf("expected tail logs, got %v", hh.logs)
+	}
+}
+
+func mustSplitter(t *testing.T, z *fakeZulip) *rollover.Splitter {
+	t.Helper()
+	s, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	if err := s.Start(context.Background(), "placeholder"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return s
+}
+
+// --- cancellation --------------------------------------------------------
+
+// TestFollowUpCancelsTheRunningTurn: a new message in the same topic
+// supersedes whatever is still generating there.
+func TestFollowUpCancelsTheRunningTurn(t *testing.T) {
+	agent := newAgent("late answer")
+	agent.block = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+
+	msg := func(text string) zulipproto.Event {
+		return zulipproto.Event{Type: zulipproto.EventMessage, Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: text,
+			StreamID: 4, Topic: "busy", Type: "stream",
+		}}
+	}
+	hh.h.Handle(context.Background(), msg(mention("do something slow")))
+	<-agent.entered // the first turn is genuinely in flight
+
+	// The second message cancels it. Unblock so the cancelled Prompt
+	// can observe its context and return.
+	agent.mu.Lock()
+	agent.block = nil
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), msg("actually, do this instead"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	hh.s.mu.Lock()
+	cancels := len(hh.s.cancels)
+	hh.s.mu.Unlock()
+	if cancels != 1 {
+		t.Fatalf("session cancel issued %d times, want 1", cancels)
+	}
+}
+
+func TestWaitIdleRespectsContext(t *testing.T) {
+	agent := newAgent("slow")
+	agent.block = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("wait"),
+			StreamID: 4, Topic: "t", Type: "stream",
+		},
+	})
+	<-agent.entered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := hh.h.WaitIdle(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitIdle = %v", err)
+	}
+	close(agent.block)
+	done, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dcancel()
+	_ = hh.h.WaitIdle(done)
+}
+
+// --- topic rename --------------------------------------------------------
+
+func TestTopicRenameKeepsTheSession(t *testing.T) {
+	agent := newAgent("ok")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "untitled", mention("start"))
+	convID := hh.j.Convs()[0].ID
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventUpdateMessage, StreamID: 4,
+		OrigTopic: "untitled", Topic: "session: the real task",
+	})
+	if !hh.logged("session " + convID + " follows it") {
+		t.Fatalf("rename not logged: %v", hh.logs)
+	}
+	// The next message in the RENAMED topic continues the same session.
+	hh.deliver(t, "session: the real task", "carry on")
+	if len(hh.s.sessions) != 1 {
+		t.Fatalf("rename orphaned the session: %v", hh.s.sessions)
+	}
+	if _, ok := hh.s.sessions[convID]; !ok {
+		t.Fatal("conv-id changed across a rename")
+	}
+}
+
+func TestRenameEventsThatDoNothing(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "topic", mention("hi"))
+	events := []zulipproto.Event{
+		{Type: zulipproto.EventUpdateMessage, StreamID: 4, OrigTopic: "", Topic: "x"},
+		{Type: zulipproto.EventUpdateMessage, StreamID: 4, OrigTopic: "x", Topic: ""},
+		{Type: zulipproto.EventUpdateMessage, StreamID: 4, OrigTopic: "x", Topic: "x"},
+		{Type: zulipproto.EventUpdateMessage, StreamID: 99, OrigTopic: "topic", Topic: "y"},
+		{Type: zulipproto.EventUpdateMessage, StreamID: 4, OrigTopic: "unknown", Topic: "y"},
+	}
+	for _, ev := range events {
+		hh.h.Handle(context.Background(), ev)
+	}
+	if c, ok := hh.j.Lookup(4, "topic"); !ok || c.Topic != "topic" {
+		t.Fatalf("a no-op rename disturbed the journal: %+v", hh.j.Convs())
+	}
+}
+
+func TestRenameJournalErrorIsLogged(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "topic", mention("hi"))
+	// Break the journal's backing store so the rename cannot persist.
+	hh.breakJournal(t)
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventUpdateMessage, StreamID: 4,
+		OrigTopic: "topic", Topic: "renamed",
+	})
+	if !hh.logged("topic rename") {
+		t.Fatalf("expected a rename-failure log, got %v", hh.logs)
+	}
+}
+
+func TestConversationAllocationErrorIsLogged(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	hh.breakJournal(t)
+	hh.deliver(t, "brand new", mention("hi"))
+	if hh.z.count() != 0 {
+		t.Fatal("posted despite failing to allocate a conversation")
+	}
+	if !hh.logged("allocate conversation") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+// --- restart -------------------------------------------------------------
+
+func TestMarkInterrupted(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	ctx := context.Background()
+
+	// Three conversations: one with a live tail, one whose tail was
+	// already sealed, one whose message has vanished.
+	live, err := hh.j.Ensure(4, "live")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	sealed, err := hh.j.Ensure(4, "sealed")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	gone, err := hh.j.Ensure(4, "gone")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	liveID, _ := hh.z.SendMessage(ctx, 4, "live", "half an answer")
+	sealedID, _ := hh.z.SendMessage(ctx, 4, "sealed", "a full answer"+rollover.DefaultSealMarker)
+	for _, p := range []struct {
+		id  string
+		msg int64
+	}{{live.ID, liveID}, {sealed.ID, sealedID}, {gone.ID, 9999}} {
+		if err := hh.j.SetTail(p.id, p.msg); err != nil {
+			t.Fatalf("SetTail: %v", err)
+		}
+	}
+
+	hh.h.MarkInterrupted(ctx)
+
+	if got := hh.z.body(liveID); !strings.HasSuffix(got, InterruptedMarker) {
+		t.Fatalf("live tail not marked: %q", got)
+	}
+	if got := hh.z.body(sealedID); strings.Contains(got, InterruptedMarker) {
+		t.Fatalf("a sealed message was edited: %q", got)
+	}
+	if len(hh.j.OpenTails()) != 0 {
+		t.Fatalf("tails not cleared: %+v", hh.j.OpenTails())
+	}
+	if !hh.logged("reading interrupted message") {
+		t.Fatal("expected a log for the vanished message")
+	}
+
+	// Running it twice must not stack markers.
+	if err := hh.j.SetTail(live.ID, liveID); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	hh.h.MarkInterrupted(ctx)
+	if n := strings.Count(hh.z.body(liveID), strings.TrimSpace(InterruptedMarker)); n != 1 {
+		t.Fatalf("marker applied %d times", n)
+	}
+}
+
+func TestMarkInterruptedEditFailureIsLogged(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	ctx := context.Background()
+	c, err := hh.j.Ensure(4, "live")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	id, _ := hh.z.SendMessage(ctx, 4, "live", "half an answer")
+	if err := hh.j.SetTail(c.ID, id); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	hh.z.mu.Lock()
+	hh.z.editErr = errors.New("edit window closed")
+	hh.z.mu.Unlock()
+	hh.h.MarkInterrupted(ctx)
+	if !hh.logged("marking message") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+// --- outbox --------------------------------------------------------------
+
+func TestOutboxUploads(t *testing.T) {
+	agent := newAgent("here you go")
+	hh := newHarness(t, agent, nil)
+	// Populate the outbox from inside the turn, which is when a real
+	// agent would write it.
+	agent.mu.Lock()
+	orig := agent.chunks
+	agent.mu.Unlock()
+	_ = orig
+
+	// First turn creates the session (and therefore the cwd).
+	hh.deliver(t, "files", mention("prepare a file"))
+	cwd := hh.s.sessions[hh.j.Convs()[0].ID].Cwd
+	outbox := filepath.Join(cwd, OutboxDir)
+	if err := os.MkdirAll(outbox, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload := []byte("log line one\nlog line two\n")
+	for _, name := range []string{"report.log", "patch.diff"} {
+		if err := os.WriteFile(filepath.Join(outbox, name), payload, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	// A dotfile and a subdirectory are both skipped.
+	if err := os.WriteFile(filepath.Join(outbox, ".hidden"), payload, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outbox, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	hh.deliver(t, "files", "and send it over")
+
+	body := hh.z.body(2)
+	if !strings.Contains(body, "**Attachments:**") ||
+		!strings.Contains(body, "[report.log](/user_uploads/2/ab/report.log)") ||
+		!strings.Contains(body, "[patch.diff](/user_uploads/2/ab/patch.diff)") {
+		t.Fatalf("attachment links missing: %q", body)
+	}
+	hh.z.mu.Lock()
+	if string(hh.z.uploads["report.log"]) != string(payload) {
+		t.Fatal("uploaded bytes differ from the file")
+	}
+	if _, leaked := hh.z.uploads[".hidden"]; leaked {
+		t.Fatal("dotfile was uploaded")
+	}
+	hh.z.mu.Unlock()
+
+	// Uploaded files move aside so a follow-up does not re-upload them.
+	if _, err := os.Stat(filepath.Join(outbox, sentDir, "report.log")); err != nil {
+		t.Fatalf("file not moved to .sent: %v", err)
+	}
+	hh.deliver(t, "files", "anything else?")
+	if strings.Contains(hh.z.body(3), "Attachments") {
+		t.Fatalf("re-uploaded on a later turn: %q", hh.z.body(3))
+	}
+}
+
+func TestOutboxErrors(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	ctx := context.Background()
+
+	// A missing outbox is the normal case and is silent.
+	if got := hh.h.uploadOutbox(ctx, t.TempDir()); got != "" {
+		t.Fatalf("missing outbox produced %q", got)
+	}
+	if hh.logged("reading outbox") {
+		t.Fatal("a missing outbox must not be logged")
+	}
+
+	// An unreadable outbox is logged, not fatal.
+	cwd := t.TempDir()
+	blocker := filepath.Join(cwd, OutboxDir)
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := hh.h.uploadOutbox(ctx, cwd); got != "" {
+		t.Fatalf("broken outbox produced %q", got)
+	}
+	if !hh.logged("reading outbox") {
+		t.Fatal("expected an outbox log")
+	}
+
+	// A failing upload skips that file and keeps going.
+	cwd2 := t.TempDir()
+	ob := filepath.Join(cwd2, OutboxDir)
+	if err := os.MkdirAll(ob, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ob, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	hh.z.mu.Lock()
+	hh.z.uploadEr = errors.New("upload rejected")
+	hh.z.mu.Unlock()
+	if got := hh.h.uploadOutbox(ctx, cwd2); got != "" {
+		t.Fatalf("failed upload produced %q", got)
+	}
+	if !hh.logged("uploading a.txt") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+
+	// An unreadable file is skipped too.
+	hh.z.mu.Lock()
+	hh.z.uploadEr = nil
+	hh.z.mu.Unlock()
+	if err := os.Chmod(filepath.Join(ob, "a.txt"), 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(ob, "a.txt"), 0o600) })
+	if got := hh.h.uploadOutbox(ctx, cwd2); got != "" {
+		t.Fatalf("unreadable file produced %q", got)
+	}
+}
+
+func TestOutboxRenameFailure(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	cwd := t.TempDir()
+	ob := filepath.Join(cwd, OutboxDir)
+	if err := os.MkdirAll(filepath.Join(ob, sentDir), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ob, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// A directory at the destination makes the rename fail.
+	if err := os.MkdirAll(filepath.Join(ob, sentDir, "a.txt", "child"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if got := hh.h.uploadOutbox(context.Background(), cwd); got != "" {
+		t.Fatalf("rename failure produced %q", got)
+	}
+	if !hh.logged("uploading a.txt") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+func TestOutboxMkdirFailure(t *testing.T) {
+	hh := newHarness(t, newAgent("ok"), nil)
+	cwd := t.TempDir()
+	ob := filepath.Join(cwd, OutboxDir)
+	if err := os.MkdirAll(ob, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ob, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// A regular file where .sent should be makes MkdirAll fail.
+	if err := os.WriteFile(filepath.Join(ob, sentDir), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := hh.h.uploadOutbox(context.Background(), cwd); got != "" {
+		t.Fatalf("mkdir failure produced %q", got)
+	}
+}
+
+// --- background loops ----------------------------------------------------
+
+func TestWatchdogLoop(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time)
+	afterCalled := make(chan struct{}, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watchdogLoop(ctx, split, tick, func() { afterCalled <- struct{}{} })
+	}()
+
+	// A tick with nothing pending must issue no call at all.
+	tick <- time.Time{}
+	if z.count() != 0 {
+		t.Fatal("an idle tick published something")
+	}
+	// A tick with pending text publishes it and runs the callback.
+	split.Append("streamed text")
+	tick <- time.Time{}
+	<-afterCalled
+	if z.body(1) != "streamed text" {
+		t.Fatalf("body = %q", z.body(1))
+	}
+	cancel()
+	// The loop is parked in select; unblock it so it can see ctx.
+	select {
+	case tick <- time.Time{}:
+	case <-done:
+	}
+	<-done
+}
+
+func TestWatchdogStopsOnFlushError(t *testing.T) {
+	z := newZulip()
+	z.sendErr = errors.New("zulip down")
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	split.Append("text")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { defer close(done); watchdogLoop(ctx, split, tick, func() {}) }()
+	tick <- time.Time{}
+	<-done // the loop exits by itself rather than hammering a dead server
+}
+
+// TestWatchdogTickerWrapper covers the thin ticker wrapper around the
+// testable loop.
+func TestWatchdogTickerWrapper(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	split.Append("via the real ticker")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	published := make(chan struct{})
+	go watchdog(ctx, split, time.Millisecond, func() { close(published) })
+	<-published
+}
+
+func TestSpinnerAnimatesThenDisarms(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	if err := split.Start(context.Background(), statusline.Thinking(statusline.Status{})); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-z.posted
+	sink := newStreamingSink(split, false)
+	sink.SetProviderEmoji("🤖")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { defer close(done); spinnerLoop(ctx, split, sink, tick) }()
+	tick <- time.Time{}
+	<-z.posted // an animated frame landed
+	if got := z.body(1); !strings.Contains(got, "Thinking.") {
+		t.Fatalf("frame = %q", got)
+	}
+	// The first real text closes the placeholder window, and the
+	// spinner disarms itself without being cancelled.
+	split.Append("the answer")
+	tick <- time.Time{}
+	<-done
+}
+
+// TestSpinnerTickerWrapper covers the thin ticker wrapper.
+func TestSpinnerTickerWrapper(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	if err := split.Start(context.Background(), "placeholder"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-z.posted
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go spinner(ctx, split, newStreamingSink(split, false), time.Millisecond)
+	<-z.posted
+}
+
+func TestSpinnerStopsOnContextCancel(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		spinnerLoop(ctx, split, newStreamingSink(split, false), make(chan time.Time))
+	}()
+	cancel()
+	<-done
+}
+
+// --- sink ----------------------------------------------------------------
+
+func TestSinkRendering(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	sink := newStreamingSink(split, false)
+	ctx := context.Background()
+
+	// Status _meta arrives first and lands in the header.
+	if err := sink.OnUpdate(ctx, acp.SessionNotification{
+		Meta: map[string]any{statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "1/3"}},
+	}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if got := sink.Status(); got.Mood != "steady" || got.Plan != "1/3" {
+		t.Fatalf("status = %+v", got)
+	}
+	if err := sink.OnUpdate(ctx, thoughtNotification("thinking\nabout\nit", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if err := sink.OnUpdate(ctx, chunkNotification("body text", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	got := split.Transcript()
+	if !strings.HasPrefix(got, "> *steady • 1/3*\n") {
+		t.Fatalf("header not prepended once: %q", got)
+	}
+	// A multi-line thought becomes one italic line.
+	if !strings.Contains(got, "*thinking about it*\n") {
+		t.Fatalf("thought = %q", got)
+	}
+	if !strings.HasSuffix(got, "body text") {
+		t.Fatalf("body = %q", got)
+	}
+	// Updates that produce nothing visible append nothing.
+	before := split.Transcript()
+	if err := sink.OnUpdate(ctx, acp.SessionNotification{
+		Update: acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+			Content: acp.ContentBlock{},
+		}},
+	}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if err := sink.OnUpdate(ctx, acp.SessionNotification{}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if split.Transcript() != before {
+		t.Fatal("an empty update appended text")
+	}
+}
+
+func TestSinkHidesThinking(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	sink := newStreamingSink(split, true)
+	if err := sink.OnUpdate(context.Background(), thoughtNotification("secret", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if split.Transcript() != "" {
+		t.Fatalf("thought leaked: %q", split.Transcript())
+	}
+	// An empty thought renders nothing even when thoughts are shown.
+	sink2 := newStreamingSink(split, false)
+	if err := sink2.OnUpdate(context.Background(), thoughtNotification("", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if split.Transcript() != "" {
+		t.Fatalf("empty thought produced %q", split.Transcript())
+	}
+}
+
+func TestSinkHeaderOmittedWhenEmpty(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	sink := newStreamingSink(split, false)
+	if err := sink.OnUpdate(context.Background(), chunkNotification("plain", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if split.Transcript() != "plain" {
+		t.Fatalf("an empty status must add no header: %q", split.Transcript())
+	}
+}
+
+func TestOneLineCapsRunes(t *testing.T) {
+	long := strings.Repeat("漢", 300)
+	got := oneLine(long)
+	if r := []rune(got); len(r) != 201 || r[200] != '…' {
+		t.Fatalf("oneLine produced %d runes", len(r))
+	}
+	if !strings.HasPrefix(got, "漢") {
+		t.Fatal("multibyte prefix mangled")
+	}
+}
+
+// --- poster --------------------------------------------------------------
+
+func TestTopicPoster(t *testing.T) {
+	z := newZulip()
+	p := &topicPoster{client: z, streamID: 4, topic: "a topic"}
+	ctx := context.Background()
+	id, err := p.Post(ctx, "hello")
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if z.topics[id] != "a topic" {
+		t.Fatalf("topic = %q", z.topics[id])
+	}
+	if err := p.Edit(ctx, id, "goodbye"); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if z.body(id) != "goodbye" {
+		t.Fatalf("body = %q", z.body(id))
+	}
+}
+
+// TestFailTurnCannotReportIsLogged: when the agent fails AND Zulip is
+// also down, the relay logs and gives up rather than spinning.
+func TestFailTurnCannotReportIsLogged(t *testing.T) {
+	agent := newAgent("partial")
+	agent.err = errors.New("model exploded")
+	hh := newHarness(t, agent, nil)
+	hh.z.mu.Lock()
+	hh.z.sendErr = errors.New("zulip down")
+	hh.z.mu.Unlock()
+	hh.deliver(t, "t", mention("hi"))
+	if !hh.logged("reporting error into") {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+// TestWatchdogPublishesMidTurn pins the streaming property end to end:
+// the answer reaches Zulip while the agent is still working, and the
+// journal learns which message the relay owns before the turn ends.
+// That tail record is what makes crash recovery possible at all.
+func TestWatchdogPublishesMidTurn(t *testing.T) {
+	agent := newAgent("streamed mid-turn")
+	agent.hold = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stream to me"),
+			StreamID: 4, Topic: "streaming", Type: "stream",
+		},
+	})
+	// Wait until the streamed text is actually stored on the surface,
+	// while the agent's turn is still open.
+	deadline := time.After(10 * time.Second)
+	for {
+		if strings.Contains(hh.z.body(1), "streamed mid-turn") {
+			break
+		}
+		select {
+		case <-hh.z.posted:
+		case <-deadline:
+			t.Fatalf("nothing streamed mid-turn; body = %q", hh.z.body(1))
+		}
+	}
+	tails := hh.j.OpenTails()
+	if len(tails) != 1 || tails[0].TailID != 1 {
+		t.Fatalf("tail not recorded mid-turn: %+v", tails)
+	}
+	close(agent.hold)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if len(hh.j.OpenTails()) != 0 {
+		t.Fatal("tail not cleared after the turn")
+	}
+}

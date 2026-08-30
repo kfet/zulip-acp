@@ -460,3 +460,14 @@ func (c *Client) send(req *http.Request, out any) error {
 	}
 	return nil
 }
+
+// NarrowChannel builds the /register narrow entry for one channel.
+//
+// TRAP, measured on Zulip 12.2: the operand must be the channel NAME,
+// not its id. Passing the id as a string (`{"channel", "4"}`) is
+// accepted — POST /register returns a perfectly good queue_id — and
+// then delivers NOTHING, because Zulip matches the operand as a
+// channel name. There is no error at any layer; the relay simply
+// never receives an event. Use this helper rather than hand-rolling
+// the pair.
+func NarrowChannel(name string) [2]string { return [2]string{"channel", name} }

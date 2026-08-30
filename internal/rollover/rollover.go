@@ -120,6 +120,14 @@ type message struct {
 type Splitter struct {
 	cfg Config
 
+	// ioMu serialises every method that talks to the Poster. mu alone
+	// is not enough: Flush deliberately releases mu around each
+	// network call, so two concurrent Flushes (the coalescing
+	// watchdog and Close, say) could both observe the same unposted
+	// message and both Post it — a duplicate message on the surface.
+	// ioMu is always taken BEFORE mu, never the other way round.
+	ioMu sync.Mutex
+
 	mu  sync.Mutex
 	raw string
 	// sealedEnd is the byte offset in raw up to which text has been
@@ -177,6 +185,8 @@ func New(cfg Config) (*Splitter, error) {
 // any text has been appended, or more than once, is a programming
 // error and returns an error rather than orphaning a message.
 func (s *Splitter) Start(ctx context.Context, placeholder string) error {
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
 	s.mu.Lock()
 	if s.raw != "" || len(s.msgs) != 1 || s.msgs[0].id != 0 {
 		s.mu.Unlock()
@@ -233,6 +243,13 @@ func (s *Splitter) Pending() bool {
 // One Flush may post several messages: a single large chunk can seal
 // more than one.
 func (s *Splitter) Flush(ctx context.Context) error {
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
+	return s.flushLocked(ctx)
+}
+
+// flushLocked is Flush's body. Caller holds ioMu.
+func (s *Splitter) flushLocked(ctx context.Context) error {
 	s.mu.Lock()
 	pending := make([]*message, 0, len(s.msgs))
 	for _, m := range s.msgs {
@@ -271,13 +288,43 @@ func (s *Splitter) Flush(ctx context.Context) error {
 // never sees one and a placeholder posted by Start is always resolved.
 func (s *Splitter) Close(ctx context.Context, suffix string) error {
 	s.Append(suffix)
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
 	s.mu.Lock()
 	if strings.TrimSpace(s.raw) == "" {
 		s.raw = s.cfg.EmptyBody
 		s.replan()
 	}
 	s.mu.Unlock()
-	return s.Flush(ctx)
+	return s.flushLocked(ctx)
+}
+
+// UpdatePlaceholder rewrites the eager placeholder posted by Start
+// with a new frame, for an animated "thinking" indicator.
+//
+// It reports alive=false — and writes nothing — once any real text has
+// been appended, so the animation self-disarms the moment the agent
+// produces output and can never race a real edit back over it.
+func (s *Splitter) UpdatePlaceholder(ctx context.Context, frame string) (alive bool, err error) {
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
+	s.mu.Lock()
+	id := s.msgs[0].id
+	dead := s.raw != "" || id == 0 || len(s.msgs) > 1
+	s.mu.Unlock()
+	if dead {
+		return false, nil
+	}
+	if runes(frame) > s.cfg.Budget {
+		return true, fmt.Errorf("rollover: placeholder frame exceeds budget")
+	}
+	if err := s.cfg.Poster.Edit(ctx, id, frame); err != nil {
+		return true, err
+	}
+	s.mu.Lock()
+	s.msgs[0].written = frame
+	s.mu.Unlock()
+	return true, nil
 }
 
 // IDs returns the ids of every message posted so far, oldest first.
