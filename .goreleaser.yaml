@@ -1,0 +1,80 @@
+version: 2
+project_name: zulip-acp
+
+builds:
+  - main: ./cmd/zulip-acp/
+    binary: zulip-acp
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "6"
+    ignore:
+      - goos: darwin
+        goarch: arm   # no darwin/arm (32-bit); darwin/arm64 is Apple Silicon
+
+archives:
+  - formats: [binary]
+    name_template: "zulip-acp-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  extra_files:
+    - glob: LICENSE
+    - glob: THIRD_PARTY_NOTICES.md
+
+release:
+  github:
+    owner: kfet
+    name: zulip-acp
+  prerelease: auto
+  name_template: "zulip-acp {{.Version}}"
+  extra_files:
+    - glob: LICENSE
+    - glob: THIRD_PARTY_NOTICES.md
+
+# ---------------------------------------------------------------------------
+# Homebrew tap
+#
+# GoReleaser regenerates Formula/zulip-acp.rb on kfet/homebrew-ai on
+# every release (reusing fir's tap so users don't need a second tap).
+#
+# Users install with:
+#   brew install kfet/ai/zulip-acp
+# ---------------------------------------------------------------------------
+brews:
+  - name: zulip-acp
+    repository:
+      owner: kfet
+      name: homebrew-ai
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    url_template: "https://github.com/kfet/zulip-acp/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: "https://github.com/kfet/zulip-acp"
+    description: "HTTP relay between Poe server bots and ACP-speaking agents"
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "zulip-acp: update to {{ .Tag }}"
+    skip_upload: auto
+    test: |
+      system "#{bin}/zulip-acp", "--version"
+    # The downloaded artifact is named zulip-acp-<os>-<arch> (archives.formats=binary
+    # emits raw binaries, not tarballs), so `bin.install "zulip-acp"` fails
+    # with ENOENT. Glob the staged artifact and rename it on install.
+    install: |
+      bin.install Dir["zulip-acp-*"].first => "zulip-acp"
+
+changelog:
+  use: github-native

@@ -1,0 +1,30 @@
+# This is a template for the kfet/homebrew-ai tap.
+#
+# Formula/zulip-acp.rb in the tap is regenerated automatically by
+# GoReleaser on every kfet/zulip-acp tag push (see the brews: block
+# in .goreleaser.yaml). This file is kept in the main repo purely as a
+# reference — it is NOT the file Homebrew reads, and edits here do not
+# affect users.
+#
+# Users install with:
+#   brew install kfet/ai/zulip-acp
+#   (or: brew tap kfet/ai && brew install zulip-acp)
+
+class ZulipAcpRelay < Formula
+  desc "HTTP relay between Poe server bots and ACP-speaking agents"
+  homepage "https://github.com/kfet/zulip-acp"
+  license "MIT"
+
+  # GoReleaser replaces url, sha256, and version on each release.
+  url "https://github.com/kfet/zulip-acp/releases/download/v0.1.0/zulip-acp-#{OS}-#{ARCH}"
+  version "0.1.0"
+  sha256 "PLACEHOLDER"
+
+  def install
+    bin.install Dir["zulip-acp-*"].first => "zulip-acp"
+  end
+
+  test do
+    system bin/"zulip-acp", "--version"
+  end
+end

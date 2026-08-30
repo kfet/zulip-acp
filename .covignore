@@ -1,0 +1,20 @@
+# Coverage exclusions. Two shapes allowed:
+#
+#   1. Entry-point shims: cmd/<binary>/main.go is excluded wholesale.
+#      Keep main() to bare flag parsing, signal handling, and dependency
+#      assembly. Anything testable belongs in internal/* with 100% cov.
+#
+#   2. Per-package "must" helpers — files named `*_must.go` contain
+#      only panic helpers for error branches the production caller
+#      cannot trigger (kernel-level pipe allocation, fresh-tempdir
+#      failure, post-success Close, etc.). Each helper carries a doc
+#      comment justifying why it cannot be reached from a test, and
+#      panics rather than returning the impossible error so callers
+#      have no leftover `if err != nil` branch to cover.
+^github.com/kfet/zulip-acp/cmd/[^/]+/main\.go:
+_must\.go:
+
+# Live-server integration tests. Guarded by ZULIP_LIVE=1 and real
+# credentials; they are evidence about the SERVER, not about our code,
+# and must never run in CI or count against the gate.
+^github.com/kfet/zulip-acp/test/
