@@ -290,6 +290,43 @@ func (c *Client) GetMessage(ctx context.Context, id int64) (Message, error) {
 	return resp.Message, nil
 }
 
+// Emoji reaction error codes. Zulip reports both of these as failures
+// with HTTP 400, but for a relay that uses a reaction as a transient
+// ack they mean "already in the state you asked for" — the only sane
+// reading is success.
+const (
+	reactionAlreadyExists = "REACTION_ALREADY_EXISTS"
+	reactionDoesNotExist  = "REACTION_DOES_NOT_EXIST"
+)
+
+// AddReaction adds an emoji reaction to a message.
+//
+// The relay uses this as its only immediate acknowledgement: Zulip has
+// no typing indicator, and a reaction is retractable, so it can say "I
+// have your message" without leaving anything behind in the topic.
+//
+// Adding a reaction that is already there is treated as success.
+func (c *Client) AddReaction(ctx context.Context, messageID int64, emoji string) error {
+	return c.reaction(ctx, http.MethodPost, messageID, emoji, reactionAlreadyExists)
+}
+
+// RemoveReaction removes an emoji reaction previously added by this
+// bot. Removing one that is not there is treated as success.
+func (c *Client) RemoveReaction(ctx context.Context, messageID int64, emoji string) error {
+	return c.reaction(ctx, http.MethodDelete, messageID, emoji, reactionDoesNotExist)
+}
+
+func (c *Client) reaction(ctx context.Context, method string, messageID int64, emoji, benign string) error {
+	form := url.Values{"emoji_name": {emoji}}
+	path := "/messages/" + strconv.FormatInt(messageID, 10) + "/reactions"
+	err := c.do(ctx, method, path, nil, form, nil)
+	var ae *APIError
+	if asAPIError(err, &ae) && ae.Code == benign {
+		return nil
+	}
+	return err
+}
+
 // TopicMessages returns up to limit of the most recent messages in
 // (streamID, topic), oldest first, as raw markdown. Used to reconstruct
 // a turn and to find the tail message the relay owned before a crash.

@@ -113,6 +113,35 @@ Note that the **`/messages` narrow** takes objects with `operator`/`operand`,
 and a channel operand there **is** the numeric id. The `/register` narrow is a
 different shape with different semantics — see below.
 
+## Reactions
+
+Zulip has no typing indicator. A reaction on the user's own message is the
+closest thing: instant, invisible in the topic's message flow, and — crucially —
+**retractable**.
+
+```bash
+# add
+curl -u ... -X POST 'https://zulip.example/api/v1/messages/42/reactions' \
+  --data-urlencode 'emoji_name=eyes'
+
+# remove
+curl -u ... -X DELETE 'https://zulip.example/api/v1/messages/42/reactions' \
+  --data-urlencode 'emoji_name=eyes'
+```
+
+`emoji_name` alone is enough for a standard unicode emoji; `emoji_code` and
+`reaction_type` are only needed for custom realm emoji.
+
+Both calls are **idempotent in spirit but not in status**: adding a reaction
+that is already there fails with `REACTION_ALREADY_EXISTS`, removing one that
+is not there fails with `REACTION_DOES_NOT_EXIST`, both HTTP 400. For a relay
+that uses a reaction as a transient ack, both mean "already in the state you
+asked for" — `zulipproto` treats them as success.
+
+A reaction produces a `reaction` event on the queue. The relay registers only
+for `message` and `update_message`, and its event dispatch switches on the
+event type, so its own ack cannot be re-ingested.
+
 ## Events: `/register` + `/events`
 
 There is **no inbound HTTP**. The relay dials out only: no tunnel, no webhook,

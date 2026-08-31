@@ -71,6 +71,8 @@ type Poster interface {
 	EditMessage(ctx context.Context, id int64, content string) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
 	Upload(ctx context.Context, filename string, r io.Reader) (string, error)
+	AddReaction(ctx context.Context, messageID int64, emoji string) error
+	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
 }
 
 // Config configures a Handler.
@@ -114,6 +116,10 @@ type Config struct {
 	SilentSentinel string
 	// HideThinking suppresses thought chunks on the streamed path.
 	HideThinking bool
+
+	// AckEmoji is the emoji reaction placed on the triggering message
+	// for the duration of a turn. Empty disables the acknowledgement.
+	AckEmoji string
 
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
@@ -259,7 +265,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	go func() {
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, mentioned); err != nil {
+		if err := h.run(pctx, conv, prompt, mentioned, m.ID); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -267,18 +273,29 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 
 // run executes one agent turn end to end.
 //
-// Two shapes:
+// Every turn starts by reacting to the triggering message, which is
+// the only acknowledgement Zulip can give instantly without posting
+// anything: it costs no topic noise and it is retractable, so it is
+// safe even on a turn that ends in silence. The reaction is removed on
+// every exit path.
+//
+// Two shapes after that:
 //
 //   - Addressed (an @-mention): stream. An eager placeholder goes up
-//     immediately — Zulip has no typing indicator, so it is the only
-//     acknowledgement the user gets while a cold agent starts — and
-//     the answer is edited in as it arrives.
+//     immediately — Zulip has no typing indicator, so it is the first
+//     thing the user sees while a cold agent starts — and the answer
+//     is edited in as it arrives.
 //   - Ambient (a follow-up in an engaged topic, with a sentinel
-//     configured): buffer. The agent may decline, and a message that
-//     appears and then vanishes is worse on a phone than one that
-//     arrives a beat later, so nothing is posted until the verdict is
-//     in.
-func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool) error {
+//     configured): buffer, because the agent may decline and a message
+//     that appears and then vanishes is worse on a phone than one that
+//     arrives a beat later. The placeholder is NOT withheld until the
+//     end of the turn, though: sentinelWatch posts it the moment the
+//     streamed text can no longer become the sentinel, which is
+//     usually the first chunk. The answer itself still lands via the
+//     normal end-of-turn commit.
+func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64) error {
+	defer h.ack(ctx, msgID)()
+
 	post := &topicPoster{client: h.cfg.Client, streamID: conv.StreamID, topic: conv.Topic}
 	split, err := rollover.New(rollover.Config{
 		Poster:     post,
@@ -312,7 +329,17 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	var vs *client.ValidatingSink
 	if abstaining {
 		vs = client.NewValidatingSink(sink)
-		sinkFor = vs
+		// The abstain verdict is only final at the end of the turn,
+		// but the moment the streamed text stops being a prefix of the
+		// sentinel it is already known that a reply IS coming — so the
+		// placeholder can go up then instead of minutes later.
+		sinkFor = &sentinelWatch{next: vs, sentinel: h.cfg.SilentSentinel, onCommit: func() {
+			if err := split.Start(ctx, statusline.Thinking(sink.Status())); err != nil {
+				h.cfg.Logf("handler: placeholder post failed: %v", err)
+			}
+			h.trackTail(conv.ID, split)
+			go spinner(wctx, split, sink, spinnerInterval)
+		}}
 	}
 	sess, err = h.cfg.Sessions.GetOrCreate(ctx, conv.ID, sinkFor)
 	if err != nil {
@@ -370,6 +397,27 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	}
 	h.clearTail(conv.ID)
 	return cerr
+}
+
+// ack adds the in-flight reaction to the triggering message and
+// returns the func that removes it.
+//
+// Reactions are decoration: every failure is logged and swallowed, and
+// a turn is never failed because one did not stick. The removal runs
+// on a context detached from the turn's, so a cancelled or superseded
+// turn still cleans up after itself.
+func (h *Handler) ack(ctx context.Context, msgID int64) func() {
+	if h.cfg.AckEmoji == "" || msgID == 0 {
+		return func() {}
+	}
+	if err := h.cfg.Client.AddReaction(ctx, msgID, h.cfg.AckEmoji); err != nil {
+		h.cfg.Logf("handler: adding :%s: to message %d: %v", h.cfg.AckEmoji, msgID, err)
+	}
+	return func() {
+		if err := h.cfg.Client.RemoveReaction(context.WithoutCancel(ctx), msgID, h.cfg.AckEmoji); err != nil {
+			h.cfg.Logf("handler: removing :%s: from message %d: %v", h.cfg.AckEmoji, msgID, err)
+		}
+	}
 }
 
 // rescue is the last line of defence for the rule that matters most:

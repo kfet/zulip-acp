@@ -5,27 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 ### Added
+
+- **Immediate acknowledgement by emoji reaction.** The instant a message is
+  accepted for handling — mentioned *or* ambient — the relay reacts to it with
+  `:eyes:` and removes the reaction when the turn ends. Zulip has no typing
+  indicator, and a reaction is the only feedback that is instant, costs no
+  message in the topic, and can be retracted even when the turn ends in
+  silence. Configurable via `ack_emoji`; set it to `""` to disable. Reaction
+  failures are logged and never fail a turn, and removal runs on a detached
+  context so a cancelled or superseded turn still cleans up.
+- **Early `Thinking…` placeholder on the ambient path.** An ambient turn used
+  to post nothing at all until the agent's abstain verdict was in, which on a
+  long turn meant minutes of silence. The verdict is knowable much sooner: the
+  moment the streamed message text is non-empty and is no longer a prefix of
+  the silent sentinel, a reply is certain. A new `sentinelWatch` sink observes
+  the stream above acp-kit's `ValidatingSink` and puts the placeholder (and its
+  spinner) up at that point. The answer still lands via the normal end-of-turn
+  commit, so an abstaining turn still posts nothing.
 - `deploy` and `update` skills (`.fir/skills/`), modelled on poe-acp's, defining
   the canonical deployment layout: binary in `~/.local/bin`, config/env/state
   under `~/.config/zulip-acp/`, supervision by a systemd user unit, logs to
-  journald.
+  journald. The unit **must** set `Environment=PATH=%h/.local/bin:...`: systemd
+  user units do not inherit the login shell PATH, so the relay would otherwise
+  start, authenticate, resolve channels and then die with
+  `exec: "fir": executable file not found in $PATH`. The deploy skill also
+  documents the message gating rule (a new topic requires an @-mention;
+  already-engaged topics do not) — a non-mention in a fresh topic is dropped
+  silently with no log line, which is easily mistaken for a broken relay.
 - `packaging/systemd/zulip-acp.service` — ready-to-install unit template.
 - `docs/config.example.json`.
 - README "Deployment" section.
-
-### Notes
-- The unit **must** set `Environment=PATH=%h/.local/bin:...`: systemd user units
-  do not inherit the login shell PATH, so the relay would otherwise start,
-  authenticate, resolve channels and then die with
-  `exec: "fir": executable file not found in $PATH`.
-- The deploy skill now documents the message gating rule (new topic requires an
-  @-mention; already-engaged topics do not) — a non-mention in a fresh topic is
-  dropped silently with no log line, which is easily mistaken for a broken relay.
-
-## [Unreleased]
 
 ### Changed
 
@@ -36,11 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `BACKLOG.md`.
 - `.gitignore` brought to parity with the sibling relays (`.env`, `.envrc`,
   `*.local.json`, `.DS_Store`, `/.fir/`, `*.test`).
-
-### Added
-
-- `docs/config.example.json` and `packaging/systemd/zulip-acp.service`, both
-  previously untracked deployment scaffolding.
 
 ## [0.1.1] - 2026-08-31
 
