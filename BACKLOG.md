@@ -82,6 +82,27 @@ Things deliberately not done in v1, with the reason.
 
 ## Operational
 
+- **`brew install kfet/ai/zulip-acp` will 404 while this repo is private.** The
+  tap push now works (v0.1.1's formula is live on `kfet/homebrew-ai`, which is
+  public, with sha256s matching the published assets), but the `url` lines it
+  contains point at release assets in `kfet/zulip-acp`, and **release-asset
+  downloads from a private repo require authentication**. Verified: an
+  unauthenticated fetch of
+  `…/zulip-acp/releases/download/v0.1.1/zulip-acp-darwin-arm64` returns **HTTP
+  404**, where the equivalent `poe-acp` URL (public repo) returns 200.
+
+  So the formula is correct and the plumbing is proven, but it is not yet
+  installable. Two ways out, both the operator's call:
+  - **Make `kfet/zulip-acp` public**, like `poe-acp` and `slack-acp` already
+    are. Nothing further changes; the formula starts working immediately.
+  - **Keep it private** and have installers export a `HOMEBREW_GITHUB_API_TOKEN`
+    with read access. That works but is not "brew install and go", and the
+    formula sitting in a public tap advertises a download nobody else can
+    fetch.
+
+  Not decided here: repository visibility is not a change to make on someone's
+  behalf.
+
 - **`poe-acp` and `slack-acp` should migrate to this repo's deploy-key scheme
   for their Homebrew tap push.** Both still authenticate to `kfet/homebrew-ai`
   with a `HOMEBREW_TAP_TOKEN` personal access token. That is worse on three
