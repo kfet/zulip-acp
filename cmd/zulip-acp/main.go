@@ -194,6 +194,7 @@ func main() {
 		ContinuationMarker: cfg.ContinuationMarker,
 		SilentSentinel:     cfg.GetSilentSentinel(),
 		HideThinking:       cfg.HideThinking,
+		AckEmoji:           cfg.GetAckEmoji(),
 		Logf:               log.Printf,
 	})
 	if err != nil {

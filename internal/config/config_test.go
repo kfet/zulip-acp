@@ -240,3 +240,33 @@ func TestPathDefaults(t *testing.T) {
 		t.Fatalf("state dir = %q", got)
 	}
 }
+
+// TestAckEmoji pins the three-state field: unset means the default,
+// an explicit value is honoured, and an explicit "" disables the
+// acknowledgement entirely.
+func TestAckEmoji(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"unset defaults", `{}`, DefaultAckEmoji},
+		{"explicit value", `{"ack_emoji":"hourglass"}`, "hourglass"},
+		{"explicit empty disables", `{"ack_emoji":""}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetAckEmoji(); got != c.want {
+				t.Fatalf("GetAckEmoji() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

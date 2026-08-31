@@ -31,6 +31,11 @@ const (
 	// DefaultSilentSentinel matches slack-acp and poe-acp so one fir
 	// agent can serve every relay.
 	DefaultSilentSentinel = "<<SILENT>>"
+	// DefaultAckEmoji is the reaction the relay puts on a message the
+	// moment it accepts it for handling, and removes when the turn
+	// ends. Zulip has no typing indicator and a reaction is the only
+	// acknowledgement that costs no message and can be retracted.
+	DefaultAckEmoji = "eyes"
 )
 
 // Config is the operator-facing JSON config.
@@ -93,6 +98,13 @@ type Config struct {
 
 	// EditIntervalMs coalesces streaming edits. 0 = 300ms.
 	EditIntervalMs int `json:"edit_interval_ms,omitempty"`
+
+	// AckEmoji names the Zulip emoji reaction the relay adds to a
+	// message it has accepted, and removes when the turn ends.
+	// Unset = DefaultAckEmoji ("eyes"); an explicit "" disables the
+	// acknowledgement entirely. It is a pointer precisely so those two
+	// cases stay distinguishable.
+	AckEmoji *string `json:"ack_emoji,omitempty"`
 }
 
 // Load reads and validates the config file. Unknown fields are an
@@ -215,6 +227,15 @@ func (c *Config) GetSilentSentinel() string {
 		return DefaultSilentSentinel
 	}
 	return c.SilentSentinel
+}
+
+// GetAckEmoji returns the acknowledgement reaction emoji: the default
+// when unset, or the configured value — including "" for "disabled".
+func (c *Config) GetAckEmoji() string {
+	if c.AckEmoji == nil {
+		return DefaultAckEmoji
+	}
+	return *c.AckEmoji
 }
 
 // GetAgentCmd returns the configured agent argv or the default.

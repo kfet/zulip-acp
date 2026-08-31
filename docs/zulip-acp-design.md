@@ -131,14 +131,37 @@ of naming, never correctness.
 
 ### 3. Two turn shapes, because ambient turns may be declined
 
+Both shapes open the same way: the triggering message gets an emoji reaction
+(`ack_emoji`, default `:eyes:`) the moment it is accepted, removed on every
+exit path — success, error, abstain, cancellation. Zulip has no typing
+indicator, and a reaction is the only acknowledgement that is instant, adds
+nothing to the topic, and can be **retracted**, which is what makes it safe on
+a turn that may end in silence. Removal runs on a `context.WithoutCancel`
+context so a superseded turn still cleans up after itself, and every reaction
+call is non-fatal: a turn is never failed over decoration.
+
 - **Addressed** (an `@-mention`): stream. An eager placeholder goes up
-  immediately — Zulip has no typing indicator, and a cold agent takes seconds,
-  so it is the user's only acknowledgement — a spinner animates it, and a 300ms
+  immediately — a cold agent takes seconds — a spinner animates it, and a 300ms
   watchdog publishes the splitter's pending state.
 - **Ambient** (any message in a topic the relay has already engaged, with a
   sentinel configured): buffer. The turn runs through acp-kit's
-  `PromptAbstainable`, and nothing is posted until the agent's verdict is in.
-  Post-then-delete would ping the phone and then gaslight the reader.
+  `PromptAbstainable`, and the *answer* is not posted until the agent's verdict
+  is in. Post-then-delete would ping the phone and then gaslight the reader.
+
+  The **placeholder**, however, does not wait for the end of the turn. The
+  negative verdict is knowable far earlier: once the accumulated message text
+  is non-empty and is no longer a prefix of the sentinel, no continuation of
+  the stream can ever equal it, so a reply is certain. `handler.sentinelWatch`
+  sits above the `ValidatingSink`, observes `AgentMessageChunk` text, and fires
+  exactly once on divergence to post the placeholder and start the spinner. It
+  deliberately does **not** call `ValidatingSink.Commit`: `Commit` resets the
+  accumulated text, which would make `PromptAbstainable` see `""` and declare a
+  false abstain. The prefix test is on trimmed text, so the leading newlines
+  some agents emit before the sentinel do not read as a reply.
+
+  Streaming the answer itself live on the ambient path needs an acp-kit change
+  (a `ValidatingSink.Release` that flushes and switches to pass-through); see
+  BACKLOG.md.
 
 Thought chunks are **force-hidden** on the ambient path regardless of
 `hide_thinking`: a thought that reached the surface before the verdict could not

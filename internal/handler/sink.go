@@ -7,6 +7,8 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/kfet/acp-kit/client"
+
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
 )
@@ -100,6 +102,64 @@ func (s *streamingSink) maybePrependHeader(t string) string {
 	}
 	return h + "\n" + t
 }
+
+// --- sentinel watch ------------------------------------------------------
+
+// sentinelWatch sits ABOVE acp-kit's ValidatingSink on the ambient
+// path and answers one question early: is a reply coming at all?
+//
+// The abstain verdict is normally only known at the end of the turn,
+// because PromptAbstainable compares the COMPLETE message against the
+// sentinel. But the negative verdict is knowable far sooner: once the
+// accumulated text is non-empty and is no longer a prefix of the
+// sentinel, no continuation of the stream can ever equal it, so a
+// reply is certain. That is the moment onCommit fires — exactly once
+// per turn — and the relay can put its "Thinking…" placeholder up
+// instead of leaving the topic silent for minutes.
+//
+// It only observes. Every update is delegated to next unchanged, and
+// the buffered answer still lands via the normal end-of-turn commit:
+// calling Commit here would reset the ValidatingSink's text and make
+// PromptAbstainable declare a false abstain.
+type sentinelWatch struct {
+	next     client.SessionUpdateSink
+	sentinel string
+	// onCommit runs on the sink goroutine, at most once per turn.
+	onCommit func()
+
+	mu    sync.Mutex
+	acc   strings.Builder
+	fired bool
+}
+
+// OnUpdate implements client.SessionUpdateSink.
+func (w *sentinelWatch) OnUpdate(ctx context.Context, n acp.SessionNotification) error {
+	if c := n.Update.AgentMessageChunk; c != nil && c.Content.Text != nil {
+		w.observe(c.Content.Text.Text)
+	}
+	return w.next.OnUpdate(ctx, n)
+}
+
+// observe accumulates message text and reports divergence from the
+// sentinel. The comparison is on TRIMMED text so the leading newlines
+// some agents emit before the sentinel do not read as a reply.
+func (w *sentinelWatch) observe(delta string) {
+	w.mu.Lock()
+	if w.fired {
+		w.mu.Unlock()
+		return
+	}
+	w.acc.WriteString(delta)
+	t := strings.TrimSpace(w.acc.String())
+	diverged := t != "" && !strings.HasPrefix(strings.TrimSpace(w.sentinel), t)
+	w.fired = diverged
+	w.mu.Unlock()
+	if diverged && w.onCommit != nil {
+		w.onCommit()
+	}
+}
+
+// --- rendering -----------------------------------------------------------
 
 // renderChunk converts a session update into Zulip-bound text, or ""
 // when the update produces nothing user-visible.

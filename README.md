@@ -78,11 +78,17 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 
 ## How it behaves
 
+- **Immediate acknowledgement.** Zulip has no typing indicator, so the moment
+  the relay accepts a message it reacts to it with `:eyes:`, and removes the
+  reaction when the turn ends. It costs nothing in the topic and is retracted
+  even when the turn ends in silence.
 - **`@`-mention** in a topic the relay does not know → starts a conversation,
   and the answer **streams** into a single message that is edited as it arrives.
 - **Any message** in a topic the relay has already engaged → answered too. If
   the agent decides the message was not for it, it emits the silent sentinel and
-  the relay posts nothing at all.
+  the relay posts nothing at all. Otherwise a `Thinking…` placeholder goes up as
+  soon as the streamed text can no longer *be* the sentinel — usually the first
+  chunk — and the answer replaces it when the turn completes.
 - **Answers over ~9500 characters roll over** into further messages, marked
   `*(continued below)*` / `*(continued from above)*`. Fenced code blocks are
   closed and reopened, with their language tag, across the seam. **No text is
@@ -119,6 +125,7 @@ Every key is optional except the credentials and `channels`.
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
+| `ack_emoji` | `eyes` | emoji reaction added to a message while its turn runs; `""` disables |
 
 The API key is declared as a secret and is **scrubbed from the agent's
 environment** before the child process starts.

@@ -4,6 +4,17 @@ Things deliberately not done in v1, with the reason.
 
 ## acp-kit promotion candidates
 
+- **`ValidatingSink.Release` — live streaming on the ambient path ("Tier 2").**
+  `zulip-acp` now posts a `Thinking…` placeholder as soon as the streamed text
+  diverges from the silent sentinel (`handler.sentinelWatch`), but the answer
+  itself still lands in one lump at the end of the turn, because
+  `ValidatingSink` buffers every `AgentMessageChunk` until `Commit`. The fix
+  belongs in acp-kit, not here: add a `Release(ctx)` that flushes what is
+  buffered and switches the sink to pass-through, so a caller that has proved
+  abstention impossible can stream the rest live. `PromptAbstainable` would
+  then treat a released sink as "answered". Every relay gets it at once.
+  Deliberately out of scope of the change that added the placeholder.
+
 - **`internal/rollover` → `acp-kit/chunker`.** The splitter is written with
   zero Zulip imports precisely so it can move. It is not promoted in v1: a
   new, unproven design earns its API in one consumer first. Promote once a

@@ -549,3 +549,67 @@ func TestUsersError(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestReactions(t *testing.T) {
+	cases := []struct {
+		name    string
+		add     bool
+		status  int
+		body    string
+		method  string
+		wantErr string
+	}{
+		{name: "add ok", add: true, status: 200, body: okJSON(""), method: http.MethodPost},
+		{name: "remove ok", status: 200, body: okJSON(""), method: http.MethodDelete},
+		{
+			name: "add is idempotent", add: true, status: 400, method: http.MethodPost,
+			body: `{"result":"error","msg":"Reaction already exists.","code":"REACTION_ALREADY_EXISTS"}`,
+		},
+		{
+			name: "remove is idempotent", status: 400, method: http.MethodDelete,
+			body: `{"result":"error","msg":"Reaction doesn't exist.","code":"REACTION_DOES_NOT_EXIST"}`,
+		},
+		{
+			name: "add surfaces a real error", add: true, status: 400, method: http.MethodPost,
+			body:    `{"result":"error","msg":"Emoji 'nope' does not exist.","code":"BAD_REQUEST"}`,
+			wantErr: "does not exist",
+		},
+		{
+			name: "remove surfaces a real error", status: 404, method: http.MethodDelete,
+			body:    `{"result":"error","msg":"Invalid message(s)","code":"BAD_REQUEST"}`,
+			wantErr: "Invalid message",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts := newServer(t, func(recordedReq) (int, string) { return c.status, c.body })
+			cl := newClient(t, ts)
+			var err error
+			if c.add {
+				err = cl.AddReaction(context.Background(), 77, "eyes")
+			} else {
+				err = cl.RemoveReaction(context.Background(), 77, "eyes")
+			}
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Fatalf("error = %v, want containing %q", err, c.wantErr)
+			}
+			reqs := ts.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("requests = %d, want 1", len(reqs))
+			}
+			r := reqs[0]
+			if r.method != c.method {
+				t.Fatalf("method = %s, want %s", r.method, c.method)
+			}
+			if r.path != "/api/v1/messages/77/reactions" {
+				t.Fatalf("path = %s", r.path)
+			}
+			if got := r.form.Get("emoji_name"); got != "eyes" {
+				t.Fatalf("emoji_name = %q", got)
+			}
+		})
+	}
+}

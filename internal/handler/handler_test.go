@@ -42,6 +42,11 @@ type fakeZulip struct {
 	editErr  error
 	getErr   error
 	uploadEr error
+	// reactAdd/reactDel record every reaction call, in order, as
+	// "<messageID>:<emoji>".
+	reactAdd []string
+	reactDel []string
+	reactErr error
 	// posted is signalled after every Post or Edit, so tests can
 	// synchronise on surface state instead of polling a clock.
 	posted chan struct{}
@@ -116,6 +121,26 @@ func (z *fakeZulip) Upload(_ context.Context, filename string, r io.Reader) (str
 	}
 	z.uploads[filename] = b
 	return "/user_uploads/2/ab/" + filename, nil
+}
+
+func (z *fakeZulip) AddReaction(_ context.Context, id int64, emoji string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.reactAdd = append(z.reactAdd, fmt.Sprintf("%d:%s", id, emoji))
+	return z.reactErr
+}
+
+func (z *fakeZulip) RemoveReaction(_ context.Context, id int64, emoji string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.reactDel = append(z.reactDel, fmt.Sprintf("%d:%s", id, emoji))
+	return z.reactErr
+}
+
+func (z *fakeZulip) reactions() (added, removed []string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return append([]string(nil), z.reactAdd...), append([]string(nil), z.reactDel...)
 }
 
 func (z *fakeZulip) stored() []string {
@@ -658,9 +683,10 @@ func TestAmbientAnswerIsPostedInOneMessage(t *testing.T) {
 	if strings.Contains(body, "pondering") {
 		t.Fatalf("thought leaked past the abstain verdict: %q", body)
 	}
-	// No eager placeholder on the ambient path.
+	// The placeholder that went up mid-turn is the SAME message the
+	// answer landed in — it is edited, never appended to.
 	if strings.Contains(body, "Thinking") {
-		t.Fatalf("ambient turn posted a placeholder: %q", body)
+		t.Fatalf("placeholder survived into the answer: %q", body)
 	}
 }
 
@@ -1637,4 +1663,335 @@ func TestSupersededTurnReadsAsSuperseded(t *testing.T) {
 	if strings.Contains(all, "context canceled") {
 		t.Fatalf("raw cancellation leaked to the surface: %q", all)
 	}
+}
+
+// --- sentinel watch ------------------------------------------------------
+
+// chunkSplits returns the same text as: one chunk, one rune per chunk,
+// and split in the middle. A prefix scanner that is right for one
+// splitting and wrong for another is not a scanner.
+func chunkSplits(s string) [][]string {
+	one := []string{s}
+	if s == "" {
+		one = nil
+	}
+	var runes []string
+	for _, r := range s {
+		runes = append(runes, string(r))
+	}
+	half := []string{s}
+	if n := len([]rune(s)); n > 1 {
+		r := []rune(s)
+		half = []string{string(r[:n/2]), string(r[n/2:])}
+	}
+	return [][]string{one, runes, half}
+}
+
+func TestSentinelWatch(t *testing.T) {
+	const sentinel = "<<SILENT>>"
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"exact sentinel never fires", sentinel, false},
+		{"sentinel with surrounding whitespace never fires", "\n\n  " + sentinel + "\n", false},
+		{"empty stream never fires", "", false},
+		{"whitespace only never fires", "   \n\t", false},
+		{"a normal answer fires", "here is the answer", true},
+		{"sentinel prefix that diverges fires", "<<SILENTLY ignoring that>>", true},
+		{"sentinel plus trailing text fires", sentinel + " actually, wait", true},
+		{"leading whitespace then an answer fires", "\n\n  hello", true},
+	}
+	for _, c := range cases {
+		for i, chunks := range chunkSplits(c.text) {
+			t.Run(fmt.Sprintf("%s/%d", c.name, i), func(t *testing.T) {
+				var fired int
+				down := &capturingSink{}
+				w := &sentinelWatch{next: down, sentinel: sentinel, onCommit: func() { fired++ }}
+				for _, ch := range chunks {
+					if err := w.OnUpdate(context.Background(), chunkNotification(ch, nil)); err != nil {
+						t.Fatalf("OnUpdate: %v", err)
+					}
+				}
+				// Non-message updates are delegated and never observed.
+				if err := w.OnUpdate(context.Background(), thoughtNotification("thinking", nil)); err != nil {
+					t.Fatalf("OnUpdate: %v", err)
+				}
+				want := 0
+				if c.want {
+					want = 1
+				}
+				if fired != want {
+					t.Fatalf("onCommit fired %d times, want %d", fired, want)
+				}
+				if got := len(down.got); got != len(chunks)+1 {
+					t.Fatalf("delegated %d updates, want %d", got, len(chunks)+1)
+				}
+			})
+		}
+	}
+}
+
+// TestSentinelWatchWithoutCallback covers the nil-onCommit guard: the
+// watch must be usable as a pure pass-through.
+func TestSentinelWatchWithoutCallback(t *testing.T) {
+	down := &capturingSink{}
+	w := &sentinelWatch{next: down, sentinel: "<<SILENT>>"}
+	if err := w.OnUpdate(context.Background(), chunkNotification("an answer", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	// A chunk with no text block at all is delegated but not observed.
+	if err := w.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{}},
+	}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if len(down.got) != 2 {
+		t.Fatalf("delegated %d updates, want 2", len(down.got))
+	}
+}
+
+// capturingSink records what a sink wrapper delegated downstream.
+type capturingSink struct {
+	mu  sync.Mutex
+	got []acp.SessionNotification
+}
+
+func (c *capturingSink) OnUpdate(_ context.Context, n acp.SessionNotification) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.got = append(c.got, n)
+	return nil
+}
+
+// TestAmbientPlaceholderGoesUpBeforeTheTurnEnds is the whole point of
+// sentinelWatch: the user must see something while the agent is still
+// working, not only when it finishes.
+func TestAmbientPlaceholderGoesUpBeforeTheTurnEnds(t *testing.T) {
+	agent := newAgent("first")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+
+	agent.mu.Lock()
+	agent.chunks = []string{"working on it"}
+	agent.hold = make(chan struct{})
+	agent.mu.Unlock()
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			ID: 2, SenderID: humanID, SenderName: "Kfet", Content: "and what about X?",
+			StreamID: 4, Topic: "t", Type: "stream",
+		},
+	})
+	deadline := time.After(10 * time.Second)
+	for hh.z.count() < 2 {
+		select {
+		case <-hh.z.posted:
+		case <-deadline:
+			t.Fatal("no placeholder posted while the ambient turn was still running")
+		}
+	}
+	if body := hh.z.body(2); !strings.Contains(body, "Thinking") {
+		t.Fatalf("placeholder body = %q", body)
+	}
+	if tails := hh.j.OpenTails(); len(tails) != 1 || tails[0].TailID != 2 {
+		t.Fatalf("tail not recorded for the early placeholder: %+v", tails)
+	}
+
+	close(agent.hold)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if body := hh.z.body(2); !strings.Contains(body, "working on it") {
+		t.Fatalf("answer not delivered into the placeholder: %q", body)
+	}
+	if hh.z.count() != 2 {
+		t.Fatalf("answer landed in a new message instead of the placeholder: %v", hh.z.stored())
+	}
+}
+
+// TestAmbientPlaceholderFailureIsNonFatal drives the early-placeholder
+// error branch: the post fails, the turn still answers.
+func TestAmbientPlaceholderFailureIsNonFatal(t *testing.T) {
+	agent := newAgent("first")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+
+	hh.z.mu.Lock()
+	hh.z.sendErr = errors.New("zulip down")
+	hh.z.mu.Unlock()
+	agent.mu.Lock()
+	agent.chunks = []string{"an answer"}
+	agent.mu.Unlock()
+	hh.deliver(t, "t", "follow up")
+
+	if !hh.logged("placeholder post failed") {
+		t.Fatalf("expected the placeholder failure to be logged: %v", hh.logs)
+	}
+}
+
+// --- acknowledgement reaction -------------------------------------------
+
+func TestAckReaction(t *testing.T) {
+	cases := []struct {
+		name  string
+		tune  func(*Config)
+		setup func(*harness, *fakeAgent)
+		// second is the ambient follow-up text; the first turn is
+		// always an @-mention.
+		second   string
+		wantAdd  []string
+		wantDel  []string
+		wantLogs []string
+	}{
+		{
+			name:    "addressed turn",
+			tune:    func(c *Config) { c.AckEmoji = "eyes" },
+			second:  "",
+			wantAdd: []string{"1:eyes"},
+			wantDel: []string{"1:eyes"},
+		},
+		{
+			name: "ambient abstain still retracts",
+			tune: func(c *Config) { c.AckEmoji = "eyes" },
+			setup: func(_ *harness, a *fakeAgent) {
+				a.mu.Lock()
+				a.chunks = []string{"<<SILENT>>"}
+				a.mu.Unlock()
+			},
+			second:  "chatter",
+			wantAdd: []string{"1:eyes", "1:eyes"},
+			wantDel: []string{"1:eyes", "1:eyes"},
+		},
+		{
+			name: "agent error still retracts",
+			tune: func(c *Config) { c.AckEmoji = "eyes" },
+			setup: func(_ *harness, a *fakeAgent) {
+				a.mu.Lock()
+				a.err = errors.New("agent exploded")
+				a.mu.Unlock()
+			},
+			second:  "follow up",
+			wantAdd: []string{"1:eyes", "1:eyes"},
+			wantDel: []string{"1:eyes", "1:eyes"},
+		},
+		{
+			name: "reaction failures are non-fatal",
+			tune: func(c *Config) { c.AckEmoji = "eyes" },
+			setup: func(hh *harness, _ *fakeAgent) {
+				hh.z.mu.Lock()
+				hh.z.reactErr = errors.New("no such emoji")
+				hh.z.mu.Unlock()
+			},
+			wantAdd:  []string{"1:eyes"},
+			wantDel:  []string{"1:eyes"},
+			wantLogs: []string{"adding :eyes:", "removing :eyes:"},
+		},
+		{
+			name: "empty emoji disables the feature",
+			tune: func(c *Config) { c.AckEmoji = "" },
+		},
+		{
+			name:    "custom emoji is honoured",
+			tune:    func(c *Config) { c.AckEmoji = "hourglass" },
+			wantAdd: []string{"1:hourglass"},
+			wantDel: []string{"1:hourglass"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			agent := newAgent("an answer")
+			hh := newHarness(t, agent, c.tune)
+			if c.setup != nil {
+				c.setup(hh, agent)
+			}
+			hh.deliver(t, "t", mention("hi"))
+			if c.second != "" {
+				hh.deliver(t, "t", c.second)
+			}
+			add, del := hh.z.reactions()
+			if !equalStrings(add, c.wantAdd) {
+				t.Fatalf("added = %v, want %v", add, c.wantAdd)
+			}
+			if !equalStrings(del, c.wantDel) {
+				t.Fatalf("removed = %v, want %v", del, c.wantDel)
+			}
+			for _, want := range c.wantLogs {
+				if !hh.logged(want) {
+					t.Fatalf("missing log %q in %v", want, hh.logs)
+				}
+			}
+		})
+	}
+}
+
+// TestAckReactionSurvivesCancellation pins the WithoutCancel: a turn
+// superseded by a follow-up must still take its reaction back off.
+func TestAckReactionSurvivesCancellation(t *testing.T) {
+	agent := newAgent("slow answer")
+	agent.block = make(chan struct{})
+	hh := newHarness(t, agent, func(c *Config) { c.AckEmoji = "eyes" })
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			ID: 7, SenderID: humanID, SenderName: "Kfet", Content: mention("slow please"),
+			StreamID: 4, Topic: "t", Type: "stream",
+		},
+	})
+	<-agent.entered
+
+	agent.mu.Lock()
+	agent.block = nil
+	agent.mu.Unlock()
+	hh.deliver(t, "t", mention("never mind"))
+
+	add, del := hh.z.reactions()
+	if len(add) != 2 || len(del) != 2 {
+		t.Fatalf("reactions: added %v, removed %v — a cancelled turn left its ack behind", add, del)
+	}
+}
+
+// TestReactionEventsAreIgnored pins the loop guard: the relay's own
+// ack reaction produces a `reaction` event, and re-ingesting it would
+// start a turn per turn, forever.
+func TestReactionEventsAreIgnored(t *testing.T) {
+	agent := newAgent("must not run")
+	hh := newHarness(t, agent, func(c *Config) { c.AckEmoji = "eyes" })
+	// Engage the topic first, so ambient gating cannot be what saves us.
+	hh.deliver(t, "t", mention("hi"))
+	before := hh.z.count()
+
+	for _, ev := range []zulipproto.Event{
+		{Type: "reaction", MessageID: 1, StreamID: 4, Topic: "t"},
+		{Type: "reaction", MessageID: 1, StreamID: 4, Topic: "t", Message: &zulipproto.Message{
+			ID: 1, SenderID: humanID, SenderName: "Kfet", Content: "hi", StreamID: 4, Topic: "t", Type: "stream",
+		}},
+	} {
+		hh.h.Handle(context.Background(), ev)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if hh.z.count() != before {
+		t.Fatalf("a reaction event started a turn: %v", hh.z.stored())
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
