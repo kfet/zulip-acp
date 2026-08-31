@@ -11,7 +11,7 @@
 #   (or: brew tap kfet/ai && brew install zulip-acp)
 
 class ZulipAcpRelay < Formula
-  desc "HTTP relay between Poe server bots and ACP-speaking agents"
+  desc "Relay between a self-hosted Zulip server and ACP-speaking agents"
   homepage "https://github.com/kfet/zulip-acp"
   license "MIT"
 

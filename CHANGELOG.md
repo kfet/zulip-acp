@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-31
+
+### Changed
+
+- The Homebrew tap push now authenticates with an ssh **write deploy key** on
+  `kfet/homebrew-ai` (`HOMEBREW_TAP_SSH_KEY`) instead of a personal access
+  token. A deploy key is scoped to one repository and does not expire, where a
+  fine-grained PAT is account-wide, opaque once created, and capped at a
+  one-year lifetime — it breaks silently, later. `skip_upload` keys off the
+  new secret, so an unconfigured clone still skips the tap rather than failing
+  the release.
+
+### Fixed
+
+- The Homebrew formula's `desc` said "HTTP relay between Poe server bots and
+  ACP-speaking agents" — inherited verbatim when the release scaffolding was
+  mirrored from `poe-acp`, and about to be published to a user-facing tap for
+  the first time.
+
 ## [0.1.0] - 2026-08-30
 
 ### Added
@@ -50,5 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kfet/zulip-acp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kfet/zulip-acp/releases/tag/v0.1.0

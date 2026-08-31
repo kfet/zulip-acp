@@ -53,25 +53,39 @@ release:
 # ---------------------------------------------------------------------------
 brews:
   - name: zulip-acp
+    # Pushed over ssh with a WRITE deploy key on kfet/homebrew-ai,
+    # rather than with a personal access token. A deploy key is scoped
+    # to exactly one repository and does not expire, where a
+    # fine-grained PAT is account-wide, opaque once created, and
+    # capped at a one-year lifetime — i.e. it breaks silently, later.
+    #
+    # private_key takes the key CONTENTS (GoReleaser writes them to a
+    # temp file itself), not a path.
     repository:
       owner: kfet
       name: homebrew-ai
       branch: main
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      git:
+        url: 'git@github.com:kfet/homebrew-ai.git'
+        private_key: '{{ index .Env "HOMEBREW_TAP_SSH_KEY" }}'
     directory: Formula
     url_template: "https://github.com/kfet/zulip-acp/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: "https://github.com/kfet/zulip-acp"
-    description: "HTTP relay between Poe server bots and ACP-speaking agents"
+    description: "Relay between a self-hosted Zulip server and ACP-speaking agents"
     license: MIT
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
     commit_msg_template: "zulip-acp: update to {{ .Tag }}"
-    # Skip the tap push when no token is configured, instead of failing
+    # Skip the tap push when no key is configured, instead of failing
     # the whole release. A fresh clone or a fork has no
-    # HOMEBREW_TAP_TOKEN, and a missing formula update is not a reason
-    # to withhold the binaries. "auto" additionally skips prereleases.
-    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_TOKEN") "" }}true{{ else }}auto{{ end }}'
+    # HOMEBREW_TAP_SSH_KEY, and a missing formula update is not a
+    # reason to withhold the binaries. "auto" additionally skips
+    # prereleases.
+    #
+    # index .Env rather than .Env.X so an entirely unset variable is an
+    # empty string instead of a template error.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_SSH_KEY") "" }}true{{ else }}auto{{ end }}'
     test: |
       system "#{bin}/zulip-acp", "--version"
     # The downloaded artifact is named zulip-acp-<os>-<arch> (archives.formats=binary

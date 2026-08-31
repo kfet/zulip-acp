@@ -82,6 +82,28 @@ Things deliberately not done in v1, with the reason.
 
 ## Operational
 
+- **`poe-acp` and `slack-acp` should migrate to this repo's deploy-key scheme
+  for their Homebrew tap push.** Both still authenticate to `kfet/homebrew-ai`
+  with a `HOMEBREW_TAP_TOKEN` personal access token. That is worse on three
+  counts, and the third one is a scheduled outage:
+  - **Unreadable.** A GitHub secret is write-only, so nobody can inspect what
+    those PATs actually are without rotating them.
+  - **Unknown scope.** A classic PAT with `repo` is account-wide: it can write
+    every repository the account can, not just the tap. A deploy key cannot
+    leave the one repo it is attached to.
+  - **They expire.** Fine-grained PATs are capped at a one-year lifetime, and
+    a classic PAT may have been created with any expiry at all. When it lapses
+    the release job fails at the formula step — or, worse, silently stops
+    updating the tap — long after anyone remembers why.
+
+  `zulip-acp` uses a write **deploy key** on `kfet/homebrew-ai` instead
+  (`.goreleaser.yaml` `brews[].repository.git`, secret `HOMEBREW_TAP_SSH_KEY`):
+  repo-scoped, non-expiring, and revocable on its own without touching anything
+  else. The migration is a three-line diff per repo plus one secret, and each
+  needs its **own** key — sharing one across repos would re-create the
+  blast-radius problem the change exists to remove. Not done here: this task is
+  scoped to `zulip-acp`, and those repos are not to be touched from it.
+
 - **Mobile push notifications are OFF.** Self-hosted Zulip cannot push to iOS
   without registering with Zulip's Mobile Push Notification Service, which
   sees notification metadata (sender/channel/topic/volume). That is an
