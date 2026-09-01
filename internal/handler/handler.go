@@ -65,6 +65,16 @@ type Sessions interface {
 	TakePendingSystemPrompt(s *state.Session) string
 }
 
+// ChannelSet is the relay's channel allowlist: it answers Name for a
+// served channel and reports false for every other one.
+//
+// It is an interface rather than a map because the set may be static
+// (an explicit `channels` list) or live (the "*" sentinel, following
+// the bot's subscriptions); see internal/channels.
+type ChannelSet interface {
+	Name(streamID int64) (string, bool)
+}
+
 // Poster is the Zulip surface the handler writes to.
 type Poster interface {
 	SendMessage(ctx context.Context, streamID int64, topic, content string) (int64, error)
@@ -96,9 +106,11 @@ type Config struct {
 	// caught by the SenderRealm check instead.
 	BotSenderIDs map[int64]struct{}
 
-	// Channels is the resolved allowlist: stream id → channel name.
-	// The relay answers nowhere else.
-	Channels map[int64]string
+	// Channels is the served-channel allowlist. The relay answers
+	// nowhere else. It is consulted per event rather than snapshotted,
+	// because a set that follows the bot's subscriptions changes
+	// underfoot while the relay runs.
+	Channels ChannelSet
 	// AllowedUsers, if non-nil, restricts who the relay answers.
 	AllowedUsers map[int64]struct{}
 
@@ -143,6 +155,9 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Client == nil || cfg.Agent == nil || cfg.Sessions == nil || cfg.Journal == nil {
 		return nil, fmt.Errorf("handler: Client, Agent, Sessions and Journal are all required")
 	}
+	if cfg.Channels == nil {
+		return nil, fmt.Errorf("handler: Channels is required — a relay with no channel allowlist would answer the whole realm")
+	}
 	if cfg.PromptTimeout <= 0 {
 		cfg.PromptTimeout = 10 * time.Minute
 	}
@@ -175,7 +190,11 @@ func (h *Handler) handleUpdate(ev zulipproto.Event) {
 	if ev.OrigTopic == "" || ev.Topic == "" || ev.OrigTopic == ev.Topic {
 		return
 	}
-	if _, ok := h.cfg.Channels[ev.StreamID]; !ok {
+	// A rename in a channel that has since left the served set is
+	// dropped. The topic is truth and the journal is a cache, so the
+	// worst case is a stale entry the next message in the new topic
+	// supersedes.
+	if _, ok := h.cfg.Channels.Name(ev.StreamID); !ok {
 		return
 	}
 	c, moved, err := h.cfg.Journal.Rename(ev.StreamID, ev.OrigTopic, ev.Topic)
@@ -216,7 +235,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		h.cfg.Logf("handler: ignoring non-channel message %d", m.ID)
 		return
 	}
-	if _, ok := h.cfg.Channels[m.StreamID]; !ok {
+	if _, ok := h.cfg.Channels.Name(m.StreamID); !ok {
 		return
 	}
 	if h.cfg.AllowedUsers != nil {
@@ -248,7 +267,8 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 			h.cfg.Logf("handler: allocate conversation for %q: %v", m.Topic, err)
 			return
 		}
-		h.cfg.Logf("handler: new conversation %s in #%s > %q", conv.ID, h.cfg.Channels[m.StreamID], m.Topic)
+		channel, _ := h.cfg.Channels.Name(m.StreamID)
+		h.cfg.Logf("handler: new conversation %s in #%s > %q", conv.ID, channel, m.Topic)
 	}
 
 	prompt := h.stripMention(text)

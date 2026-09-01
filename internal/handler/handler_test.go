@@ -17,6 +17,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/state"
+	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
@@ -356,7 +357,7 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 		Journal:        j,
 		BotUserID:      botID,
 		BotFullName:    botName,
-		Channels:       map[int64]string{4: "fleet"},
+		Channels:       channels.New(channels.Config{Explicit: map[int64]string{4: "fleet"}}),
 		EditInterval:   time.Millisecond,
 		SilentSentinel: "<<SILENT>>",
 		Logf: func(format string, args ...any) {
@@ -424,7 +425,11 @@ func TestNewValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("journal: %v", err)
 	}
-	h, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j})
+	if _, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j}); err == nil {
+		t.Fatal("want error on missing channel allowlist")
+	}
+	set := channels.New(channels.Config{Explicit: map[int64]string{4: "fleet"}})
+	h, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j, Channels: set})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -435,7 +440,7 @@ func TestNewValidation(t *testing.T) {
 	if h.sealMarker() != rollover.DefaultSealMarker {
 		t.Fatalf("seal marker = %q", h.sealMarker())
 	}
-	h2, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j, SealMarker: "~fin~"})
+	h2, err := New(Config{Client: z, Agent: a, Sessions: s, Journal: j, Channels: set, SealMarker: "~fin~"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -612,7 +617,7 @@ func TestNewTopicIsANewSession(t *testing.T) {
 // (stream_id, topic), never topic alone.
 func TestSameTopicInTwoChannelsAreTwoSessions(t *testing.T) {
 	hh := newHarness(t, newAgent("ok"), func(c *Config) {
-		c.Channels = map[int64]string{4: "fleet", 5: "ops"}
+		c.Channels = channels.New(channels.Config{Explicit: map[int64]string{4: "fleet", 5: "ops"}})
 	})
 	for _, stream := range []int64{4, 5} {
 		hh.h.Handle(context.Background(), zulipproto.Event{
@@ -630,6 +635,61 @@ func TestSameTopicInTwoChannelsAreTwoSessions(t *testing.T) {
 	}
 	if len(hh.s.sessions) != 2 {
 		t.Fatalf("%d sessions, want 2", len(hh.s.sessions))
+	}
+}
+
+// TestFollowedChannelSetGatesAtRuntime is the end of the "*" story
+// inside the handler: the allowlist is consulted per event, so a
+// channel the bot is subscribed to mid-run starts being served, and an
+// unsubscribe stops it — with no restart and no config edit.
+func TestFollowedChannelSetGatesAtRuntime(t *testing.T) {
+	set := channels.New(channels.Config{Follow: true})
+	hh := newHarness(t, newAgent("ok"), func(c *Config) { c.Channels = set })
+	const sandbox = int64(2)
+
+	send := func() {
+		t.Helper()
+		hh.h.Handle(context.Background(), zulipproto.Event{
+			Type: zulipproto.EventMessage,
+			Message: &zulipproto.Message{
+				SenderID: humanID, SenderName: "Kfet", Content: mention("hi"),
+				StreamID: sandbox, Topic: "runtime", Type: "stream",
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := hh.h.WaitIdle(ctx); err != nil {
+			t.Fatalf("WaitIdle: %v", err)
+		}
+	}
+
+	// Not subscribed yet: silence.
+	send()
+	if n := hh.z.count(); n != 0 {
+		t.Fatalf("answered in an unserved channel (%d messages)", n)
+	}
+
+	sub := zulipproto.Event{
+		Type: zulipproto.EventSubscription, Op: "add",
+		Subscriptions: []zulipproto.Stream{{StreamID: sandbox, Name: "sandbox"}},
+	}
+	set.Apply(sub)
+	send()
+	if hh.z.count() == 0 {
+		t.Fatal("no answer after the bot was subscribed at runtime")
+	}
+	if !hh.logged("in #sandbox") {
+		t.Fatal("channel name missing from the new-conversation log")
+	}
+
+	// Unsubscribe: the topic is engaged, but the channel is gone, so
+	// even a follow-up must be dropped.
+	sub.Op = "remove"
+	set.Apply(sub)
+	before := hh.z.count()
+	send()
+	if hh.z.count() != before {
+		t.Fatal("answered after the bot was unsubscribed")
 	}
 }
 

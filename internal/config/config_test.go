@@ -170,6 +170,51 @@ func TestResolveChannels(t *testing.T) {
 	}
 }
 
+// TestChannelSentinel covers the "*" sentinel: alone, mixed with
+// explicit entries, and the guard it must NOT weaken.
+func TestChannelSentinel(t *testing.T) {
+	available := []zulipproto.Stream{
+		{StreamID: 4, Name: "fleet"},
+		{StreamID: 7, Name: "general"},
+	}
+
+	alone := &Config{Channels: []string{ChannelSentinel}}
+	if err := alone.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !alone.FollowsSubscriptions() {
+		t.Fatal("sentinel not recognised")
+	}
+	got, err := alone.ResolveChannels(available)
+	if err != nil {
+		t.Fatalf("ResolveChannels: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("sentinel resolved to channels: %v", got)
+	}
+
+	mixed := &Config{Channels: []string{"fleet", " * ", "7"}}
+	if !mixed.FollowsSubscriptions() {
+		t.Fatal("sentinel not recognised when mixed")
+	}
+	got, err = mixed.ResolveChannels(available)
+	if err != nil {
+		t.Fatalf("ResolveChannels: %v", err)
+	}
+	if len(got) != 2 || got[4] != "fleet" || got[7] != "general" {
+		t.Fatalf("resolved = %v", got)
+	}
+
+	if (&Config{Channels: []string{"fleet"}}).FollowsSubscriptions() {
+		t.Fatal("explicit config must not follow subscriptions")
+	}
+	// The empty list stays fatal even now that "everything" is
+	// expressible: it must be asked for, never defaulted into.
+	if _, err := (&Config{}).ResolveChannels(available); err == nil {
+		t.Fatal("want error for no channels")
+	}
+}
+
 func TestAgentClientConfig(t *testing.T) {
 	c := &Config{BotAPIKey: "super-secret", AgentCmd: []string{"fir", "--mode", "acp"}}
 	var stderr bytes.Buffer

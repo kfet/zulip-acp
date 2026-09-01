@@ -38,6 +38,13 @@ type RunnerConfig struct {
 	Narrow [][2]string
 	// Handle receives every non-heartbeat event, in order. Required.
 	Handle EventHandler
+	// OnRegister, if set, is called after every successful queue
+	// registration — including re-registrations after a dead queue.
+	// Events are lost while a queue is dead, so any state the caller
+	// derives from the event stream must be resynced here or it drifts
+	// silently. Called from the runner's goroutine, before the first
+	// poll of the new queue.
+	OnRegister func(ctx context.Context)
 	// Logf receives operational messages. Optional.
 	Logf func(format string, args ...any)
 	// MaxBackoff caps the exponential reconnect backoff. 0 uses
@@ -136,6 +143,9 @@ func (r *Runner) register(ctx context.Context) bool {
 	r.lastActive = r.cfg.Now()
 	r.backoff = 0
 	r.cfg.Logf("zulip: event queue %s registered (last_event_id=%d)", res.QueueID, res.LastEventID)
+	if r.cfg.OnRegister != nil {
+		r.cfg.OnRegister(ctx)
+	}
 	return true
 }
 

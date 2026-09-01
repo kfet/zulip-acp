@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`"*"` in `channels` serves every channel the bot is subscribed to, and
+  tracks it at runtime.** Adding the bot to a channel starts serving it within
+  seconds — no config edit and no restart — and unsubscribing stops it; both
+  are logged. The sentinel may stand alone or be mixed with explicit names and
+  ids, which stay served regardless of subscription state. An empty `channels`
+  list remains a fatal error. The relay registers the `subscription` and
+  `stream` event types in that mode, and resyncs the set from
+  `GET /users/me/subscriptions` on every queue registration, so the set cannot
+  drift silently across the event gap a dead queue leaves behind.
+
+### Changed
+
+- The handler's channel allowlist is now a `ChannelSet` interface consulted per
+  event (`internal/channels`), instead of a map snapshotted at boot. Configs
+  that list channels explicitly behave exactly as before, including the
+  single-channel event-queue narrow.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

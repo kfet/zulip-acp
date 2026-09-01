@@ -228,6 +228,20 @@ func (c *Client) Users(ctx context.Context) ([]User, error) {
 	return resp.Members, nil
 }
 
+// Subscriptions lists the channels the bot is SUBSCRIBED to, which is
+// a subset of what Streams reports. It is the boot-time snapshot for
+// the "*" (follow-subscriptions) channel set; runtime changes arrive
+// as subscription events instead.
+func (c *Client) Subscriptions(ctx context.Context) ([]Stream, error) {
+	var resp struct {
+		Subscriptions []Stream `json:"subscriptions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/users/me/subscriptions", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Subscriptions, nil
+}
+
 // Streams lists the channels the bot can see.
 func (c *Client) Streams(ctx context.Context) ([]Stream, error) {
 	var resp struct {
@@ -426,12 +440,44 @@ type Event struct {
 	Topic string `json:"subject"`
 	// OrigTopic is the topic the message was in before the rename.
 	OrigTopic string `json:"orig_subject"`
+
+	// Op discriminates subscription and stream events:
+	// "add"/"remove"/"peer_add"/… for subscription,
+	// "create"/"delete"/"update" for stream.
+	Op string `json:"op"`
+	// Subscriptions carries the channels added to, or removed from,
+	// the BOT's own subscriptions (subscription op add/remove).
+	Subscriptions []Stream `json:"subscriptions"`
+	// Streams carries the channels of a stream create/delete event.
+	Streams []Stream `json:"streams"`
+	// Property and Value describe a stream op=update. Value is left
+	// raw on purpose: Zulip sends a string, a bool or a number
+	// depending on the property, and a typed field would fail to
+	// decode the WHOLE /events response — silently wedging the queue —
+	// the first time a property the relay does not care about changed.
+	Property string          `json:"property"`
+	Value    json.RawMessage `json:"value"`
+}
+
+// RenamedTo returns the new channel name of a stream op=update
+// rename event, and false for any other event.
+func (e Event) RenamedTo() (string, bool) {
+	if e.Type != EventStream || e.Op != "update" || e.Property != "name" {
+		return "", false
+	}
+	var name string
+	if err := json.Unmarshal(e.Value, &name); err != nil || name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // Event type strings.
 const (
 	EventMessage       = "message"
 	EventUpdateMessage = "update_message"
+	EventSubscription  = "subscription"
+	EventStream        = "stream"
 	EventHeartbeat     = "heartbeat"
 )
 
