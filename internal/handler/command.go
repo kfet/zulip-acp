@@ -1,34 +1,26 @@
-// This file is the Zulip half of the relay's `!command` surface: the
-// concrete command list, the dispatch switch, and the Zulip-markdown
-// rendering. The grammar — what counts as a command at all — lives in
-// internal/command, which knows nothing about Zulip.
+// This file is zulip-acp's half of the relay command surface. The
+// broker itself — sigils, classification, the login state machine, the
+// passthrough allowlist and all the rendering — lives in
+// github.com/kfet/acp-kit/command, shared with poe-acp so the two
+// relays cannot drift.
 //
-// Three rules hold for every command here:
+// What stays here is what only Zulip knows:
 //
-//  1. A command is handled entirely by the relay and NEVER reaches the
-//     agent. It consumes no turn, so it costs nothing and works even
-//     while the agent is wedged.
-//  2. A command never ALLOCATES a conversation. Dispatch runs off
-//     Journal.Lookup, before Ensure, so `!help` in a topic the relay
-//     has never answered in leaves no state behind.
-//  3. Gating is identical to a prompt's. The bot-own-message and
-//     system-bot guards run first, then `allowed_user_ids`, and only
-//     then is anything parsed as a command. In a channel a command is
-//     honoured exactly when a prompt would be: the message mentions
-//     the bot, or the topic is already engaged. Anything else in a
-//     channel the relay was never summoned to is none of its business
-//     — including `!help`.
+//  1. The Controller implementation, over the journal, the session
+//     manager and the handler's own inflight bookkeeping.
+//  2. The surface pre-filter: Zulip's `/me`, `/poll` and `/todo` are
+//     real messages, not client-side slash commands, and must reach the
+//     agent untouched.
+//  3. The `!!` escape and the unknown-command error, which are this
+//     relay's policy about prose that merely starts with a sigil.
 //
-// # Serialised delivery
-//
-// Commands read the journal (Lookup) and then act on what they read,
-// so they assume Handle is called from ONE goroutine — which it is:
-// zulipproto's /events runner is a single long-poll loop. Nothing
-// enforces it, so if a second runner is ever added, the Lookup→command
-// window becomes a real TOCTOU. The commands that mutate are written
-// to fail safe anyway (Retire reports existed=false rather than
-// inventing a conversation), but the invariant is worth knowing before
-// anyone parallelises the event side.
+// Ordering is load-bearing and unchanged from a prompt's: the
+// bot-own-message and system-bot guards run first, then
+// `allowed_user_ids`, then the engagement gate, and only then is
+// anything parsed as a command. Dispatch also runs off Journal.Lookup,
+// BEFORE Journal.Ensure, so no command ever allocates a conversation:
+// `!help` in a topic the relay has never answered in leaves nothing on
+// disk.
 package handler
 
 import (
@@ -36,51 +28,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	acp "github.com/coder/acp-go-sdk"
+	"time"
 
 	"github.com/kfet/acp-kit/client"
-	"github.com/kfet/zulip-acp/internal/command"
+	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
-)
-
-// commandSet is the relay's command registry, in help order: read-only
-// orientation first, then the two that change something.
-//
-// It is deliberately short. Every command here either cannot be
-// expressed any other way (`!new` in a DM, whose key is the
-// participant set and therefore fixed forever) or answers a question
-// the chat surface cannot (which conv-id, which state dir, is
-// something still running).
-var commandSet = command.NewSet(
-	command.Spec{
-		Name:    "help",
-		Summary: "list these commands",
-	},
-	command.Spec{
-		Name:    "status",
-		Summary: "where you are, which conversation, which model, and whether a turn is running",
-	},
-	command.Spec{
-		Name:    "id",
-		Summary: "the bare conversation id, for finding its state directory",
-	},
-	command.Spec{
-		Name:    "model",
-		Args:    "[id]",
-		Summary: "list the agent's models, or switch this conversation to one",
-	},
-	command.Spec{
-		Name:    "new",
-		Aliases: []string{"reset"},
-		Summary: "retire this conversation and start a fresh one",
-	},
-	command.Spec{
-		Name:    "stop",
-		Aliases: []string{"cancel"},
-		Summary: "interrupt the turn currently running here",
-	},
 )
 
 // convsDir is the state-manager subdirectory holding per-conversation
@@ -88,320 +41,336 @@ var commandSet = command.NewSet(
 // <StateDir>/convs/<conv-id>, which the relay does not override.
 const convsDir = "convs"
 
-// dispatch classifies text and, when it names a command, handles it.
+// zulipWidgets are Zulip message names that LOOK like slash commands
+// and are not.
 //
-// It returns the prose to forward to the agent and whether the message
-// was consumed. handled=true means the relay is done with this
-// message: it is a command, or a command-shaped typo, and it must not
-// reach the agent either way.
-func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journal.Key, conv journal.Conv, engaged bool, text string) (prompt string, handled bool) {
-	res := commandSet.Parse(text)
-	switch res.Kind {
-	case command.KindProse:
-		return res.Text, false
-	case command.KindUnknown:
-		h.reply(ctx, key, fmt.Sprintf("Unknown command `%s%s`. Send `%shelp` for the list, or `%s%s` to say it as text.",
-			command.Sigil, res.Name, command.Sigil, command.Escape, res.Name))
-		return "", true
-	}
-	h.cfg.Logf("handler: command %s%s in %s", command.Sigil, res.Name, h.describe(key))
-	h.reply(ctx, key, h.runCommand(ctx, res, m, key, conv, engaged))
-	return "", true
+// Zulip's real slash commands (/ping, /dark, /light, …) are handled
+// client-side in zcommands.js against the /json/command endpoint and
+// never send a message at all, so a bot cannot see them and there is
+// no bot slash-command registration API to collide with. But these
+// three DO arrive: /me is flagged is_me_message by the markdown
+// processor, and /poll and /todo become widgets. They must reach the
+// agent byte-for-byte — swallowing a poll because "poll" is not in the
+// command list would be indefensible.
+//
+// This is why "/" is accepted on input but never advertised: the
+// broker's DisplaySigil is "!".
+var zulipWidgets = map[string]bool{
+	"me":   true,
+	"poll": true,
+	"todo": true,
 }
 
-// runCommand executes one recognised command and returns the reply.
-func (h *Handler) runCommand(ctx context.Context, res command.Result, m *zulipproto.Message, key journal.Key, conv journal.Conv, engaged bool) string {
-	switch res.Name {
-	case "help":
-		return h.cmdHelp()
-	case "status":
-		return h.cmdStatus(m, key, conv, engaged)
-	case "id":
-		return h.cmdID(conv, engaged)
-	case "model":
-		return h.cmdModel(res.Args, conv, engaged)
-	case "new":
-		return h.cmdNew(ctx, key, conv, engaged)
-	default:
-		// "stop" — the switch is exhaustive over commandSet, which is
-		// a compile-time-constant list, so there is no other arm to
-		// reach and no unreachable-default branch to cover.
-		return h.cmdStop(ctx, conv, engaged)
+// isWidget reports whether trimmed, mention-stripped text is one of
+// Zulip's message-shaped slash commands.
+func isWidget(text string) bool {
+	if !strings.HasPrefix(text, "/") {
+		return false
 	}
+	body, _ := command.StripSigil(text)
+	name := body
+	if i := strings.IndexAny(body, " \t\n"); i >= 0 {
+		name = body[:i]
+	}
+	return zulipWidgets[strings.ToLower(name)]
+}
+
+// dispatch classifies text and, when it names a command, hands it to
+// the broker.
+//
+// It returns the prose to forward to the agent and whether the message
+// was consumed. handled=true means the relay is done with this message.
+func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) (prompt string, handled bool) {
+	// Zulip's own widgets win over everything, including a pending
+	// login: a /poll must never be eaten as a failed redirect paste.
+	if isWidget(text) {
+		return text, false
+	}
+	b := h.cfg.Commands
+	if b == nil {
+		return text, false
+	}
+	token := key.Token()
+
+	// A leading "!!" is this relay's escape for prose that genuinely
+	// starts with a sigil. Checked before the broker so the broker
+	// never sees it.
+	if rest, ok := strings.CutPrefix(text, doubleSigil); ok {
+		return command.DisplaySigil + rest, false
+	}
+
+	// A pasted redirect URL for an in-flight login is not sigil-
+	// prefixed, so it can only be recognised by asking the broker.
+	if b.HasPending(token) || b.IsCommand(text) {
+		out, err := b.Handle(ctx, token, text)
+		if err != nil {
+			h.cfg.Logf("handler: command %q in %s: %v", text, h.describe(key), err)
+			h.reply(ctx, key, fmt.Sprintf("Command failed: %v", err))
+			return "", true
+		}
+		h.reply(ctx, key, mustOutcome(out).Text)
+		return "", true
+	}
+
+	// An allowlisted agent command is rewritten to its slash form and
+	// forwarded through the normal prompt path, so the agent runs it
+	// and streams a reply like any other turn.
+	if rewritten, ok := b.Passthrough(text); ok {
+		return rewritten, false
+	}
+
+	// Sigil-prefixed, command-shaped, and nothing recognised it. Say
+	// so rather than burning an agent turn on a typo — and name the
+	// escape, because the same rule is what makes "!!" necessary.
+	if name, ok := unknownCommand(text); ok {
+		h.reply(ctx, key, fmt.Sprintf("Unknown command `%s%s`. Send `%shelp` for the list, or `%s%s` to say it as text.",
+			command.DisplaySigil, name, command.DisplaySigil, doubleSigil, name))
+		return "", true
+	}
+	return text, false
+}
+
+// doubleSigil is the escape a human types to send prose beginning with
+// the display sigil: "!!new" reaches the agent as "!new".
+const doubleSigil = command.DisplaySigil + command.DisplaySigil
+
+// unknownCommand reports whether text is command-SHAPED but names
+// nothing, returning the offending name.
+//
+// Command-shaped means the sigil is followed by an ASCII letter and
+// then letters, digits, "_" or "-". The check is deliberately strict:
+// it is the only thing standing between "!important: fix this" and a
+// swallowed message, and eating a user's prose is far worse than
+// missing a typo'd command.
+//
+// Only the display sigil counts here. "/" is excluded because it is
+// Zulip's own namespace — an unrecognised "/foo" is far more likely to
+// be a Zulip feature than a mistyped relay command — and "." because a
+// message starting with a full stop is ordinary punctuation.
+func unknownCommand(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(text), command.DisplaySigil)
+	if !ok {
+		return "", false
+	}
+	name := rest
+	if i := strings.IndexAny(rest, " \t\n"); i >= 0 {
+		name = rest[:i]
+	}
+	if !commandShaped(name) {
+		return "", false
+	}
+	return strings.ToLower(name), true
+}
+
+// commandShaped reports whether tok looks like a command name.
+func commandShaped(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '_' || c == '-'):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // reply posts a command's answer where the command arrived — same
 // topic, or same DM participant set.
 //
-// Commands are not turns: there is no placeholder, no streaming, no
-// :eyes: lifecycle and no tail tracking, because none of that fits a
-// reply that is already complete when it is composed. A reply that
-// cannot be posted is logged and dropped; there is nowhere else to put
-// it, and unlike an agent answer it costs nothing to re-request.
+// Commands are not turns: no placeholder, no streaming, no :eyes:
+// lifecycle and no tail tracking, because none of that fits a reply
+// that is already complete when it is composed. A reply that cannot be
+// posted is logged and dropped; unlike agent output it costs nothing
+// to ask for again, so the rescue path does not apply.
 func (h *Handler) reply(ctx context.Context, key journal.Key, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
 	post := &convPoster{client: h.cfg.Client, key: key}
 	if _, err := post.Post(ctx, content); err != nil {
 		h.cfg.Logf("handler: posting command reply to %s: %v", h.describe(key), err)
 	}
 }
 
-// --- individual commands -------------------------------------------------
-
-func (h *Handler) cmdHelp() string {
-	var sb strings.Builder
-	sb.WriteString("**Relay commands** — handled here, never sent to the agent:\n\n")
-	for _, sp := range commandSet.Specs() {
-		fmt.Fprintf(&sb, "- `%s` — %s", sp.Usage(), sp.Summary)
-		if len(sp.Aliases) > 0 {
-			alias := make([]string, len(sp.Aliases))
-			for i, a := range sp.Aliases {
-				alias[i] = "`" + command.Sigil + a + "`"
-			}
-			fmt.Fprintf(&sb, " (also %s)", strings.Join(alias, ", "))
-		}
-		sb.WriteString("\n")
+// rememberDMNames records a DM's participant display names, so
+// `!status` can say who is in it rather than reciting user ids.
+func (h *Handler) rememberDMNames(key journal.Key, names []string) {
+	if len(names) == 0 {
+		return
 	}
-	fmt.Fprintf(&sb, "\nAnything else reaches the agent unchanged. To say something that starts with `%s`, double it: `%simportant` arrives as `%simportant`.",
-		command.Sigil, command.Escape, command.Sigil)
-	return sb.String()
+	h.dmMu.Lock()
+	h.dmNames[key.Token()] = names
+	h.dmMu.Unlock()
 }
 
-func (h *Handler) cmdStatus(m *zulipproto.Message, key journal.Key, conv journal.Conv, engaged bool) string {
-	var sb strings.Builder
-	sb.WriteString("**Status**\n\n")
-	fmt.Fprintf(&sb, "- here: %s\n", h.human(m, key))
-	if !engaged {
-		fmt.Fprintf(&sb, "- conversation: none yet — your next message starts one\n")
-	} else {
-		fmt.Fprintf(&sb, "- conversation: `%s`\n", conv.ID)
-		fmt.Fprintf(&sb, "- state dir: `%s`\n", filepath.Join(h.cfg.Sessions.StateDir(), convsDir, conv.ID))
-	}
-	fmt.Fprintf(&sb, "- model: %s\n", h.modelLabel(conv, engaged))
-	running := "no"
-	if engaged && h.isInflight(conv.ID) {
-		running = fmt.Sprintf("yes — `%sstop` interrupts it", command.Sigil)
-	}
-	fmt.Fprintf(&sb, "- turn running: %s\n", running)
-	return sb.String()
-}
-
-// human renders the conversation key the way a person would say it.
-// In a channel that is the channel name and topic; in a DM it is the
-// participant names, taken from the message rather than the key
-// because the key holds ids and ids are not human terms.
-func (h *Handler) human(m *zulipproto.Message, key journal.Key) string {
+// whereFor renders a conversation key the way a person would say it.
+func (h *Handler) whereFor(key journal.Key) string {
 	if !key.IsDM() {
+		if key.Topic == "" && key.StreamID == 0 {
+			return ""
+		}
 		return h.describe(key)
 	}
-	if names := m.RecipientNames(); len(names) > 0 {
+	h.dmMu.Lock()
+	names := h.dmNames[key.Token()]
+	h.dmMu.Unlock()
+	if len(names) > 0 {
 		return "DM with " + strings.Join(names, ", ")
 	}
 	return key.Label()
 }
 
-// modelLabel renders the effective model for a conversation: the
-// sticky choice made with `!model <id>` if there is one, otherwise
-// whatever the agent last reported as current.
-func (h *Handler) modelLabel(conv journal.Conv, engaged bool) string {
+// --- command.Controller --------------------------------------------------
+//
+// The broker identifies a conversation by an opaque token it hands
+// straight back. This relay passes the KEY's token, never the conv-id:
+// `!new` replaces the conv-id, so a broker holding one would be holding
+// a stale identity. See journal.Key.Token.
+
+// AvailableModels satisfies command.Controller.
+func (h *Handler) AvailableModels() (models []client.ModelInfo, currentID string) {
+	return h.cfg.Agent.Models()
+}
+
+// AgentCommands satisfies command.Controller.
+func (h *Handler) AgentCommands() []client.CommandInfo {
+	return h.cfg.Agent.AvailableCommands()
+}
+
+// convFor resolves a broker token to its conversation, if one exists.
+// A token that does not parse is a programming error on the relay
+// side, not user input, so it is logged rather than surfaced.
+func (h *Handler) convFor(token string) (journal.Key, journal.Conv, bool) {
+	key, err := journal.ParseToken(token)
+	if err != nil {
+		h.cfg.Logf("handler: %v", err)
+		return journal.Key{}, journal.Conv{}, false
+	}
+	c, ok := h.cfg.Journal.Lookup(key)
+	return key, c, ok
+}
+
+// StatusFor satisfies command.Controller.
+func (h *Handler) StatusFor(token string) command.SessionStatus {
+	key, conv, engaged := h.convFor(token)
+	_, current := h.cfg.Agent.Models()
+	models, _ := h.cfg.Agent.Models()
+	st := command.SessionStatus{
+		EffectiveModel:  current,
+		DefaultModel:    current,
+		HasSession:      engaged,
+		ModelsAvailable: len(models),
+		Where:           h.whereFor(key),
+	}
 	if engaged {
+		st.ConvID = conv.ID
+		st.StateDir = filepath.Join(h.cfg.Sessions.StateDir(), convsDir, conv.ID)
+		st.TurnRunning = h.isInflight(conv.ID)
 		if id, ok := h.modelOverride(conv.ID); ok {
-			return fmt.Sprintf("`%s` (set with `%smodel`)", id, command.Sigil)
+			st.OverrideModel, st.EffectiveModel = id, id
 		}
 	}
-	if _, current := h.cfg.Agent.Models(); current != "" {
-		return "`" + current + "`"
-	}
-	return "not reported yet — the agent publishes it once a session exists"
+	return st
 }
 
-func (h *Handler) cmdID(conv journal.Conv, engaged bool) string {
-	if !engaged {
-		return "No conversation here yet — your next message starts one."
+// RelayInfo satisfies command.Controller.
+func (h *Handler) RelayInfo(token string) command.RelayInfo {
+	_, conv, engaged := h.convFor(token)
+	models, _ := h.cfg.Agent.Models()
+	ri := command.RelayInfo{
+		Version:         h.cfg.Version,
+		AgentCmd:        h.cfg.AgentCmd,
+		ModelsAvailable: len(models),
+		ActiveSessions:  len(h.cfg.Journal.Convs()),
 	}
-	return "`" + conv.ID + "`"
+	if !h.cfg.StartTime.IsZero() {
+		ri.Uptime = h.now().Sub(h.cfg.StartTime).Round(time.Second).String()
+	}
+	if engaged {
+		ri.SessionID = conv.ID
+	}
+	return ri
 }
 
-// cmdNew retires the conversation and allocates a fresh conv-id.
-//
-// The old state/convs/<id>/ directory is left exactly where it is:
-// retiring a conversation is not deleting work, and the id in the
-// reply is what makes the old directory findable afterwards.
-//
-// A turn still running in the retired conversation is cancelled first.
-// Leaving it alive would let it keep streaming into a conversation the
-// user has just declared finished.
-func (h *Handler) cmdNew(ctx context.Context, key journal.Key, conv journal.Conv, engaged bool) string {
+// SetModelOverride satisfies command.Controller. The choice is sticky
+// per conversation and applied to the ACP session at the start of the
+// next turn — see applyModel.
+func (h *Handler) SetModelOverride(token, modelID string) error {
+	_, conv, engaged := h.convFor(token)
 	if !engaged {
-		return "Nothing to retire — there is no conversation here yet, so your next message already starts a fresh one."
+		return fmt.Errorf("there is no conversation here yet — send a message first")
 	}
-	h.cancelInflight(ctx, conv.ID)
+	models, _ := h.cfg.Agent.Models()
+	found := len(models) == 0
+	for _, m := range models {
+		if m.ID == modelID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("unknown model %q", modelID)
+	}
+	h.setModelOverride(conv.ID, modelID)
+	return nil
+}
+
+// ResetSession satisfies command.Controller: it is what `!new` calls.
+//
+// On Zulip this RETIRES the journal entry and allocates a fresh
+// conv-id. The old state/convs/<id>/ directory is left exactly where it
+// is — retiring a conversation is not deleting work. The broker never
+// learns the id changed, which is precisely why it is handed a key
+// token rather than a conv-id.
+func (h *Handler) ResetSession(token string) error {
+	key, conv, engaged := h.convFor(token)
+	if engaged {
+		// A turn still running in the retired conversation would keep
+		// streaming into a conversation the user has just declared
+		// over.
+		h.cancelInflight(context.Background(), conv.ID)
+	}
+	// Retire is the single source of truth for whether there WAS a
+	// conversation. Pre-checking `engaged` and erroring on it
+	// separately would split one answer across two branches, the
+	// second of which nothing can reach.
 	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
 	if err != nil {
 		h.cfg.Logf("handler: retiring conversation %s: %v", conv.ID, err)
-		return fmt.Sprintf("Couldn't start a new conversation: %v", err)
+		return err
 	}
 	if !existed {
-		// Raced with a rename or another !new between Lookup and
-		// Retire. Nothing was retired, and the key already resolves
-		// to something fresh enough.
-		return "Nothing to retire — there is no conversation here any more, so your next message already starts a fresh one."
+		return fmt.Errorf("there is no conversation here yet, so your next message already starts a fresh one")
 	}
 	// The model choice is the user's, not the conversation's: carry it
 	// across so `!new` clears context without silently reverting it.
 	h.carryModelOverride(prev.ID, fresh.ID)
-	return fmt.Sprintf("🧹 Fresh conversation `%s` — your next message starts it with no history.\n\n"+
-		"The old conversation `%s` is retired, not deleted; its files are still in `%s`.",
-		fresh.ID, prev.ID, filepath.Join(h.cfg.Sessions.StateDir(), convsDir, prev.ID))
+	h.cfg.Logf("handler: %s retired for fresh conversation %s in %s", prev.ID, fresh.ID, h.describe(key))
+	return nil
 }
 
-func (h *Handler) cmdStop(ctx context.Context, conv journal.Conv, engaged bool) string {
-	if !engaged || !h.cancelInflight(ctx, conv.ID) {
-		return "Nothing is running here."
-	}
-	return "🛑 Interrupted."
-}
-
-// modelsListCap bounds how many models one reply prints. A relay with
-// a broad provider list can advertise hundreds, and a wall of ids is
-// unreadable on a phone — and would hit the 10k rollover for no gain.
-const modelsListCap = 40
-
-// cmdModel shows the agent's model list, or makes a sticky per-
-// conversation choice.
-//
-// The switch is recorded here and applied to the ACP session at the
-// start of the next turn (see applyModel). It is deliberately NOT
-// applied immediately: doing so would need a live session, and calling
-// GetOrCreate outside a turn would spawn one — and re-register a sink
-// — as a side effect of a read-ish command.
-//
-// Only an exact id switches. A near-match is treated as a filter, so
-// mistyping an id lists candidates instead of silently picking one.
-func (h *Handler) cmdModel(arg string, conv journal.Conv, engaged bool) string {
-	models, current := h.cfg.Agent.Models()
-	if len(models) == 0 {
-		return "The agent has not reported its models yet — send it a message first, then ask again."
-	}
-	if arg == "" {
-		return renderModels(models, current, "", h.effectiveOverride(conv, engaged))
-	}
-	for _, m := range models {
-		if m.ID == arg {
-			if !engaged {
-				return fmt.Sprintf("There is no conversation here yet to set a model on. Send a message first, then `%smodel %s`.", command.Sigil, arg)
-			}
-			h.setModelOverride(conv.ID, arg)
-			return fmt.Sprintf("✅ Model set to `%s` for this conversation — it applies from your next message.", arg)
-		}
-	}
-	return renderModels(models, current, arg, h.effectiveOverride(conv, engaged))
-}
-
-// effectiveOverride returns the conversation's sticky model, if any.
-func (h *Handler) effectiveOverride(conv journal.Conv, engaged bool) string {
+// StopTurn satisfies command.TurnStopper, which is what enables
+// `!stop`. poe-acp deliberately does not implement it: it answers one
+// HTTP request per turn and has no in-flight turn a later message
+// could reach. This relay streams into an editable message and does.
+func (h *Handler) StopTurn(token string) bool {
+	_, conv, engaged := h.convFor(token)
 	if !engaged {
-		return ""
+		return false
 	}
-	id, _ := h.modelOverride(conv.ID)
-	return id
+	return h.cancelInflight(context.Background(), conv.ID)
 }
 
-// renderModels lists models, optionally narrowed by a substring.
-func renderModels(models []client.ModelInfo, current, filter, override string) string {
-	var sb strings.Builder
-	marked := override
-	if marked == "" {
-		marked = current
-	}
-	matched := models[:0:0]
-	lower := strings.ToLower(filter)
-	for _, m := range models {
-		if lower == "" || strings.Contains(strings.ToLower(m.ID), lower) {
-			matched = append(matched, m)
-		}
-	}
-	if filter == "" {
-		fmt.Fprintf(&sb, "**%d models** — `%smodel <id>` switches this conversation:\n\n", len(models), command.Sigil)
-	} else if len(matched) == 0 {
-		return fmt.Sprintf("No model id matches %q. Send `%smodel` for the full list of %d.", filter, command.Sigil, len(models))
-	} else {
-		fmt.Fprintf(&sb, "**%d of %d models** match %q:\n\n", len(matched), len(models), filter)
-	}
-	for i, m := range matched {
-		if i >= modelsListCap {
-			fmt.Fprintf(&sb, "- …and %d more — narrow it with `%smodel <substring>`.\n", len(matched)-modelsListCap, command.Sigil)
-			break
-		}
-		suffix := ""
-		if m.ID == marked {
-			suffix = " ← current"
-		}
-		fmt.Fprintf(&sb, "- `%s`%s\n", m.ID, suffix)
-	}
-	return sb.String()
-}
-
-// --- sticky model overrides ----------------------------------------------
-
-// modelChoice is a conversation's sticky model and the session it was
-// last pushed to. Recording the session id is what makes the choice
-// survive idle GC: a conversation whose session was reaped comes back
-// with a new session id, and the mismatch is the signal to re-apply.
-type modelChoice struct {
-	id      string
-	applied acp.SessionId
-}
-
-func (h *Handler) modelOverride(convID string) (string, bool) {
-	h.modelMu.Lock()
-	defer h.modelMu.Unlock()
-	c, ok := h.modelChoices[convID]
-	if !ok {
-		return "", false
-	}
-	return c.id, true
-}
-
-func (h *Handler) setModelOverride(convID, modelID string) {
-	h.modelMu.Lock()
-	defer h.modelMu.Unlock()
-	h.modelChoices[convID] = modelChoice{id: modelID}
-}
-
-// carryModelOverride moves a sticky choice from a retired conversation
-// to the fresh one that replaced it, dropping the applied marker so
-// the new session gets its own push.
-func (h *Handler) carryModelOverride(from, to string) {
-	h.modelMu.Lock()
-	defer h.modelMu.Unlock()
-	if c, ok := h.modelChoices[from]; ok {
-		delete(h.modelChoices, from)
-		h.modelChoices[to] = modelChoice{id: c.id}
-	}
-}
-
-// applyModel pushes a conversation's sticky model to its ACP session,
-// at most once per session.
-//
-// A failure is logged and the turn continues: the agent answers on
-// whatever model it already had, which is a far better outcome than
-// refusing to answer at all over a preference.
-func (h *Handler) applyModel(ctx context.Context, convID string, sid acp.SessionId) {
-	h.modelMu.Lock()
-	c, ok := h.modelChoices[convID]
-	if !ok || c.applied == sid {
-		h.modelMu.Unlock()
-		return
-	}
-	h.modelMu.Unlock()
-
-	if err := h.cfg.Agent.SetModel(ctx, sid, c.id); err != nil {
-		h.cfg.Logf("handler: selecting model %s for %s: %v", c.id, convID, err)
-		return
-	}
-	h.modelMu.Lock()
-	if cur, still := h.modelChoices[convID]; still && cur.id == c.id {
-		h.modelChoices[convID] = modelChoice{id: c.id, applied: sid}
-	}
-	h.modelMu.Unlock()
-}
+// Compile-time proof that the Handler satisfies the broker's
+// interfaces. Without these, a signature drift in acp-kit would surface
+// as `!status` silently reporting "Session control is unavailable" at
+// runtime instead of as a build failure.
+var (
+	_ command.Controller  = (*Handler)(nil)
+	_ command.TurnStopper = (*Handler)(nil)
+)

@@ -340,28 +340,85 @@ model, is something still running.
 
 ### Where the code lives, and the cross-repo question
 
-`internal/command` holds the **parse core** — sigil detection, the `!!`
-escape, first-token extraction, case-insensitive name/alias lookup, and an
-ordered `Spec` registry. It must never import `zulipproto`, `journal` or
-anything else Zulip-specific; the same import-graph discipline that keeps
-`internal/rollover` promotable. `internal/handler/command.go` holds the
-Zulip half: the concrete command list, the dispatch switch, and the
-Zulip-markdown rendering.
+The broker lives in **`acp-kit/command`**, shared with `poe-acp`. What stays
+here is only what Zulip knows: the `Controller` implementation over the
+journal and session manager, the `/me` / `/poll` / `/todo` pre-filter, the
+`!!` escape, and the unknown-command reply.
 
-We deliberately did **not** promote the core to `acp-kit` now, even though a
-command parser is obviously generic relay machinery. `acp-kit/statusline`
-looks like the precedent — generic core there, Zulip rendering here — but it
-is not: that contract is shared *by construction*, because three relays and
-the agent have to agree on bytes on the wire. Nothing is shared here yet.
-`poe-acp` has a command surface, but it is a hand-rolled chain fused with its
-OAuth login broker and cannot adopt an external parser without a refactor
-nobody has scheduled; `slack-acp` has no command surface at all. Promoting
-now would freeze a `Spec`/dispatch API in a versioned library on the evidence
-of exactly one consumer. `internal/rollover` is the matching precedent:
-genuinely generic, kept local by import discipline, listed in `BACKLOG.md`,
-and promoted when a second consumer exists to shape the API. Moving a
-Zulip-free package later is a `git mv`; un-breaking a wrong acp-kit API is
-not.
+This reverses the call made in v0.5.0, and the reasoning is worth keeping
+rather than deleting, because it is the *same* rule reaching the opposite
+conclusion on better evidence.
+
+v0.5.0 shipped a small hand-written parse core in `internal/command` and
+argued promotion was premature: `acp-kit/statusline` looks like the
+precedent — generic core there, Zulip rendering here — but it is not, because
+that contract is shared *by construction*, since relays and agent must agree
+on bytes on the wire. Nothing was shared yet. The stated rule was
+`internal/rollover`'s: keep it local behind import discipline, and **promote
+when a second consumer exists to shape the API**.
+
+A second consumer did exist, and the v0.5.0 analysis was simply wrong about
+it. `poe-acp` had already carried a mature 655-line broker for months —
+`!login` with the two-call `_meta.auth.interactive` bridge, `!help`,
+`!status`, `!model`, `!new`, back-compat aliases, and a curated
+agent-command passthrough allowlist — all of it tested to 100%. Dismissing it
+as "fused with its OAuth broker and not extractable" was an assumption, not a
+measurement. The measurement: that file imported exactly **two**
+non-`acp-kit` things, `router.SessionStatus` and `router.RelayInfo`, both
+plain data structs living in `router` only because that is where they were
+first needed. Everything else already spoke `acp-kit/client`.
+
+So the promotion was clean, and inventing a second surface instead was the
+expensive mistake — not because the invented one was bad, but because
+*inventing at all* discarded a working design and would have left two
+brokers to drift. The port moved the package whole, **tests included**; the
+977 lines of broker tests are the real reason no copy was left behind, since
+acp-kit's 100% gate means they had to land there regardless.
+
+Rendering deliberately stayed in `acp-kit/command` rather than being
+duplicated per relay. Poe, Zulip and Slack all read CommonMark-ish markdown
+and the strings are legal in all three verbatim — the same alignment
+`internal/statusline` already documents. Copying identical prose into each
+relay would recreate exactly the fork the move exists to remove. When a
+surface genuinely needs different markup, that is the moment to add a
+renderer interface, and not before.
+
+Two extension points were added while lifting, both shaped by Zulip's
+differences from Poe:
+
+- **`command.TurnStopper`** — an optional capability the `Controller` may
+  implement, which is what enables `!stop`. A relay that does not implement
+  it leaves `!stop` unrecognised and the text forwards as ordinary prose, so
+  `poe-acp` is byte-for-byte unchanged. Only a relay that *streams* a turn has
+  anything to interrupt: poe answers one HTTP request per turn, this relay
+  streams into an editable message.
+- **Optional `SessionStatus` fields** (`ConvID`, `StateDir`, `Where`,
+  `TurnRunning`) for relays that give a conversation its own identity,
+  directory and place. The renderer prints only what is set, so a Poe-shaped
+  controller produces the same output as before.
+
+The lesson recorded for next time: "promote when a second consumer exists" is
+right, but it obliges you to go and *look* at the sibling repos rather than
+reason about them from memory. `internal/rollover` remains a promotion
+candidate on the original terms — nothing has changed there, because no
+second surface with a hard message ceiling has appeared.
+
+### The conversation token
+
+`acp-kit/command` identifies a conversation by one opaque `convID` string it
+hands straight back to the relay. The obvious thing to pass is the conv-id,
+and it is the **wrong** thing: `!new` replaces the conv-id, so a broker
+holding one would be holding a stale identity the moment the command it is
+running finishes.
+
+The relay passes `journal.Key.Token()` instead — the key, not the id. A key
+is what a conversation is *reached* by, and it is exactly what `!new` does
+not change: the topic is still the topic, the participants still the
+participants; only the conv-id behind it moves. The encoding is `Key.index()`,
+already canonical and already the map key, so a token cannot disagree with a
+lookup. `ParseToken` is deliberately strict — a best-effort guess would attach
+a command to the wrong conversation, and `!new` on the wrong conversation
+destroys context the user expected to keep.
 
 ### Dispatch
 
@@ -394,14 +451,46 @@ conversation), and reports as much rather than allocating one to retire.
 In a DM every message reaches the handler by construction, so commands work
 there unconditionally — which is the whole point.
 
+### Sigils, and Zulip's own slash messages
+
+The broker accepts `/`, `!` and `.` on input and advertises `!`
+(`DisplaySigil`). On Poe that is because its client intercepts `/`-prefixed
+messages. On Zulip the reason is different and sharper:
+
+- Zulip's **real** slash commands (`/ping`, `/dark`, `/light`, …) are handled
+  **client-side** in `zcommands.js` against the `/json/command` endpoint and
+  send no message at all. A bot never sees them, and there is no bot
+  slash-command registration API to collide with.
+- But `/me`, `/poll` and `/todo` **are** messages. `/me` is flagged
+  `is_me_message` on the message object by the markdown processor; `/poll` and
+  `/todo` become widgets.
+
+So `/` must never be advertised, and must never shadow those three. The relay
+pre-filters them before the broker sees anything — `isWidget` in
+`internal/handler/command.go`, using the exported `command.StripSigil` — and
+forwards them byte-for-byte. The guard runs **ahead of the pending-login
+check** as well, because a `/poll` arriving mid-login must not be eaten as a
+failed redirect paste.
+
 ### The grammar, and not eating prose
 
-Only a **command-shaped** first token counts: an ASCII letter followed by
-letters, digits, `_` or `-`. `!important: fix the parser`, `!5 minutes` and a
-lone `!` are therefore prose and reach the agent byte-for-byte. A
-command-shaped token naming nothing known gets a one-line error and is *also*
-not forwarded — `!hepl` becoming an agent turn is worse than a typo notice.
+Command names are matched case-insensitively on the **verb only**; the
+argument keeps its case, because a model id is a literal the agent must
+match. (A phone keyboard capitalises the first letter of a message, so a
+case-sensitive `!new` would fail silently for exactly the people typing
+one-handed.)
+
+Only a **command-shaped** token counts for the unknown-command error: an
+ASCII letter followed by letters, digits, `_` or `-`. `!important: fix the
+parser`, `!5 minutes` and a lone `!` are therefore prose and reach the agent
+byte-for-byte. A command-shaped token naming nothing known gets a one-line
+error and is *also* not forwarded — `!hepl` becoming an agent turn is worse
+than a typo notice. That error is scoped to `!` alone: an unrecognised
+`/foo` is far more likely to be a Zulip feature than a mistyped relay
+command, and a leading `.` is ordinary punctuation.
+
 The escape for genuine prose is a doubled bang: `!!new` arrives as `!new`.
+This is relay policy, applied before the broker, not a broker knob.
 
 ### `!new`, retirement, and the tail
 
@@ -421,14 +510,30 @@ Two details are not cosmetic:
   conversation". A pre-`!new` journal simply has no `retired` field, so no
   version bump is needed.
 
+### Agent-command passthrough
+
+An allowlisted command the agent actually advertises (`reload`, `logout`,
+`compact`, `session`, `changelog`, `mcp`, `skills`) is rewritten to its slash
+form and forwarded through the **normal prompt path**, so the agent runs it
+and streams a reply like any other turn. Both conditions are required: in the
+allowlist *and* in `AgentCommands()`.
+
+`resume`, `continue`, `name`, `share` and `export` are deliberately excluded,
+and the reasoning carries over from poe-acp unchanged because it is
+structural, not surface-specific: **the relay owns the conversation → session
+mapping.** Letting the agent switch its own session underneath the relay would
+desync that mapping, leaving the relay prompting into a session the agent has
+moved on from. `!new` is the supported way to change session state. The rest
+are side-effecting or account-scoped operations that make no sense driven from
+a chat turn.
+
 ### `!model`
 
-Included because `acp-kit`'s client surface genuinely supports a switch
-(`AgentProc.SetModel`, over `session/set_config_option` or the older
-`session/set_model`), so it is not faked. The choice is **sticky per
-conversation** and held in memory only: it is recorded by the command and
-pushed to the ACP session at the start of the next turn, at most once per
-session id.
+`acp-kit`'s client surface genuinely supports a switch (`AgentProc.SetModel`,
+over `session/set_config_option` or the older `session/set_model`), so it is
+not faked. The choice is **sticky per conversation** and held in memory only:
+it is recorded by the command and pushed to the ACP session at the start of
+the next turn, at most once per session id.
 
 Applying it lazily is deliberate. Doing it eagerly needs a live session, and
 calling `GetOrCreate` outside a turn would *spawn* one — and re-register a
@@ -441,9 +546,27 @@ preference. A `SetModel` failure is logged and the turn proceeds on whatever
 model the agent already had — refusing to answer at all over a preference
 would be a worse trade.
 
-`!id` earns its place separately from `!status`: on a phone, extracting one
-opaque id from a bullet list to paste into a `cd` is exactly the friction a
-bare-id reply removes.
+### `!login`, and why it is kept
+
+The login family and its two-call bridge came across with the port. It is
+fair to ask whether it earns its keep on a **self-hosted** relay where the
+operator can simply shell into the box and run `fir` interactively.
+
+It is kept, for two reasons. Provider tokens **expire**, and when they do the
+failure lands in a Zulip topic in front of whoever was talking to the bot —
+being able to reconnect from that topic beats discovering you need SSH access
+to a machine you may not have on you. And the cost of keeping it is now
+almost nothing: it is shared code that `poe-acp` needs regardless, tested
+there, so dropping it would mean *adding* a conditional to suppress it rather
+than deleting anything.
+
+The one command dropped from poe-acp's surface is **`!id`**. v0.5.0 had it;
+the port does not, because it was a symptom of a worse `!status`. Poe's
+`!status` renderer already prints the conversation id on its own line in
+backticks, which is as copy-pasteable as a bare-id reply, so a whole command
+existed to work around a formatting detail that turned out not to be a
+problem. Deleting it keeps the two relays' surfaces identical, which is worth
+more than one keystroke saved.
 
 ### What a command reply is not
 

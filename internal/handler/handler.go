@@ -24,6 +24,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/state"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
@@ -59,6 +60,10 @@ type Agent interface {
 	// <id>`; the relay never calls it unless a user asked for a
 	// specific model.
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
+	// AvailableCommands is the agent's advertised command catalog,
+	// which gates the passthrough allowlist: the relay forwards
+	// `!reload` as `/reload` only when the agent actually offers it.
+	AvailableCommands() []client.CommandInfo
 }
 
 // Sessions is the subset of *state.Manager the handler uses.
@@ -150,6 +155,21 @@ type Config struct {
 	// for the duration of a turn. Empty disables the acknowledgement.
 	AckEmoji string
 
+	// Commands is the acp-kit chat-command broker. Nil disables the
+	// whole `!command` surface, which is what the relay does when it
+	// has no agent to ask. New wires the Handler in as the broker's
+	// Controller, so the caller must not call SetController itself.
+	Commands *command.Broker
+
+	// Version, AgentCmd and StartTime are reported by `!status`. All
+	// optional: an unset field is simply omitted from the reply.
+	Version   string
+	AgentCmd  string
+	StartTime time.Time
+	// Now is the clock `!status` measures uptime against. Injected so
+	// the test suite never has to sleep. Defaults to time.Now.
+	Now func() time.Time
+
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
 }
@@ -175,6 +195,15 @@ type Handler struct {
 	// session map itself — so it needs no GC of its own.
 	modelMu      sync.Mutex
 	modelChoices map[string]modelChoice
+
+	// dmNames remembers the display names of a DM's participants,
+	// learned from the messages arriving in it. The key holds user
+	// IDS, and an id is not a human term — `!status` should say "DM
+	// with Kfet, fir-relay". Bounded by the number of DM
+	// conversations, and purely cosmetic: an unknown set falls back to
+	// the id list.
+	dmMu    sync.Mutex
+	dmNames map[string][]string
 }
 
 // New constructs a Handler.
@@ -194,10 +223,27 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	h := &Handler{cfg: cfg, inflight: map[string]*inflightEntry{}, modelChoices: map[string]modelChoice{}}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	h := &Handler{
+		cfg:          cfg,
+		inflight:     map[string]*inflightEntry{},
+		modelChoices: map[string]modelChoice{},
+		dmNames:      map[string][]string{},
+	}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
+	// Wiring the Controller here rather than in the caller keeps the
+	// broker↔handler construction cycle out of main, and guarantees it
+	// happens before any event can arrive.
+	if cfg.Commands != nil {
+		cfg.Commands.SetController(h)
+	}
 	return h, nil
 }
+
+// now is the injected clock.
+func (h *Handler) now() time.Time { return h.cfg.Now() }
 
 // Handle is the zulipproto.EventHandler entry point.
 func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
@@ -303,6 +349,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 			return
 		}
 		key, addressed = journal.DM(ids), true
+		h.rememberDMNames(key, m.RecipientNames())
 	} else {
 		// The channel allowlist gates channel messages only. A DM is
 		// in no channel, so there is nothing here to measure it
@@ -329,7 +376,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	// conversation is allocated, so `!help` in a topic the relay has
 	// never answered in leaves no state behind. A command consumes the
 	// message; nothing here reaches the agent.
-	prompt, handled := h.dispatch(ctx, m, key, existing, engaged, h.promptText(text))
+	prompt, handled := h.dispatch(ctx, m, key, h.promptText(text))
 	if handled {
 		return
 	}
