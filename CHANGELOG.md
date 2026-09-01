@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Sanitised `BRIEF.md` and `REPORT.md`: the live trial server's hostname and
+  API keys are replaced with placeholders, across the whole history. They were
+  build-time scaffolding for a disposable tailnet-only container and never
+  belonged in a repository intended to go public.
+- `.gitignore` brought to parity with the sibling relays (`.env`, `.envrc`,
+  `*.local.json`, `.DS_Store`, `/.fir/`, `*.test`).
+
+### Added
+
+- `docs/config.example.json` and `packaging/systemd/zulip-acp.service`, both
+  previously untracked deployment scaffolding.
+
 ## [0.1.1] - 2026-08-31
 
 ### Changed

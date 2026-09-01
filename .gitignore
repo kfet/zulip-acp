@@ -1,4 +1,10 @@
-bin/
+/bin/
+/dist/
 *.log
-dist/
 /zulip-acp
+.DS_Store
+*.local.json
+.env
+.envrc
+/.fir/
+*.test

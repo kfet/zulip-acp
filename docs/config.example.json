@@ -1,0 +1,8 @@
+{
+  "site": "https://zulip.example.ts.net",
+  "bot_email": "fir-relay-bot@zulip.example.ts.net",
+  "channels": ["fleet"],
+  "agent_cmd": ["fir", "--mode", "acp"],
+  "state_dir": "/home/you/.config/zulip-acp/state",
+  "hide_thinking": false
+}

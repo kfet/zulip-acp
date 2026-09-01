@@ -1,0 +1,29 @@
+# zulip-acp systemd user unit template.
+#
+# Install to ~/.config/systemd/user/zulip-acp.service (edit %h paths are auto),
+# then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now zulip-acp
+#   loginctl enable-linger $USER
+#
+# zulip-acp is a plain long-poll relay: Type=simple, hard restart only
+# (no sd_notify, no graceful worker swap). See README.md "Running as a service".
+
+[Unit]
+Description=zulip-acp (fir fleet relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd user units do NOT inherit your login shell PATH. The ACP agent
+# (fir) lives in ~/.local/bin, so it MUST be set explicitly or the relay
+# starts, authenticates, resolves channels - then dies with
+#   agent start: start agent: exec: "fir": executable file not found in $PATH
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/zulip-acp/env
+ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
