@@ -18,7 +18,7 @@ Things deliberately not done in v1, with the reason.
   suppress thoughts on `hide_thinking`, cache `statusline` `_meta`, prepend a
   header once on the first user-visible chunk). Three copies is the signal:
   this belongs in acp-kit as a renderer with a per-surface markup strategy.
-  Recorded, not done — the brief for v1 is explicit that the third copy is
+  Recorded, not done — the v1 design is explicit that the third copy is
   the *evidence*, and the extraction is its own change with its own tests.
 
 ## Deferred features
@@ -61,7 +61,7 @@ Things deliberately not done in v1, with the reason.
   queue expiring (`BAD_EVENT_QUEUE_ID`, server restart, idle GC) and the
   re-register, anything posted is missed: the new queue starts at its own
   `last_event_id` and the relay never learns those messages existed. This is
-  exactly the cursor discipline the brief prescribes, and persisting the old
+  exactly the cursor discipline the v1 design prescribes, and persisting the old
   cursor would not help — the queue backing it is gone. A future backfill has an
   anchor if it wants one: `/register` returns `max_message_id`, so a relay could
   diff it against the last id it processed and replay the gap through
