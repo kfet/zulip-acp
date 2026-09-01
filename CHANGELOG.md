@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message in the topic, and can be retracted even when the turn ends in
   silence. Configurable via `ack_emoji`; set it to `""` to disable. Reaction
   failures are logged and never fail a turn, and removal runs on a detached
-  context so a cancelled or superseded turn still cleans up.
+  context so a cancelled or superseded turn still cleans up. `ack_emoji` is
+  validated at load: Zulip's UI writes reactions as `:eyes:` but the API takes
+  a bare `emoji_name`, and a colonised value would otherwise fail silently on
+  every turn.
 - **Early `Thinking…` placeholder on the ambient path.** An ambient turn used
   to post nothing at all until the agent's abstain verdict was in, which on a
   long turn meant minutes of silence. The verdict is knowable much sooner: the

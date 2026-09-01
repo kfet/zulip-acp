@@ -125,7 +125,7 @@ Every key is optional except the credentials and `channels`.
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
-| `ack_emoji` | `eyes` | emoji reaction added to a message while its turn runs; `""` disables |
+| `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
 
 The API key is declared as a secret and is **scrubbed from the agent's
 environment** before the child process starts.
