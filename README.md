@@ -166,11 +166,14 @@ journalctl --user -u zulip-acp -f
   debugging time: silent truncation, the `/register` narrow operand, and system
   bots posting into your topics.
 - [BACKLOG.md](BACKLOG.md) — what is deliberately not done yet, and why.
-- [.fir/skills/deploy/SKILL.md](.fir/skills/deploy/SKILL.md) and
-  [.fir/skills/update/SKILL.md](.fir/skills/update/SKILL.md) — the deployment and
+- [skills/deploy/SKILL.md](skills/deploy/SKILL.md) and
+  [skills/update/SKILL.md](skills/update/SKILL.md) — the deployment and
   update procedures. They are written as **agent skills** because the operator of
   a relay fleet is usually an agent; they are ordinary markdown, so read them
-  like any other doc.
+  like any other doc. To make an agent pick them up, either symlink
+  `.fir/skills -> ../skills` or add `"skills": ["skills"]` to its settings —
+  `.fir/` itself is deliberately untracked, because agent configuration is
+  per-deployment.
 
 ## Development
 
@@ -217,7 +220,7 @@ The relay **dials out** (long-polls `GET /api/v1/events`) — no inbound listene
 no port to open, no Tailscale Funnel. It therefore works against a tailnet-only
 Zulip.
 
-Full procedures: `.fir/skills/deploy/SKILL.md` and `.fir/skills/update/SKILL.md`.
+Full procedures: `skills/deploy/SKILL.md` and `skills/update/SKILL.md`.
 
 ## License
 

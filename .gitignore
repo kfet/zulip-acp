@@ -6,10 +6,10 @@
 *.local.json
 .env
 .envrc
-# Local agent scratch is ignored, but the shipped skills are part of the
-# repo: they document how this relay is deployed and updated.
-/.fir/*
-!/.fir/skills/
+# Agent config is per-deployment and never tracked. The skills themselves
+# live in ./skills; point an agent at them with a symlink
+# (.fir/skills -> ../skills) or a settings entry ("skills": ["skills"]).
+/.fir/
 *.test
 
 # Agent session scaffolding is never part of this repo.
