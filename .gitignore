@@ -6,5 +6,8 @@
 *.local.json
 .env
 .envrc
-/.fir/
+# Local agent scratch is ignored, but the shipped skills are part of the
+# repo: they document how this relay is deployed and updated.
+/.fir/*
+!/.fir/skills/
 *.test
