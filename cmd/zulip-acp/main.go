@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/state"
 
@@ -219,9 +220,18 @@ func main() {
 	defer func() { _ = sessions.Close() }()
 	go sessions.Run(ctx)
 
+	// The chat-command broker is shared with poe-acp (acp-kit/command).
+	// handler.New wires the Handler in as its Controller, so nothing
+	// here calls SetController.
+	broker := command.New(agent)
+
 	h, err := handler.New(handler.Config{
 		Client:             zc,
 		Agent:              agent,
+		Commands:           broker,
+		Version:            version,
+		AgentCmd:           strings.Join(cfg.GetAgentCmd(), " "),
+		StartTime:          time.Now(),
 		Sessions:           sessions,
 		Journal:            jr,
 		BotUserID:          me.UserID,

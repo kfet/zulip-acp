@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `!command` surface is now `acp-kit/command`, ported from `poe-acp`
+  rather than invented here.** v0.5.0 shipped a small hand-written broker;
+  `poe-acp` already had a mature, fully tested 655-line one. That package
+  moved to acp-kit whole — tests included — and both relays now consume it, so
+  the two surfaces cannot drift. `poe-acp` deletes its copy in the same
+  change. See the design doc for why v0.5.0's "promotion is premature" call
+  was wrong: the second consumer already existed and had not been looked at.
+- **New commands inherited from `poe-acp`:** `!login [provider|cancel]` with
+  the two-call `_meta.auth.interactive` bridge (paste the redirect URL back as
+  your next message), `!model <filter>` for narrowing the model list, and
+  **agent-command passthrough** — `!reload`, `!logout`, `!compact`,
+  `!session`, `!changelog`, `!mcp`, `!skills` are forwarded to the agent as
+  `/reload` etc. when it advertises them. `resume`, `continue`, `name`,
+  `share` and `export` are deliberately excluded: the relay owns the
+  conversation → session mapping, and letting the agent switch its own session
+  underneath it would desync that mapping.
+- **Back-compat aliases** now work: `!models`, `!relay`, `!bot`, `!whoami`,
+  `!reset`, `!cancel-login`.
+- **`!status` gained relay version, uptime and agent command**, and now
+  reports the conversation and its state directory as optional fields on the
+  shared renderer.
+- **Sigils `/` and `.` are accepted** alongside `!`, which stays the
+  advertised one. Zulip's `/me`, `/poll` and `/todo` are pre-filtered and
+  always reach the agent untouched — they are real messages and widgets, not
+  client-side slash commands — including mid-login, where a `/poll` must not
+  be mistaken for a pasted redirect URL.
+- Command names are matched case-insensitively on the verb; the argument keeps
+  its case, since a model id is a literal the agent must match.
+
+### Removed
+
+- **`!id`**, added in v0.5.0. `!status` already prints the conversation id on
+  its own line in backticks, which is just as copy-pasteable, so the command
+  existed to work around a formatting detail that was not actually a problem.
+  Dropping it keeps this relay's surface identical to `poe-acp`'s.
+- **`!cancel` as an alias for `!stop`.** `!login cancel` and `!cancel-login`
+  own that word, and a `!cancel` that sometimes aborts a login and sometimes
+  kills a turn is the worst possible ambiguity in the one command a user
+  reaches for when something has gone wrong. `!stop` is the only spelling.
+
+### Added
+
+- `journal.Key.Token` / `journal.ParseToken`: an opaque, round-trippable
+  conversation token. The broker identifies a conversation by one string it
+  hands back, and it must be the **key**, not the conv-id — `!new` replaces
+  the conv-id, so a broker holding one would be holding a stale identity.
+
 ## [0.5.0] - 2026-09-01
 
 ### Added

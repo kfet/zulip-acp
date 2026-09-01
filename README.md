@@ -129,42 +129,55 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 
 ## Commands
 
-A message that begins with `!` and names one of these is handled by the **relay
-itself**. It never reaches the agent and consumes no turn, so it works even
+A message naming a relay command is handled by the **relay itself**. It never
+reaches the agent and consumes no turn, so `!stop` and `!status` work even
 while the agent is busy or wedged. The reply is posted as an ordinary message
 in the same topic, or the same DM.
+
+The broker is `acp-kit/command`, shared with `poe-acp`, so the two relays
+offer the same surface.
 
 | command | what it does |
 | --- | --- |
 | `!help` | list these commands |
-| `!status` | where you are, the conversation id and its state directory, the model, and whether a turn is running |
-| `!id` | the bare conversation id, for `cd`-ing to its state directory |
+| `!status` | where you are, the conversation and its state directory, model, session, relay version and uptime |
 | `!model` | list the models the agent reports |
+| `!model <filter>` | narrow that list |
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
-| `!new` (`!reset`) | retire this conversation and start a fresh one |
-| `!stop` (`!cancel`) | interrupt the turn currently running here |
+| `!new` | retire this conversation and start a fresh one |
+| `!stop` | interrupt the turn currently running here |
+| `!login [provider]` | connect an LLM provider by OAuth; paste the redirect URL back as your next message |
+| `!login cancel` | abort a login in progress |
 
-`!new` is why this surface exists. A channel conversation can always be
+Older spellings still work and are not going away: `!models`, `!relay`,
+`!bot`, `!whoami`, `!reset`, `!cancel-login`.
+
+Commands the **agent** advertises are forwarded to it when they are on a small
+curated allowlist — `!reload`, `!logout`, `!compact`, `!session`,
+`!changelog`, `!mcp`, `!skills`. These do reach the agent and stream a reply
+like any other turn. `!help` lists whichever ones your agent currently offers.
+
+`!new` is why this surface matters most. A channel conversation can always be
 replaced by opening a new topic, but a **direct message is keyed on the
 participant set**, so without `!new` a DM is one conversation forever with no
 way to clear its context. Retiring is not deleting: the old conversation keeps
-its `state/convs/<id>/` directory — the reply tells you where — it just stops
-answering to the topic or the DM. Your `!model` choice carries over; the
-history does not.
+its `state/convs/<id>/` directory, it just stops answering. Your `!model`
+choice carries over; the history does not.
 
-Three rules worth knowing:
+### Grammar
 
-- **Names are case-insensitive**, and only the *first* token counts. `!NEW`
-  works; `please !new` is ordinary prose. Everything after that token is the
-  argument, newlines included — so a multi-line `!model` is read as one
-  argument and, failing to match an id exactly, lists candidates instead of
-  switching.
+- **Sigils.** `!`, `/` and `.` are all accepted; `!` is what gets advertised.
+- **Case-insensitive** on the command name — `!NEW` works. The *argument*
+  keeps its case, since a model id is a literal.
+- **Zulip's own `/me`, `/poll` and `/todo` always reach the agent untouched.**
+  They are real messages and widgets, not client-side slash commands, so the
+  relay never intercepts them — including mid-login, where a `/poll` must not
+  be mistaken for a pasted redirect URL. (Zulip's actual slash commands, like
+  `/ping`, are handled by your client and never reach a bot at all.)
 - **Prose that merely starts with a bang still reaches the agent.**
-  `!important: fix the parser`, `!5 minutes left` and a lone `!` are all
-  forwarded unchanged, because only a command-*shaped* token (a letter followed
-  by letters, digits, `_` or `-`) is considered. A command-shaped token that
-  names nothing gets a short error and is **not** forwarded either — `!hepl`
-  should not become an agent turn.
+  `!important: fix the parser`, `!5 minutes left` and a lone `!` are forwarded
+  unchanged. A command-shaped `!` token that names nothing gets a short error
+  and is **not** forwarded either — `!hepl` should not become an agent turn.
 - **To say something that really does start with a command name, double the
   bang.** `!!new` arrives at the agent as `!new`.
 
@@ -173,7 +186,8 @@ message there is addressed to the bot. In a **channel** a command is honoured
 when the message `@`-mentions the bot *or* the topic is already engaged — the
 relay stays out of topics it was never summoned to, `!help` included.
 `allowed_user_ids` gates commands exactly as it gates prompts, and the
-never-answer-a-bot guard runs ahead of all command parsing.
+never-answer-a-bot guard runs ahead of all command parsing. No command ever
+allocates a conversation: `!help` in a fresh topic leaves nothing on disk.
 
 ## Configuration
 

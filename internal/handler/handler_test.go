@@ -200,18 +200,22 @@ func (z *fakeZulip) count() int {
 // fakeAgent plays the ACP agent: it replays a scripted reply through
 // whatever sink the session manager installed.
 type fakeAgent struct {
-	mu       sync.Mutex
-	sink     client.SessionUpdateSink
-	chunks   []string
-	thoughts []string
-	meta     map[string]any
-	stop     acp.StopReason
-	err      error
-	model    string
-	models   []client.ModelInfo
-	setModel []string
-	setErr   error
-	prompts  []string
+	mu          sync.Mutex
+	sink        client.SessionUpdateSink
+	chunks      []string
+	thoughts    []string
+	meta        map[string]any
+	stop        acp.StopReason
+	err         error
+	model       string
+	models      []client.ModelInfo
+	agentCmds   []client.CommandInfo
+	authMethods []client.AuthMethod
+	authResult  client.AuthResult
+	authErr     error
+	setModel    []string
+	setErr      error
+	prompts     []string
 	// block, when non-nil, holds Prompt until closed — used to test
 	// cancellation of an in-flight turn.
 	block chan struct{}
@@ -242,6 +246,27 @@ func (a *fakeAgent) SetModel(_ context.Context, sid acp.SessionId, modelID strin
 	}
 	a.setModel = append(a.setModel, string(sid)+"="+modelID)
 	return nil
+}
+
+// AuthMethods and Authenticate satisfy the broker's Authenticator.
+func (a *fakeAgent) AuthMethods() []client.AuthMethod {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.authMethods
+}
+
+func (a *fakeAgent) Authenticate(_ context.Context, _, _, _ string, _ bool) (client.AuthResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.authResult, a.authErr
+}
+
+// AvailableCommands is the agent's advertised catalog, which gates the
+// passthrough allowlist.
+func (a *fakeAgent) AvailableCommands() []client.CommandInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentCmds
 }
 
 func (a *fakeAgent) selections() []string {

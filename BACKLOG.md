@@ -4,30 +4,12 @@ Things deliberately not done in v1, with the reason.
 
 ## acp-kit promotion candidates
 
-- **`internal/command` → `acp-kit/command`.** The `!command` parse core —
-  sigil detection, the `!!` escape, first-token extraction, case-insensitive
-  name/alias lookup, the ordered `Spec` registry — is written with zero Zulip
-  imports precisely so it can move. Only the concrete command list, the
-  dispatch switch and the Zulip-markdown rendering are local (in
-  `internal/handler/command.go`). It is **not** promoted now because acp-kit
-  promotion needs a second consumer to shape the API and neither sibling is
-  one today: `poe-acp`'s command surface is a hand-rolled chain fused with its
-  OAuth login broker, and `slack-acp` has no command surface at all.
-  `acp-kit/statusline` is not the precedent it looks like — that contract is
-  shared *by construction*, because relays and agent must agree on bytes.
-  Promote when `slack-acp` grows a command surface, with two real consumers
-  to negotiate `Spec` and dispatch against.
-
-- **`ValidatingSink.Release` — live streaming on the ambient path ("Tier 2").**
-  `zulip-acp` now posts a `Thinking…` placeholder as soon as the streamed text
-  diverges from the silent sentinel (`handler.sentinelWatch`), but the answer
-  itself still lands in one lump at the end of the turn, because
-  `ValidatingSink` buffers every `AgentMessageChunk` until `Commit`. The fix
-  belongs in acp-kit, not here: add a `Release(ctx)` that flushes what is
-  buffered and switches the sink to pass-through, so a caller that has proved
-  abstention impossible can stream the rest live. `PromptAbstainable` would
-  then treat a released sink as "answered". Every relay gets it at once.
-  Deliberately out of scope of the change that added the placeholder.
+> **Done, v0.6.0:** the `!command` broker was promoted to `acp-kit/command`
+> — ported from `poe-acp`, which deleted its copy in the same change. The
+> lesson is recorded in the design doc: "promote when a second consumer
+> exists" obliges you to go and *look* at the sibling repos rather than
+> reason about them from memory. The entry below was written on the
+> assumption that no second consumer existed; one had for months.
 
 - **`internal/rollover` → `acp-kit/chunker`.** The splitter is written with
   zero Zulip imports precisely so it can move. It is not promoted in v1: a
