@@ -263,3 +263,41 @@ func tail(s string, n int) string {
 	}
 	return string(r[len(r)-n:])
 }
+
+// TestReactionsAreIdempotentAgainstTheServer pins the server behaviour
+// the ack acknowledgement depends on: adding a reaction that is
+// already there, and removing one that is not, are FAILURES on the
+// wire (HTTP 400 with REACTION_ALREADY_EXISTS / REACTION_DOES_NOT_EXIST)
+// which zulipproto deliberately reports as success.
+//
+// If Zulip ever renames those codes, the relay would start logging a
+// spurious error on every retry-shaped ack. This test is where that
+// change gets noticed.
+func TestReactionsAreIdempotentAgainstTheServer(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+
+	id, err := c.SendMessage(ctx, streamID, topic, "reaction idempotency probe")
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// Removing before adding: the DOES_NOT_EXIST path.
+	if err := c.RemoveReaction(ctx, id, "eyes"); err != nil {
+		t.Fatalf("removing an absent reaction should read as success: %v", err)
+	}
+	if err := c.AddReaction(ctx, id, "eyes"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	// Adding twice: the ALREADY_EXISTS path.
+	if err := c.AddReaction(ctx, id, "eyes"); err != nil {
+		t.Fatalf("adding an existing reaction should read as success: %v", err)
+	}
+	if err := c.RemoveReaction(ctx, id, "eyes"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	// A nonexistent emoji is a REAL error and must still surface.
+	if err := c.AddReaction(ctx, id, "definitely_not_an_emoji_name"); err == nil {
+		t.Fatal("a bogus emoji name should be an error")
+	}
+}
