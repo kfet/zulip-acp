@@ -180,10 +180,18 @@ journalctl --user -u zulip-acp -f
   [skills/update/SKILL.md](skills/update/SKILL.md) — the deployment and
   update procedures. They are written as **agent skills** because the operator of
   a relay fleet is usually an agent; they are ordinary markdown, so read them
-  like any other doc. To make an agent pick them up, either symlink
-  `.fir/skills -> ../skills` or add `"skills": ["skills"]` to its settings —
-  `.fir/` itself is deliberately untracked, because agent configuration is
-  per-deployment.
+  like any other doc. `fir` finds them with one line of **global** config —
+  relative skill paths resolve against the working directory, so this discovers
+  `./skills/` in every project that has one:
+
+  ```json
+  // ~/.config/fir/settings.json
+  { "skills": ["skills"] }
+  ```
+
+  A per-checkout `.fir/skills -> ../skills` symlink works too (fir follows and
+  de-duplicates symlinked roots). `.fir/` itself is deliberately untracked:
+  agent configuration is per-deployment, the repository only ships the content.
 
 ## Development
 

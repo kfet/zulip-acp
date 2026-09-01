@@ -6,9 +6,9 @@
 *.local.json
 .env
 .envrc
-# Agent config is per-deployment and never tracked. The skills themselves
-# live in ./skills; point an agent at them with a symlink
-# (.fir/skills -> ../skills) or a settings entry ("skills": ["skills"]).
+# Agent config is per-deployment and never tracked. The skills themselves live
+# in ./skills; fir finds them via a global settings entry
+# ("skills": ["skills"], resolved against the cwd) or a .fir/skills symlink.
 /.fir/
 *.test
 

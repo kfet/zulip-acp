@@ -76,9 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.local.json`, `.DS_Store`, `/.fir/`, `*.test`).
 - Skills moved from `.fir/skills/` to **`skills/`**, and `.fir/` is now ignored
   wholesale. Agent configuration is per-deployment, so the repository ships the
-  content and each deployment wires it up locally — either a symlink
-  (`.fir/skills -> ../skills`, which fir follows and de-duplicates) or a
-  settings entry (`"skills": ["skills"]`). Nothing agent-specific is tracked.
+  content and each deployment wires it up locally. One line of global fir
+  config does it — `{"skills": ["skills"]}` in `~/.config/fir/settings.json`,
+  where relative paths resolve against the working directory, so `./skills/`
+  is discovered in every project that has one. A `.fir/skills -> ../skills`
+  symlink also works. Nothing agent-specific is tracked.
 
 ## [0.1.1] - 2026-08-31
 
