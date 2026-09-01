@@ -189,3 +189,24 @@ Without it, the mobile app only updates while it is open.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Deployment
+
+Canonical layout (mirrors `poe-acp`):
+
+```
+~/.local/bin/zulip-acp                    # binary (make deploy / brew)
+~/.config/zulip-acp/config.json           # see docs/config.example.json
+~/.config/zulip-acp/env                   # ZULIP_API_KEY=...  (mode 0600)
+~/.config/zulip-acp/state/                # per-conversation state + journal.json
+~/.config/systemd/user/zulip-acp.service  # packaging/systemd/zulip-acp.service
+```
+
+Logs go to journald (`journalctl --user -u zulip-acp`). Never run the relay as a
+bare `./zulip-acp` out of a checkout or a home-root folder.
+
+The relay **dials out** (long-polls `GET /api/v1/events`) — no inbound listener,
+no port to open, no Tailscale Funnel. It therefore works against a tailnet-only
+Zulip.
+
+Full procedures: `.fir/skills/deploy/SKILL.md` and `.fir/skills/update/SKILL.md`.

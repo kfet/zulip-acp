@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- `deploy` and `update` skills (`.fir/skills/`), modelled on poe-acp's, defining
+  the canonical deployment layout: binary in `~/.local/bin`, config/env/state
+  under `~/.config/zulip-acp/`, supervision by a systemd user unit, logs to
+  journald.
+- `packaging/systemd/zulip-acp.service` — ready-to-install unit template.
+- `docs/config.example.json`.
+- README "Deployment" section.
+
+### Notes
+- The unit **must** set `Environment=PATH=%h/.local/bin:...`: systemd user units
+  do not inherit the login shell PATH, so the relay would otherwise start,
+  authenticate, resolve channels and then die with
+  `exec: "fir": executable file not found in $PATH`.
+- The deploy skill now documents the message gating rule (new topic requires an
+  @-mention; already-engaged topics do not) — a non-mention in a fresh topic is
+  dropped silently with no log line, which is easily mistaken for a broken relay.
+
 ## [Unreleased]
 
 ### Changed
