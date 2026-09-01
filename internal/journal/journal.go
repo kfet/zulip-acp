@@ -222,6 +222,27 @@ func (j *Journal) Lookup(k Key) (Conv, bool) {
 	return *c, true
 }
 
+// LookupID returns the conversation with the given conv-id, if known.
+//
+// This is the reverse of the usual direction and exists for exactly one
+// caller: the self-hosted MCP server keys its sessions by conv-id (the
+// state manager's key, which is the working directory's name), while
+// the command broker is addressed by KEY token. A loopback tool call
+// arrives with the former and must be answered in terms of the latter.
+// A retired conversation is still resolvable by id — the tool call
+// came from a session that was created before the retirement, and
+// saying "no such conversation" would be a lie about where the call
+// came from.
+func (j *Journal) LookupID(convID string) (Conv, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok {
+		return Conv{}, false
+	}
+	return *c, true
+}
+
 // Ensure returns the conversation for k, allocating a fresh conv-id
 // and persisting it if this is the first time the relay has seen the
 // key.

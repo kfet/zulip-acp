@@ -146,6 +146,8 @@ offer the same surface.
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
 | `!new` | retire this conversation and start a fresh one |
 | `!stop` | interrupt the turn currently running here |
+| `!schedules` | list the prompts the agent has armed here (needs `relay_mcp`) |
+| `!unschedule <id>` | cancel one of them |
 | `!login [provider]` | connect an LLM provider by OAuth; paste the redirect URL back as your next message |
 | `!login cancel` | abort a login in progress |
 
@@ -215,9 +217,50 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
+| `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
+| `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
+| `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
+| `max_schedules_total` | `100` | schedules armed at once across the relay |
+| `min_schedule_interval_seconds` | `60` | floor on a repeating schedule |
 
 The API key is declared as a secret and is **scrubbed from the agent's
 environment** before the child process starts.
+
+### The agent→relay loopback (`relay_mcp`)
+
+With `"relay_mcp": true` the relay hosts a small MCP server on a private unix
+socket and advertises it to its own child agent. The agent can then:
+
+- read its `status`, `list_models` and `set_model` — the same controls as the
+  `!commands`, through the same code;
+- `post` a message into **this** conversation out of band, so a long task can
+  report progress, or a result can arrive after the turn that started it has
+  ended;
+- `schedule` / `list_schedules` / `unschedule` a prompt to itself. On fire it
+  re-enters the same conversation with its full history and the answer streams
+  into the topic normally.
+
+That is what makes *"go do X and tell me when it lands"* expressible.
+
+It is **off by default** because it is a real widening of what a
+prompt-injected agent could do. Three things bound it:
+
+- **It can only speak where it already is.** The conversation is resolved from
+  the MCP connection token, server-side. No tool takes a channel, topic or
+  user as an argument, so there is no way to address anywhere else.
+- **Scheduling is bounded in depth, breadth and rate** (the four keys above),
+  so a schedule that schedules a schedule always terminates.
+- **You can see and kill what is armed**: `!schedules` lists it, `!unschedule`
+  cancels it, and `!status` reports the count.
+
+`!new` does **not** cancel schedules — it clears context, not commitments — so
+use `!unschedule` for that. A firing is at-most-once: a crash in the moment
+between claiming a due schedule and running it loses that one firing, which is
+the safe direction for work nobody is watching.
+
+The socket lives in a 0700 directory, the socket file is 0600, and each
+session gets its own random token. Nothing outside this host's user can reach
+it, and nothing outside the relay's own child agent is told it exists.
 
 Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 `--state-dir`. Set `ZULIP_ACP_DEBUG=1` for protocol-level logging.

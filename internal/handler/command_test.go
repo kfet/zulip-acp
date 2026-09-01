@@ -917,3 +917,25 @@ func TestActiveConversationCountExcludesRetired(t *testing.T) {
 		t.Fatalf("status = %q, want one active conversation", got)
 	}
 }
+
+// TestUnknownCommandAcceptsDigitsAndPunctuation: a command NAME may
+// contain digits, "_" and "-" after its first letter, so those must be
+// reported as unknown commands rather than forwarded as prose. The
+// shape check is the only thing standing between "!important: fix
+// this" and a swallowed message, so both sides of it are pinned.
+func TestUnknownCommandAcceptsDigitsAndPunctuation(t *testing.T) {
+	for _, text := range []string{"!fix-2", "!step_3", "!v2"} {
+		name, ok := unknownCommand(text)
+		if !ok {
+			t.Fatalf("%q should be command-shaped", text)
+		}
+		if name != strings.TrimPrefix(text, "!") {
+			t.Fatalf("unknownCommand(%q) = %q", text, name)
+		}
+	}
+	for _, text := range []string{"!important: fix this", "!2fast", "!", "hello"} {
+		if _, ok := unknownCommand(text); ok {
+			t.Fatalf("%q must NOT be treated as a command", text)
+		}
+	}
+}

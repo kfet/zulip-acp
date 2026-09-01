@@ -1,9 +1,26 @@
 ## What this is
 
 `zulip-acp` bridges a **self-hosted Zulip server** to an ACP-speaking coding
-agent (`fir --mode acp`, Claude Code, …) over stdio. One binary, no MCP
-surface. Each Zulip **topic** (scoped by its channel) maps 1:1 to an ACP
-session inside a shared agent process.
+agent (`fir --mode acp`, Claude Code, …) over stdio. One binary. Each Zulip
+**topic** (scoped by its channel) maps 1:1 to an ACP session inside a shared
+agent process.
+
+**This used to say "no MCP surface". That is no longer true, and the change
+was a decision, not drift.** As of the relay-loopback work the binary hosts
+one MCP server — on a private unix socket, advertised only to its own child
+agent — so the agent can drive the relay from inside a turn: post out of band,
+and schedule a prompt back into the same conversation. ACP has no
+agent-initiated message and the streaming sink is bound per turn, but an MCP
+tool call runs agent→client, so this is the mechanism the protocol already
+gives us. It is **off by default** (`"relay_mcp": true`), because it widens
+what a prompt-injected agent could do.
+
+What has NOT changed, and must not: the relay exposes no MCP surface to
+anything outside its own process. There is no network listener, no
+third-party MCP client, and no tool that takes a conversation as an argument —
+identity comes from the connection token, resolved server-side. See
+[docs/zulip-acp-design.md](docs/zulip-acp-design.md) § *The agent→relay
+loopback*.
 
 It is the third relay in a family: `poe-acp` (Poe server bot, HTTP + SSE),
 `slack-acp` (Slack, Socket Mode), `zulip-acp` (here). All ACP-side machinery
@@ -34,6 +51,7 @@ internal/journal/       (stream_id, topic) → conv-id alias map + tail ids
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status header renderer
 internal/sysprompt/     built-in Zulip-formatting system prompt
+internal/zulipmcp/      self-hosted MCP server identity (socket, env, subcommand)
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
 test/                   live-server integration tests (ZULIP_LIVE=1)
 ```
@@ -65,6 +83,20 @@ Zulip wire protocol it stays here.
   `internal/handler/command.go` is only what Zulip knows: the `Controller`
   implementation, the `/me` / `/poll` / `/todo` pre-filter, the `!!` escape
   and the unknown-command reply.
+- **The loopback tools live in `acp-kit/relaytool`, over the same
+  `Controller`.** A `!command` and a tool call must go through one
+  implementation — the exported actions on `command.Broker` — or they drift.
+  Adding a loopback capability means adding a Broker action, not reaching past
+  the broker. `internal/zulipmcp` owns only the server's identity; it owns no
+  tools. `internal/handler/loopback.go` owns only what Zulip knows: conv-id →
+  broker token, posting through the splitter, and re-applying the relay's
+  gates when a schedule fires.
+- **A loopback tool must never destroy the turn that is calling it.** That is
+  why there is no `stop` tool and why `new_session` is deferred to
+  `Handler.endTurn`. Do not "fix" either.
+- **`post` has no target parameter, and must not grow one casually.** The
+  conversation comes from the MCP connection token. An agent that can post
+  anywhere is a realm-wide megaphone for anything that can prompt-inject it.
 
 ## Git
 

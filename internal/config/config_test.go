@@ -357,3 +357,45 @@ func TestDMsOptIn(t *testing.T) {
 		t.Fatal("want error with neither channels nor dms")
 	}
 }
+
+// TestScheduleLimitsValidation: the schedule bounds are safety limits,
+// so a nonsensical value must fail at load rather than at the first
+// schedule.
+func TestScheduleLimitsValidation(t *testing.T) {
+	for name, c := range map[string]Config{
+		"per conv": {MaxSchedulesPerConv: -1},
+		"total":    {MaxSchedulesTotal: -1},
+		"depth":    {MaxScheduleDepth: -1},
+		"interval": {MinScheduleIntervalSeconds: -1},
+	} {
+		if err := c.Validate(); err == nil {
+			t.Fatalf("%s: want a validation error", name)
+		}
+	}
+	ok := Config{MaxSchedulesPerConv: 5, MaxSchedulesTotal: 50, MaxScheduleDepth: 2, MinScheduleIntervalSeconds: 120}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid limits rejected: %v", err)
+	}
+	if got := ok.MinScheduleInterval(); got != 2*time.Minute {
+		t.Fatalf("MinScheduleInterval = %v", got)
+	}
+	// Unset means "let acp-kit/schedule apply its own defaults".
+	if got := (&Config{}).MinScheduleInterval(); got != 0 {
+		t.Fatalf("unset MinScheduleInterval = %v, want 0", got)
+	}
+}
+
+// TestRelayMCPIsOffByDefault: the loopback widens what a
+// prompt-injected agent can do, so it must be an explicit decision.
+func TestRelayMCPIsOffByDefault(t *testing.T) {
+	if (&Config{}).RelayMCP {
+		t.Fatal("relay_mcp must default to false")
+	}
+	c, err := Load(writeConfig(t, `{"relay_mcp": true, "max_schedule_depth": 2}`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.RelayMCP || c.MaxScheduleDepth != 2 {
+		t.Fatalf("config = %+v", c)
+	}
+}

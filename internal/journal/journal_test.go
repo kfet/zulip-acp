@@ -397,3 +397,29 @@ func TestConcurrentEnsure(t *testing.T) {
 		}
 	}
 }
+
+// TestLookupID resolves the reverse direction the MCP loopback needs:
+// the session key it is handed is a conv-id, but the command broker is
+// addressed by key token.
+func TestLookupID(t *testing.T) {
+	j, _ := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "loopback"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	got, ok := j.LookupID(c.ID)
+	if !ok || got.Key.Token() != Channel(4, "loopback").Token() {
+		t.Fatalf("LookupID(%q) = %+v, %v", c.ID, got, ok)
+	}
+	if _, ok := j.LookupID("cnope"); ok {
+		t.Fatal("an unknown conv-id must not resolve")
+	}
+	// A retired conversation stays resolvable BY ID: a tool call from
+	// its session must still be answerable about where it came from.
+	if _, _, existed, err := j.Retire(Channel(4, "loopback")); err != nil || !existed {
+		t.Fatalf("Retire: %v %v", existed, err)
+	}
+	if _, ok := j.LookupID(c.ID); !ok {
+		t.Fatal("a retired conversation stopped resolving by id")
+	}
+}

@@ -25,6 +25,8 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/relaytool"
+	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
@@ -161,6 +163,16 @@ type Config struct {
 	// Controller, so the caller must not call SetController itself.
 	Commands *command.Broker
 
+	// Schedules is the durable store behind scheduled prompts. Nil
+	// disables scheduling: the Handler still satisfies
+	// command.Scheduler, but every call reports that the relay cannot
+	// do it.
+	Schedules *schedule.Store
+	// Loopback is the self-hosted MCP tool set. Nil disables the
+	// agent→relay loopback. The Handler needs it only to drain
+	// deferred actions at the end of a turn.
+	Loopback *relaytool.Tools
+
 	// Version, AgentCmd and StartTime are reported by `!status`. All
 	// optional: an unset field is simply omitted from the reply.
 	Version   string
@@ -169,6 +181,20 @@ type Config struct {
 	// Now is the clock `!status` measures uptime against. Injected so
 	// the test suite never has to sleep. Defaults to time.Now.
 	Now func() time.Time
+
+	// OnWaitForConv, if set, is called just before a scheduled turn
+	// parks waiting for a conversation to go idle.
+	//
+	// It exists so the test suite can prove the queueing behaviour
+	// deterministically: "the scheduled turn waited rather than
+	// superseding the human one" is only observable at the moment the
+	// wait is entered, and asserting it with a timer would be exactly
+	// the flaky, timing-dependent test AGENTS.md forbids. Nil in
+	// production.
+	//
+	// It runs while the handler's inflight lock is HELD, so it must do
+	// nothing but signal. Anything that touches the Handler deadlocks.
+	OnWaitForConv func(convID string)
 
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
@@ -400,6 +426,10 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	entry := &inflightEntry{cancel: cancel}
 	h.setInflight(conv.ID, entry)
 	go func() {
+		// LIFO: deferred actions the agent asked for are applied only
+		// after the turn is fully unwound and no longer inflight, so
+		// `new_session` cannot cancel the very turn that requested it.
+		defer h.endTurn(conv)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
 		if err := h.run(pctx, conv, prompt, addressed, m.ID); err != nil {
