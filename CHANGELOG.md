@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zulipproto.Message.RecipientNames`, for rendering DM participants in human
   terms in `!status`.
 
+### Fixed
+
+- **A journal write that fails no longer half-applies.** `Ensure`, `SetTail`,
+  `Rename` and the new `Retire` all mutated the in-memory maps before
+  attempting to persist, so a failed write returned an error while the relay
+  went on behaving as though the change had succeeded — until a restart
+  reloaded the untouched file and silently undid it. Every mutation now rolls
+  back on a failed write. Most visible on `!new`, which tells the user it
+  failed and must therefore actually have failed.
+
 ### Changed
 
 - The built-in system prompt tells the agent that `!`-commands are handled by

@@ -349,6 +349,7 @@ func TestNewCancelsTheRunningTurn(t *testing.T) {
 func TestNewReportsAJournalFailure(t *testing.T) {
 	hh := dmHarness(t, newAgent("x"), nil)
 	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	old := hh.j.Convs()[0]
 	hh.z.reset()
 	hh.breakJournal(t)
 	hh.deliverDM(t, humanID, "!new", humanID, botID)
@@ -357,6 +358,13 @@ func TestNewReportsAJournalFailure(t *testing.T) {
 	}
 	if !hh.logged("retiring conversation") {
 		t.Fatalf("logs = %q", hh.logs)
+	}
+	// The reply said it failed, so it must actually have failed: the
+	// key still resolves to the original conversation. Anything else
+	// and the relay would behave as though `!new` worked, until a
+	// restart reloaded the untouched file and silently undid it.
+	if got, ok := hh.j.Lookup(journal.DM([]int64{humanID, botID})); !ok || got.ID != old.ID {
+		t.Fatalf("conversation = %+v, %v; want the unchanged %q", got, ok, old.ID)
 	}
 }
 

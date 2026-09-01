@@ -323,7 +323,9 @@ func TestSetTailAndRenameSaveErrors(t *testing.T) {
 	if _, _, err := j.Rename(4, "alpha", "gamma"); err == nil {
 		t.Fatal("Rename: want save error")
 	}
-	if _, _, err := j.Rename(4, "gamma", "beta"); err == nil {
+	// The failed rename rolled back, so "alpha" is still the live key —
+	// which is what makes it usable to drive the clash branch too.
+	if _, _, err := j.Rename(4, "alpha", "beta"); err == nil {
 		t.Fatal("clashing Rename: want save error")
 	}
 }

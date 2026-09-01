@@ -170,7 +170,9 @@ type Handler struct {
 	// `!model <id>`. In memory only: a model choice is a session-shaped
 	// preference, and a relay restart drops the ACP sessions it applied
 	// to anyway, so persisting it would only preserve a claim about
-	// state that no longer exists.
+	// state that no longer exists. It holds at most one entry per
+	// conversation a human has run `!model` in — the same order as the
+	// session map itself — so it needs no GC of its own.
 	modelMu      sync.Mutex
 	modelChoices map[string]modelChoice
 }

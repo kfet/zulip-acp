@@ -152,3 +152,109 @@ func TestRetiredEntriesNeverClaimTheirKey(t *testing.T) {
 		t.Fatalf("Lookup = %+v, %v", c, ok)
 	}
 }
+
+// TestFailedWritesLeaveTheJournalUnchanged is the rule every mutation
+// here obeys: a mutation that cannot be persisted must not be visible
+// in memory either. Otherwise the relay tells the user the change
+// failed and then behaves as though it succeeded — until a restart
+// reloads the file and it silently un-happens.
+//
+// The subtests share one journal and run in source order, each relying
+// on the previous one having rolled back cleanly. That is the point:
+// a leaked mutation shows up as a later subtest failing.
+func TestFailedWritesLeaveTheJournalUnchanged(t *testing.T) {
+	j, path := tmpJournal(t)
+	kept, err := j.Ensure(Channel(4, "kept"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := j.SetTail(kept.ID, 11); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	dir := strings.TrimSuffix(path, "/journal.json")
+	readOnly := func() {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
+	writable := func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+	}
+	t.Cleanup(writable)
+
+	t.Run("Ensure", func(t *testing.T) {
+		readOnly()
+		defer writable()
+		if _, err := j.Ensure(Channel(4, "brand new")); err == nil {
+			t.Fatal("Ensure did not report the failure")
+		}
+		if c, ok := j.Lookup(Channel(4, "brand new")); ok {
+			t.Fatalf("a conversation that could not be persisted is live: %+v", c)
+		}
+		if n := len(j.Convs()); n != 1 {
+			t.Fatalf("Convs = %d, want 1", n)
+		}
+	})
+
+	t.Run("SetTail", func(t *testing.T) {
+		readOnly()
+		defer writable()
+		if err := j.SetTail(kept.ID, 99); err == nil {
+			t.Fatal("SetTail did not report the failure")
+		}
+		if got := j.Convs()[0].TailID; got != 11 {
+			t.Fatalf("TailID = %d, want the unchanged 11", got)
+		}
+	})
+
+	t.Run("Rename", func(t *testing.T) {
+		readOnly()
+		defer writable()
+		if _, _, err := j.Rename(4, "kept", "moved"); err == nil {
+			t.Fatal("Rename did not report the failure")
+		}
+		if _, ok := j.Lookup(Channel(4, "moved")); ok {
+			t.Fatal("a rename that could not be persisted is live")
+		}
+		c, ok := j.Lookup(Channel(4, "kept"))
+		if !ok || c.ID != kept.ID {
+			t.Fatalf("the original key was lost: %+v, %v", c, ok)
+		}
+	})
+
+	t.Run("Rename onto a clash", func(t *testing.T) {
+		clash, err := j.Ensure(Channel(4, "clash"))
+		if err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+		readOnly()
+		defer writable()
+		if _, _, err := j.Rename(4, "kept", "clash"); err == nil {
+			t.Fatal("Rename did not report the failure")
+		}
+		c, ok := j.Lookup(Channel(4, "kept"))
+		if !ok || c.ID != kept.ID {
+			t.Fatalf("the losing conversation was dropped anyway: %+v, %v", c, ok)
+		}
+		if c, ok := j.Lookup(Channel(4, "clash")); !ok || c.ID != clash.ID {
+			t.Fatalf("the winning conversation changed: %+v, %v", c, ok)
+		}
+	})
+
+	t.Run("Retire", func(t *testing.T) {
+		readOnly()
+		defer writable()
+		if _, _, _, err := j.Retire(Channel(4, "kept")); err == nil {
+			t.Fatal("Retire did not report the failure")
+		}
+		c, ok := j.Lookup(Channel(4, "kept"))
+		if !ok || c.ID != kept.ID {
+			t.Fatalf("the conversation was retired anyway: %+v, %v", c, ok)
+		}
+		if c.Retired || c.TailID != 11 {
+			t.Fatalf("conv mutated by a failed Retire: %+v", c)
+		}
+	})
+}

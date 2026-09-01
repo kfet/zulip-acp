@@ -18,6 +18,17 @@
 //     the bot, or the topic is already engaged. Anything else in a
 //     channel the relay was never summoned to is none of its business
 //     — including `!help`.
+//
+// # Serialised delivery
+//
+// Commands read the journal (Lookup) and then act on what they read,
+// so they assume Handle is called from ONE goroutine — which it is:
+// zulipproto's /events runner is a single long-poll loop. Nothing
+// enforces it, so if a second runner is ever added, the Lookup→command
+// window becomes a real TOCTOU. The commands that mutate are written
+// to fail safe anyway (Retire reports existed=false rather than
+// inventing a conversation), but the invariant is worth knowing before
+// anyone parallelises the event side.
 package handler
 
 import (

@@ -235,7 +235,10 @@ func (j *Journal) Ensure(k Key) (Conv, error) {
 	c := &Conv{ID: j.newID(), Key: k}
 	j.index(c)
 	out := *c
-	err := j.save()
+	err := j.commit(func() {
+		delete(j.byID, c.ID)
+		delete(j.byKey, k.index())
+	})
 	j.mu.Unlock()
 	if err != nil {
 		return Conv{}, err
@@ -273,12 +276,19 @@ func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool,
 		// leaving two conv-ids answering to the same topic.
 		delete(j.byID, c.ID)
 		out := *existing
-		return out, false, j.save()
+		return out, false, j.commit(func() {
+			j.byID[c.ID] = c
+			j.byKey[oldKey] = c
+		})
 	}
 	c.Topic = newTopic
 	j.byKey[newKey] = c
 	out := *c
-	return out, true, j.save()
+	return out, true, j.commit(func() {
+		delete(j.byKey, newKey)
+		c.Topic = oldTopic
+		j.byKey[oldKey] = c
+	})
 }
 
 // Retire replaces the conversation at k with a brand-new one, which is
@@ -305,12 +315,19 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	if !ok {
 		return Conv{}, Conv{}, false, nil
 	}
+	prevTail := old.TailID
 	old.Retired = true
 	old.TailID = 0
 	delete(j.byKey, idx)
 	c := &Conv{ID: j.newID(), Key: k}
 	j.index(c)
-	return *old, *c, true, j.save()
+	prev, fresh = *old, *c
+	return prev, fresh, true, j.commit(func() {
+		delete(j.byID, c.ID)
+		delete(j.byKey, idx)
+		old.Retired, old.TailID = false, prevTail
+		j.byKey[idx] = old
+	})
 }
 
 // SetTail records the message id the relay is streaming into for a
@@ -325,8 +342,9 @@ func (j *Journal) SetTail(convID string, msgID int64) error {
 	if c.TailID == msgID {
 		return nil
 	}
+	prev := c.TailID
 	c.TailID = msgID
-	return j.save()
+	return j.commit(func() { c.TailID = prev })
 }
 
 // OpenTails returns every conversation with a tail message still
@@ -367,6 +385,25 @@ func (j *Journal) newID() string {
 			return id
 		}
 	}
+}
+
+// commit persists the journal and, if the write fails, runs undo to
+// put the in-memory state back exactly as it was.
+//
+// Every mutation here goes through it, because the alternative is the
+// worst possible outcome: the caller is told the change failed, tells
+// the user so, and the relay then behaves as though it succeeded —
+// right up until a restart reloads the untouched file and silently
+// un-does it. The journal is a cache of the topic, and a cache that
+// disagrees with its own error returns is worse than no cache.
+//
+// Caller holds mu.
+func (j *Journal) commit(undo func()) error {
+	err := j.save()
+	if err != nil {
+		undo()
+	}
+	return err
 }
 
 // save writes the whole journal atomically. Caller holds mu.
