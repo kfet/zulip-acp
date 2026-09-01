@@ -11,3 +11,7 @@
 /.fir/*
 !/.fir/skills/
 *.test
+
+# Agent session scaffolding is never part of this repo.
+BRIEF*.md
+REPORT*.md
