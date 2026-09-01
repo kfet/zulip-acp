@@ -15,3 +15,7 @@
 # Agent session scaffolding is never part of this repo.
 BRIEF*.md
 REPORT*.md
+
+# A real relay config carries ZULIP_API_KEY. The example is the exception.
+config.json
+!docs/config.example.json
