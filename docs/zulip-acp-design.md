@@ -490,7 +490,11 @@ than a typo notice. That error is scoped to `!` alone: an unrecognised
 command, and a leading `.` is ordinary punctuation.
 
 The escape for genuine prose is a doubled bang: `!!new` arrives as `!new`.
-This is relay policy, applied before the broker, not a broker knob.
+This is relay policy, applied before the broker, not a broker knob — and
+deliberately ahead of the pending-login check too. Someone typing `!!foo`
+while a login is in flight is plainly not pasting a redirect URL, so the
+escape is honoured and the login stays pending for the paste that follows;
+consuming it as a malformed redirect would abort the login instead.
 
 ### `!new`, retirement, and the tail
 

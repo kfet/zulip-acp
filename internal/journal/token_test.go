@@ -12,6 +12,13 @@ func TestTokenRoundTrips(t *testing.T) {
 		Channel(0, "weird"),
 		Channel(4, "topic with spaces, commas and \"quotes\""),
 		Channel(4, "emoji 🔥 topic"),
+		// The encoding's OWN separator inside the payload. This round
+		// trips because Cut splits at the FIRST separator and the rest
+		// — embedded NULs included — stays in the topic. That property
+		// is exactly what a refactor to strings.Split would silently
+		// break, so it is pinned here.
+		Channel(4, "a\x00b"),
+		Channel(4, "\x00leading"),
 		DM([]int64{9, 4}),
 		DM([]int64{22, 9, 4}),
 		DM([]int64{7}),

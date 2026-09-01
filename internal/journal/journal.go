@@ -363,6 +363,26 @@ func (j *Journal) OpenTails() []Conv {
 	return out
 }
 
+// ActiveCount returns the number of conversations that can still be
+// reached — i.e. excluding retired ones.
+//
+// Retired entries stay in the file as the record of which state
+// directories are dead, so a caller reporting "active conversations"
+// must not count them, or the number only ever grows with every
+// `!new`. Whether an entry is retired is this package's business, so
+// the counting is too.
+func (j *Journal) ActiveCount() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	n := 0
+	for _, c := range j.byID {
+		if !c.Retired {
+			n++
+		}
+	}
+	return n
+}
+
 // Convs returns every known conversation, ordered by conv-id.
 func (j *Journal) Convs() []Conv {
 	j.mu.Lock()
