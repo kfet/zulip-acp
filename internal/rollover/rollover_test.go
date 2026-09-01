@@ -448,7 +448,7 @@ func TestBoundaryExact(t *testing.T) {
 	}
 }
 
-// TestSealMarkerLandsExactlyAtBudget is the off-by-one the brief calls
+// TestSealMarkerLandsExactlyAtBudget is the off-by-one the v1 design calls
 // out: content that fits before the seal marker is added but not
 // after. The headroom must be reserved BEFORE the cut is chosen.
 func TestSealMarkerLandsExactlyAtBudget(t *testing.T) {
