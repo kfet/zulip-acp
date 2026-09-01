@@ -146,6 +146,17 @@ type Conv struct {
 	// 0 when no turn is in flight. A non-zero value surviving a
 	// restart means that turn was interrupted.
 	TailID int64 `json:"tail_id,omitempty"`
+	// Retired marks a conversation the user replaced with `!new`. It
+	// keeps its id — and therefore its state/convs/<id>/ directory,
+	// which is never deleted — but it no longer answers to its key,
+	// so nothing can reach it again.
+	//
+	// It stays in the file rather than being dropped for two reasons:
+	// it is the record of which state dirs are dead, and a turn still
+	// unwinding on the retired conversation resolves its own id
+	// through SetTail without hitting "unknown conversation". Absent
+	// in a pre-!new journal, so no version bump is needed.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // file is the on-disk shape. Stored as a list so the file stays
@@ -191,10 +202,13 @@ func Open(path string) (*Journal, error) {
 }
 
 // index installs c in both maps. Caller holds mu (or is Open, which
-// has no concurrent users yet).
+// has no concurrent users yet). A retired conversation is addressable
+// by id only: its key belongs to whatever replaced it.
 func (j *Journal) index(c *Conv) {
 	j.byID[c.ID] = c
-	j.byKey[c.Key.index()] = c
+	if !c.Retired {
+		j.byKey[c.Key.index()] = c
+	}
 }
 
 // Lookup returns the conversation for k, if known.
@@ -265,6 +279,38 @@ func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool,
 	j.byKey[newKey] = c
 	out := *c
 	return out, true, j.save()
+}
+
+// Retire replaces the conversation at k with a brand-new one, which is
+// what `!new` does. The old conversation keeps its id and its
+// state/convs/<id>/ directory — nothing on disk is deleted — it simply
+// stops answering to k, and a fresh conv-id takes its place.
+//
+// This is the only way to start over in a direct message, where the
+// key is the participant set and therefore fixed forever. In a channel
+// a new topic would do, but `!new` works there too.
+//
+// The retired conversation's tail is cleared as part of the same
+// atomic write: the next turn must never stream into the message the
+// retired conversation was mid-way through.
+//
+// Returns existed=false, and allocates nothing, when k is unknown —
+// there is no conversation to retire, and inventing one would create
+// state the user never asked for.
+func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	idx := k.index()
+	old, ok := j.byKey[idx]
+	if !ok {
+		return Conv{}, Conv{}, false, nil
+	}
+	old.Retired = true
+	old.TailID = 0
+	delete(j.byKey, idx)
+	c := &Conv{ID: j.newID(), Key: k}
+	j.index(c)
+	return *old, *c, true, j.save()
 }
 
 // SetTail records the message id the relay is streaming into for a

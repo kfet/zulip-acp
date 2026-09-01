@@ -231,6 +231,32 @@ func (m Message) Recipients() []int64 {
 	return out
 }
 
+// RecipientNames returns the full names of a direct message's
+// participants, in the order Zulip listed them. It is for human-facing
+// prose only — a name is not an identity, and nothing may key on it.
+// Returns nil for a channel message, and skips any entry with no name.
+func (m Message) RecipientNames() []string {
+	if len(m.DisplayRecipient) == 0 {
+		return nil
+	}
+	var users []struct {
+		FullName string `json:"full_name"`
+	}
+	if err := json.Unmarshal(m.DisplayRecipient, &users); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(users))
+	for _, u := range users {
+		if u.FullName != "" {
+			out = append(out, u.FullName)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // SystemBotRealm is the realm Zulip's cross-realm system bots live in.
 // A topic move, for instance, posts a "This topic was moved here from
 // …" notice as Notification Bot, which a relay must not treat as a

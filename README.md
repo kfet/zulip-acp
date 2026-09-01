@@ -127,6 +127,51 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   `channels` list stays a fatal error — "everything" must be asked for, never
   defaulted into.
 
+## Commands
+
+A message that begins with `!` and names one of these is handled by the **relay
+itself**. It never reaches the agent and consumes no turn, so it works even
+while the agent is busy or wedged. The reply is posted as an ordinary message
+in the same topic, or the same DM.
+
+| command | what it does |
+| --- | --- |
+| `!help` | list these commands |
+| `!status` | where you are, the conversation id and its state directory, the model, and whether a turn is running |
+| `!id` | the bare conversation id, for `cd`-ing to its state directory |
+| `!model` | list the models the agent reports |
+| `!model <id>` | switch **this conversation** to that model, from the next message on |
+| `!new` (`!reset`) | retire this conversation and start a fresh one |
+| `!stop` (`!cancel`) | interrupt the turn currently running here |
+
+`!new` is why this surface exists. A channel conversation can always be
+replaced by opening a new topic, but a **direct message is keyed on the
+participant set**, so without `!new` a DM is one conversation forever with no
+way to clear its context. Retiring is not deleting: the old conversation keeps
+its `state/convs/<id>/` directory — the reply tells you where — it just stops
+answering to the topic or the DM. Your `!model` choice carries over; the
+history does not.
+
+Three rules worth knowing:
+
+- **Names are case-insensitive**, and only the *first* token counts. `!NEW`
+  works; `please !new` is ordinary prose.
+- **Prose that merely starts with a bang still reaches the agent.**
+  `!important: fix the parser`, `!5 minutes left` and a lone `!` are all
+  forwarded unchanged, because only a command-*shaped* token (a letter followed
+  by letters, digits, `_` or `-`) is considered. A command-shaped token that
+  names nothing gets a short error and is **not** forwarded either — `!hepl`
+  should not become an agent turn.
+- **To say something that really does start with a command name, double the
+  bang.** `!!new` arrives at the agent as `!new`.
+
+Gating is exactly a prompt's. In a **DM** commands always work, because every
+message there is addressed to the bot. In a **channel** a command is honoured
+when the message `@`-mentions the bot *or* the topic is already engaged — the
+relay stays out of topics it was never summoned to, `!help` included.
+`allowed_user_ids` gates commands exactly as it gates prompts, and the
+never-answer-a-bot guard runs ahead of all command parsing.
+
 ## Configuration
 
 Every key is optional except the credentials and `channels` (which may be

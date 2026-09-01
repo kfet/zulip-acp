@@ -322,12 +322,145 @@ an agent cannot use a convention it is never told about.
 | `internal/verify`, `internal/probe`, `slackproto/manifest` | Slack app manifests and request-signature verification. Basic auth has no signing secret, so there is nothing to verify — inventing an equivalent would be theatre |
 | the self-drive hatch, `initcmd`, `installsvc` | accretions, not core; each is 100%-coverage surface with no demand here |
 
+## The relay command surface
+
+A message beginning with `!` and naming a known command is handled by the
+relay and **never forwarded to the agent**. It costs no turn, which is what
+makes `!stop` and `!status` useful precisely when the agent is unresponsive.
+
+### Why it exists at all
+
+`!new`. A channel conversation can always be replaced by opening a new topic
+— the topic *is* the identity. A **direct message cannot**: its key is the
+participant set (see *Conv-id indirection*), which is fixed for as long as
+those people exist. Without `!new` a DM is one session forever, with no way
+to clear its context. Everything else on the surface is orientation that the
+chat client cannot give you: which conv-id, which state directory, which
+model, is something still running.
+
+### Where the code lives, and the cross-repo question
+
+`internal/command` holds the **parse core** — sigil detection, the `!!`
+escape, first-token extraction, case-insensitive name/alias lookup, and an
+ordered `Spec` registry. It must never import `zulipproto`, `journal` or
+anything else Zulip-specific; the same import-graph discipline that keeps
+`internal/rollover` promotable. `internal/handler/command.go` holds the
+Zulip half: the concrete command list, the dispatch switch, and the
+Zulip-markdown rendering.
+
+We deliberately did **not** promote the core to `acp-kit` now, even though a
+command parser is obviously generic relay machinery. `acp-kit/statusline`
+looks like the precedent — generic core there, Zulip rendering here — but it
+is not: that contract is shared *by construction*, because three relays and
+the agent have to agree on bytes on the wire. Nothing is shared here yet.
+`poe-acp` has a command surface, but it is a hand-rolled chain fused with its
+OAuth login broker and cannot adopt an external parser without a refactor
+nobody has scheduled; `slack-acp` has no command surface at all. Promoting
+now would freeze a `Spec`/dispatch API in a versioned library on the evidence
+of exactly one consumer. `internal/rollover` is the matching precedent:
+genuinely generic, kept local by import discipline, listed in `BACKLOG.md`,
+and promoted when a second consumer exists to shape the API. Moving a
+Zulip-free package later is a `git mv`; un-breaking a wrong acp-kit API is
+not.
+
+### Dispatch
+
+Ordering in `handleMessage` is load-bearing:
+
+1. The **bot-own-message** and **system-bot-sender** guards, unchanged and
+   still first. The relay must never obey a command it wrote itself.
+2. Routing (channel key or DM key) and mention gating.
+3. `allowed_user_ids`.
+4. `Journal.Lookup` — a *read*.
+5. The `!addressed && !engaged` drop.
+6. **Command dispatch.**
+7. `Journal.Ensure` and the agent turn.
+
+Dispatch sits between the lookup and the allocation on purpose: a command
+must never **allocate** a conversation. `!help` in a topic the relay has
+never answered in leaves nothing on disk, and `!status` there honestly
+reports "none yet".
+
+### Gating in a channel
+
+A command is honoured exactly when a prompt would be: the message mentions
+the bot, or the topic is already engaged. The alternative — honouring
+`!help`/`!status` on any channel message — was rejected: the relay answering
+in a topic it was never summoned to is precisely the behaviour the mention
+gate exists to prevent, and a command is no less visible than prose. `!new`
+in a non-engaged topic is near-meaningless anyway (a new topic *is* a new
+conversation), and reports as much rather than allocating one to retire.
+
+In a DM every message reaches the handler by construction, so commands work
+there unconditionally — which is the whole point.
+
+### The grammar, and not eating prose
+
+Only a **command-shaped** first token counts: an ASCII letter followed by
+letters, digits, `_` or `-`. `!important: fix the parser`, `!5 minutes` and a
+lone `!` are therefore prose and reach the agent byte-for-byte. A
+command-shaped token naming nothing known gets a one-line error and is *also*
+not forwarded — `!hepl` becoming an agent turn is worse than a typo notice.
+The escape for genuine prose is a doubled bang: `!!new` arrives as `!new`.
+
+### `!new`, retirement, and the tail
+
+`Journal.Retire` marks the old `Conv` with `retired: true`, clears its tail,
+drops it from the key index, and allocates a fresh conv-id under the same
+key — one atomic write. The old `state/convs/<id>/` directory is never
+touched; retiring is not deleting, and the reply names the directory.
+
+Two details are not cosmetic:
+
+- **The tail must be cleared**, or a restart would mark, and the next turn
+  could stream into, a message belonging to a conversation nobody can reach.
+- **The retired entry stays in the file**, addressable by id but not by key.
+  It is the record of which state directories are dead, and — because `!new`
+  cancels the retired conversation's in-flight turn — it is what lets that
+  turn finish unwinding through `SetTail` without hitting "unknown
+  conversation". A pre-`!new` journal simply has no `retired` field, so no
+  version bump is needed.
+
+### `!model`
+
+Included because `acp-kit`'s client surface genuinely supports a switch
+(`AgentProc.SetModel`, over `session/set_config_option` or the older
+`session/set_model`), so it is not faked. The choice is **sticky per
+conversation** and held in memory only: it is recorded by the command and
+pushed to the ACP session at the start of the next turn, at most once per
+session id.
+
+Applying it lazily is deliberate. Doing it eagerly needs a live session, and
+calling `GetOrCreate` outside a turn would *spawn* one — and re-register a
+sink — as a side effect of what reads like a settings command. Keying the
+"already applied" marker on the session id is what makes the choice survive
+acp-kit's idle GC: a reaped session comes back with a new id, and the
+mismatch is the signal to push again. `!new` carries the choice across to the
+fresh conversation, because clearing context is not the same as reverting a
+preference. A `SetModel` failure is logged and the turn proceeds on whatever
+model the agent already had — refusing to answer at all over a preference
+would be a worse trade.
+
+`!id` earns its place separately from `!status`: on a phone, extracting one
+opaque id from a bullet list to paste into a `cd` is exactly the friction a
+bare-id reply removes.
+
+### What a command reply is not
+
+It is an ordinary message posted where the command arrived. No `:eyes:`
+lifecycle, no `Thinking…` placeholder, no streaming, no tail tracking: all of
+that exists to cover latency the relay does not have here, since the reply is
+complete before it is composed. A reply that cannot be posted is logged and
+dropped — unlike agent output, it costs nothing to ask for again, so the
+`rescue` path does not apply.
+
 ## Layout
 
 ```
 cmd/zulip-acp/          flags + wiring (excluded from the coverage gate)
+internal/command/       `!command` parse core — NO Zulip imports
 internal/config/        JSON config, DisallowUnknownFields
-internal/handler/       gating, turn execution, streaming sink, outbox, poster
+internal/handler/       gating, commands, turn execution, streaming sink, outbox, poster
 internal/journal/       conv key (channel topic | DM user set) → conv-id + tail ids
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header

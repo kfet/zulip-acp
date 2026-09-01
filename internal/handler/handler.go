@@ -55,6 +55,10 @@ const spinnerInterval = 900 * time.Millisecond
 type Agent interface {
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Models() (models []client.ModelInfo, currentID string)
+	// SetModel selects the model for one session. It backs `!model
+	// <id>`; the relay never calls it unless a user asked for a
+	// specific model.
+	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 }
 
 // Sessions is the subset of *state.Manager the handler uses.
@@ -63,6 +67,10 @@ type Sessions interface {
 	Touch(s *state.Session)
 	Cancel(ctx context.Context, key string)
 	TakePendingSystemPrompt(s *state.Session) string
+	// StateDir is the root the per-conversation working directories
+	// live under. `!status` reports the conversation's directory so a
+	// human can go and look at it.
+	StateDir() string
 }
 
 // ChannelSet is the relay's channel allowlist: it answers Name for a
@@ -157,6 +165,14 @@ type Handler struct {
 	inflightMu   sync.Mutex
 	inflightCond *sync.Cond
 	inflight     map[string]*inflightEntry
+
+	// modelChoices holds the sticky per-conversation model set with
+	// `!model <id>`. In memory only: a model choice is a session-shaped
+	// preference, and a relay restart drops the ACP sessions it applied
+	// to anyway, so persisting it would only preserve a claim about
+	// state that no longer exists.
+	modelMu      sync.Mutex
+	modelChoices map[string]modelChoice
 }
 
 // New constructs a Handler.
@@ -176,7 +192,7 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	h := &Handler{cfg: cfg, inflight: map[string]*inflightEntry{}}
+	h := &Handler{cfg: cfg, inflight: map[string]*inflightEntry{}, modelChoices: map[string]modelChoice{}}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
 	return h, nil
 }
@@ -307,6 +323,15 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		return
 	}
 
+	// Commands are parsed AFTER every guard above and BEFORE any
+	// conversation is allocated, so `!help` in a topic the relay has
+	// never answered in leaves no state behind. A command consumes the
+	// message; nothing here reaches the agent.
+	prompt, handled := h.dispatch(ctx, m, key, existing, engaged, h.promptText(text))
+	if handled {
+		return
+	}
+
 	conv := existing
 	if !engaged {
 		var err error
@@ -318,10 +343,6 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		h.cfg.Logf("handler: new conversation %s in %s", conv.ID, h.describe(key))
 	}
 
-	prompt := h.stripMention(text)
-	if prompt == "" {
-		prompt = text
-	}
 	prompt = "[" + m.SenderName + "] " + prompt
 
 	// A follow-up supersedes whatever is still running in this topic.
@@ -423,6 +444,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Sessions.Touch(sess)
+	h.applyModel(ctx, conv.ID, sess.SessionID)
 
 	text := prompt
 	if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
@@ -676,6 +698,16 @@ func (h *Handler) stripMention(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// promptText is the message with the addressing syntax removed. A
+// message that is NOTHING but a mention falls back to the raw text, so
+// the agent is never handed an empty prompt.
+func (h *Handler) promptText(text string) string {
+	if s := h.stripMention(text); s != "" {
+		return s
+	}
+	return text
+}
+
 func (h *Handler) mentionTokens() []string {
 	name := h.cfg.BotFullName
 	if name == "" {
@@ -705,7 +737,10 @@ func (h *Handler) describe(k journal.Key) string {
 
 // --- inflight bookkeeping ------------------------------------------------
 
-func (h *Handler) cancelInflight(ctx context.Context, convID string) {
+// cancelInflight stops the turn running for convID, if any, and
+// reports whether there was one. `!stop` uses that answer to tell the
+// difference between interrupting something and doing nothing.
+func (h *Handler) cancelInflight(ctx context.Context, convID string) bool {
 	h.inflightMu.Lock()
 	e, ok := h.inflight[convID]
 	if ok {
@@ -717,6 +752,15 @@ func (h *Handler) cancelInflight(ctx context.Context, convID string) {
 		e.cancel()
 		h.cfg.Sessions.Cancel(ctx, convID)
 	}
+	return ok
+}
+
+// isInflight reports whether a turn is running for convID.
+func (h *Handler) isInflight(convID string) bool {
+	h.inflightMu.Lock()
+	defer h.inflightMu.Unlock()
+	_, ok := h.inflight[convID]
+	return ok
 }
 
 func (h *Handler) setInflight(convID string, e *inflightEntry) {

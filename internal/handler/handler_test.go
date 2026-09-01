@@ -208,6 +208,9 @@ type fakeAgent struct {
 	stop     acp.StopReason
 	err      error
 	model    string
+	models   []client.ModelInfo
+	setModel []string
+	setErr   error
 	prompts  []string
 	// block, when non-nil, holds Prompt until closed — used to test
 	// cancellation of an in-flight turn.
@@ -227,7 +230,24 @@ func newAgent(chunks ...string) *fakeAgent {
 func (a *fakeAgent) Models() ([]client.ModelInfo, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return nil, a.model
+	return a.models, a.model
+}
+
+// SetModel records every model selection as "<sessionID>=<modelID>".
+func (a *fakeAgent) SetModel(_ context.Context, sid acp.SessionId, modelID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.setErr != nil {
+		return a.setErr
+	}
+	a.setModel = append(a.setModel, string(sid)+"="+modelID)
+	return nil
+}
+
+func (a *fakeAgent) selections() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.setModel)
 }
 
 func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
@@ -289,6 +309,7 @@ type fakeSessions struct {
 	agent    *fakeAgent
 	dir      string
 	sessions map[string]*state.Session
+	created  map[string]int
 	err      error
 	pending  string
 	cancels  []string
@@ -296,7 +317,7 @@ type fakeSessions struct {
 
 func newSessions(t *testing.T, a *fakeAgent) *fakeSessions {
 	t.Helper()
-	return &fakeSessions{agent: a, dir: t.TempDir(), sessions: map[string]*state.Session{}}
+	return &fakeSessions{agent: a, dir: t.TempDir(), sessions: map[string]*state.Session{}, created: map[string]int{}}
 }
 
 func (s *fakeSessions) GetOrCreate(_ context.Context, key string, sink client.SessionUpdateSink) (*state.Session, error) {
@@ -315,12 +336,22 @@ func (s *fakeSessions) GetOrCreate(_ context.Context, key string, sink client.Se
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		return nil, err
 	}
-	sess := &state.Session{Key: key, SessionID: acp.SessionId("sid-" + key), Cwd: cwd}
+	// A re-created session gets a NEW session id, exactly as acp-kit
+	// does after idle GC reaps one. The first creation keeps the plain
+	// form so tests can name it.
+	sid := "sid-" + key
+	if n := s.created[key]; n > 0 {
+		sid = fmt.Sprintf("%s#%d", sid, n)
+	}
+	s.created[key]++
+	sess := &state.Session{Key: key, SessionID: acp.SessionId(sid), Cwd: cwd}
 	s.sessions[key] = sess
 	return sess, nil
 }
 
 func (s *fakeSessions) Touch(*state.Session) {}
+
+func (s *fakeSessions) StateDir() string { return s.dir }
 
 func (s *fakeSessions) Cancel(_ context.Context, key string) {
 	s.mu.Lock()
@@ -405,13 +436,7 @@ func (hh *harness) deliver(t *testing.T, topic, content string) {
 
 func (hh *harness) deliverAs(t *testing.T, sender int64, topic, content string) {
 	t.Helper()
-	hh.h.Handle(context.Background(), zulipproto.Event{
-		Type: zulipproto.EventMessage,
-		Message: &zulipproto.Message{
-			ID: 1, SenderID: sender, SenderName: "Kfet", Content: content,
-			StreamID: 4, Topic: topic, Type: "stream",
-		},
-	})
+	hh.h.Handle(context.Background(), channelEvent(sender, topic, content))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hh.h.WaitIdle(ctx); err != nil {

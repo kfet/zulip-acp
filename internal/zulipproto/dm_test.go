@@ -128,3 +128,37 @@ func TestNarrowChannelsDropsForDMs(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// TestRecipientNames covers the human-facing rendering used by the
+// relay's `!status` command. It shares display_recipient's polymorphism
+// with Recipients, so it must be just as unflappable.
+func TestRecipientNames(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"dm", `[{"id":9,"full_name":"fir-relay"},{"id":4,"full_name":"Kfet"}]`, []string{"fir-relay", "Kfet"}},
+		{"channel", `"fleet"`, nil},
+		{"absent", ``, nil},
+		{"garbage", `{"not":"a list"}`, nil},
+		{"empty list", `[]`, nil},
+		{"nameless entries are skipped", `[{"id":9},{"id":4,"full_name":"Kfet"}]`, []string{"Kfet"}},
+		{"all nameless", `[{"id":9},{"id":4}]`, nil},
+	}
+	for _, c := range cases {
+		m := Message{}
+		if c.raw != "" {
+			m.DisplayRecipient = json.RawMessage(c.raw)
+		}
+		got := m.RecipientNames()
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: RecipientNames = %v, want %v", c.name, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: RecipientNames = %v, want %v", c.name, got, c.want)
+			}
+		}
+	}
+}
