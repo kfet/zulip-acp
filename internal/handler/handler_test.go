@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,10 @@ type fakeZulip struct {
 	// posted is signalled after every Post or Edit, so tests can
 	// synchronise on surface state instead of polling a clock.
 	posted chan struct{}
+	// unreacted is signalled after every RemoveReaction. A superseded
+	// turn retracts its ack AFTER its inflight entry is gone, so
+	// WaitIdle cannot observe that cleanup — tests wait on this.
+	unreacted chan struct{}
 }
 
 func newZulip() *fakeZulip {
@@ -58,6 +63,8 @@ func newZulip() *fakeZulip {
 		topics:  map[int64]string{},
 		uploads: map[string][]byte{},
 		posted:  make(chan struct{}, 256),
+
+		unreacted: make(chan struct{}, 256),
 	}
 }
 
@@ -134,6 +141,10 @@ func (z *fakeZulip) RemoveReaction(_ context.Context, id int64, emoji string) er
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	z.reactDel = append(z.reactDel, fmt.Sprintf("%d:%s", id, emoji))
+	select {
+	case z.unreacted <- struct{}{}:
+	default:
+	}
 	return z.reactErr
 }
 
@@ -1914,10 +1925,10 @@ func TestAckReaction(t *testing.T) {
 				hh.deliver(t, "t", c.second)
 			}
 			add, del := hh.z.reactions()
-			if !equalStrings(add, c.wantAdd) {
+			if !slices.Equal(add, c.wantAdd) {
 				t.Fatalf("added = %v, want %v", add, c.wantAdd)
 			}
-			if !equalStrings(del, c.wantDel) {
+			if !slices.Equal(del, c.wantDel) {
 				t.Fatalf("removed = %v, want %v", del, c.wantDel)
 			}
 			for _, want := range c.wantLogs {
@@ -1949,6 +1960,18 @@ func TestAckReactionSurvivesCancellation(t *testing.T) {
 	agent.block = nil
 	agent.mu.Unlock()
 	hh.deliver(t, "t", mention("never mind"))
+
+	// The superseded turn is deleted from h.inflight the instant it is
+	// cancelled, so WaitIdle above says nothing about its deferred
+	// retraction. Wait for both removals to actually reach the server.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-hh.z.unreacted:
+		case <-time.After(10 * time.Second):
+			add, del := hh.z.reactions()
+			t.Fatalf("reactions: added %v, removed %v — a cancelled turn left its ack behind", add, del)
+		}
+	}
 
 	add, del := hh.z.reactions()
 	if len(add) != 2 || len(del) != 2 {
@@ -1982,16 +2005,4 @@ func TestReactionEventsAreIgnored(t *testing.T) {
 	if hh.z.count() != before {
 		t.Fatalf("a reaction event started a turn: %v", hh.z.stored())
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
