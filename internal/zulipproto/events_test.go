@@ -583,3 +583,32 @@ func TestJitter(t *testing.T) {
 		}
 	}
 }
+
+// TestOnRegisterFiresOnEveryRegistration pins the drift repair: a dead
+// queue loses events, so the hook must run again on re-registration,
+// not only at startup.
+func TestOnRegisterFiresOnEveryRegistration(t *testing.T) {
+	ss := newScript(t,
+		registerOK("q1", 7),
+		func(*http.Request) (int, string) {
+			return 400, `{"result":"error","msg":"Bad event queue ID: q1","code":"BAD_EVENT_QUEUE_ID"}`
+		},
+		registerOK("q2", 0),
+		eventsOK(`{"id":1,"type":"message","message":{"content":"after"}}`),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var registrations int
+	h := newHarness(t, ss, func(context.Context, Event) { cancel() }, func(cfg *RunnerConfig) {
+		cfg.OnRegister = func(ctx context.Context) {
+			if ctx == nil {
+				t.Error("OnRegister must receive the runner's context")
+			}
+			registrations++
+		}
+	})
+	_ = h.r.Run(ctx)
+	if registrations != 2 {
+		t.Fatalf("OnRegister called %d times, want 2", registrations)
+	}
+}

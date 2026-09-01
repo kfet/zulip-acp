@@ -613,3 +613,66 @@ func TestReactions(t *testing.T) {
 		})
 	}
 }
+
+func TestSubscriptions(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"subscriptions":[{"stream_id":4,"name":"fleet"},{"stream_id":2,"name":"sandbox"}]`)
+	})
+	got, err := newClient(t, ts).Subscriptions(context.Background())
+	if err != nil {
+		t.Fatalf("Subscriptions: %v", err)
+	}
+	if len(got) != 2 || got[1].StreamID != 2 || got[1].Name != "sandbox" {
+		t.Fatalf("subscriptions = %+v", got)
+	}
+	if p := ts.requests()[0].path; p != "/api/v1/users/me/subscriptions" {
+		t.Fatalf("path = %q", p)
+	}
+}
+
+func TestSubscriptionsError(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 500, `{"result":"error","msg":"down"}`
+	})
+	if _, err := newClient(t, ts).Subscriptions(context.Background()); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+// TestRenamedTo pins the rename decoder, including the reason Value is
+// raw: a non-string value must be ignored, not break decoding.
+func TestRenamedTo(t *testing.T) {
+	rename := Event{Type: EventStream, Op: "update", Property: "name", Value: json.RawMessage(`"ops"`)}
+	if got, ok := rename.RenamedTo(); !ok || got != "ops" {
+		t.Fatalf("RenamedTo = %q, %v", got, ok)
+	}
+	for _, ev := range []Event{
+		{Type: EventMessage, Op: "update", Property: "name", Value: json.RawMessage(`"ops"`)},
+		{Type: EventStream, Op: "create", Property: "name", Value: json.RawMessage(`"ops"`)},
+		{Type: EventStream, Op: "update", Property: "invite_only", Value: json.RawMessage(`true`)},
+		{Type: EventStream, Op: "update", Property: "name", Value: json.RawMessage(`true`)},
+		{Type: EventStream, Op: "update", Property: "name", Value: json.RawMessage(`""`)},
+	} {
+		if got, ok := ev.RenamedTo(); ok {
+			t.Fatalf("%+v: RenamedTo = %q", ev, got)
+		}
+	}
+}
+
+// TestSubscriptionEventDecodes pins that a real subscription event —
+// whose stream objects carry dozens of fields the relay ignores —
+// decodes into the subset it needs.
+func TestSubscriptionEventDecodes(t *testing.T) {
+	body := okJSON(`"events":[{"id":7,"type":"subscription","op":"add","subscriptions":[{"stream_id":9,"name":"ops","color":"#fae589","invite_only":false,"desktop_notifications":null}]}]`)
+	ts := newServer(t, func(recordedReq) (int, string) { return 200, body })
+	evs, err := newClient(t, ts).GetEvents(context.Background(), "q", 3)
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(evs) != 1 || evs[0].Op != "add" || len(evs[0].Subscriptions) != 1 {
+		t.Fatalf("events = %+v", evs)
+	}
+	if s := evs[0].Subscriptions[0]; s.StreamID != 9 || s.Name != "ops" {
+		t.Fatalf("subscription = %+v", s)
+	}
+}

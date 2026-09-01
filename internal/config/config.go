@@ -36,6 +36,10 @@ const (
 	// ends. Zulip has no typing indicator and a reaction is the only
 	// acknowledgement that costs no message and can be retracted.
 	DefaultAckEmoji = "eyes"
+	// ChannelSentinel in the channels list means "also serve every
+	// channel the bot is subscribed to, as that changes". It may stand
+	// alone or sit alongside explicit names and ids.
+	ChannelSentinel = "*"
 )
 
 // Config is the operator-facing JSON config.
@@ -257,11 +261,16 @@ func (c *Config) GetAgentCmd() []string {
 // taken as ids directly; everything else is matched against channel
 // names, case-sensitively, because Zulip channel names are.
 //
+// The ChannelSentinel entry is not a channel and is skipped here; see
+// FollowsSubscriptions.
+//
 // An empty Channels list is an error rather than "everything": a relay
 // that answers in every channel of a realm by default is a footgun.
+// The sentinel exists so that "everything" is something an operator
+// asks for explicitly, never something a missing key produces.
 func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]string, error) {
 	if len(c.Channels) == 0 {
-		return nil, fmt.Errorf("no channels configured — set \"channels\" to the channel names or ids the relay should serve")
+		return nil, fmt.Errorf("no channels configured — set \"channels\" to the channel names or ids the relay should serve, or to [%q] to serve every channel the bot is subscribed to", ChannelSentinel)
 	}
 	byName := make(map[string]zulipproto.Stream, len(available))
 	byID := make(map[int64]zulipproto.Stream, len(available))
@@ -272,6 +281,9 @@ func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]strin
 	out := make(map[int64]string, len(c.Channels))
 	for _, want := range c.Channels {
 		want = strings.TrimSpace(want)
+		if want == ChannelSentinel {
+			continue
+		}
 		if id, err := strconv.ParseInt(want, 10, 64); err == nil {
 			s, ok := byID[id]
 			if !ok {
@@ -287,6 +299,18 @@ func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]strin
 		out[s.StreamID] = s.Name
 	}
 	return out, nil
+}
+
+// FollowsSubscriptions reports whether the channels list carries the
+// ChannelSentinel, i.e. whether the served set tracks the bot's own
+// subscriptions at runtime.
+func (c *Config) FollowsSubscriptions() bool {
+	for _, ch := range c.Channels {
+		if strings.TrimSpace(ch) == ChannelSentinel {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowedUsers returns the allowlist as a set, or nil when empty

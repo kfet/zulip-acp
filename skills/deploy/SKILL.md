@@ -95,6 +95,11 @@ Write `~/.config/zulip-acp/config.json`:
 }
 ```
 
+`"channels": ["*"]` instead of a list serves every channel the bot is
+subscribed to, and follows subscription changes at runtime — adding the bot to
+a channel starts serving it with no config edit and no restart. An empty list
+is still a fatal error.
+
 Write `~/.config/zulip-acp/env` (mode **0600**):
 
 ```

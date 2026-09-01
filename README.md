@@ -43,7 +43,8 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 
 1. **Create a bot.** In Zulip: *Settings → Personal → Bots* (or
    `<site>/#organization/bots`) → **Add a bot** → type **Generic**. Copy its
-   email and API key. **Subscribe it to the channels it should serve.**
+   email and API key. **Subscribe it to the channels it should serve** — with
+   `"channels": ["*"]` that subscription is the entire configuration.
 
 2. **Set message editing to unlimited.** *Organization settings → Message
    editing → Message edit limit → **Unlimited***.
@@ -101,6 +102,15 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   picks the session back up.
 - **The relay never answers a bot**, including its own messages and Zulip's
   system notices.
+- **`"channels": ["*"]` follows the bot's subscriptions.** Add the bot to a
+  channel and it is served within seconds — no config edit, no restart; remove
+  it and the relay stops answering there. Both moves are logged. The sentinel
+  may stand alone or sit next to explicit entries
+  (`["fleet", "*"]`), in which case the explicit channels stay in the allowlist
+  even if the bot is later unsubscribed from them: the config wins. (The bot
+  still has to be subscribed to *receive* events from a private channel.) An **empty**
+  `channels` list stays a fatal error — "everything" must be asked for, never
+  defaulted into.
 
 ## Configuration
 
@@ -111,7 +121,7 @@ Every key is optional except the credentials and `channels`.
 | `site` | — | Zulip base URL. Env: `ZULIP_SITE` |
 | `bot_email` | — | bot's Zulip email. Env: `ZULIP_EMAIL` |
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
-| `channels` | — | channel names **or** ids to serve; also the allowlist |
+| `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |
 | `allowed_user_ids` | everyone | restrict who the relay answers |
 | `agent_cmd` | `["fir","--mode","acp"]` | agent argv |
 | `state_dir` | `$XDG_STATE_HOME/zulip-acp` | per-conversation cwds + journal |

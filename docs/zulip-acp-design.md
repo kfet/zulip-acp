@@ -174,8 +174,8 @@ Gating, in order:
 2. Never act on any other bot's message either. Zulip posts topic moves and
    welcome notices as cross-realm system bots (`sender_realm_str:
    "zulipinternal"`), which land in engaged topics.
-3. Channel allowlist (the resolved `channels` config), then optional user
-   allowlist.
+3. Channel allowlist (`internal/channels.Set`, behind the handler's
+   `ChannelSet` interface), then optional user allowlist.
 4. Then: an `@-mention` starts a conversation; anything else is answered only in
    an already-engaged topic. **The topic is the membership record**, which is
    why engagement survives a restart with no extra state.
@@ -213,6 +213,33 @@ A queue narrow cannot express a union of channels (narrow terms are a
 conjunction), so a relay serving more than one channel registers an
 **unnarrowed** queue and filters with the channel allowlist it must enforce
 anyway. Over-delivery is cheap; under-delivery is silent.
+
+## The served channel set
+
+`internal/channels.Set` holds two halves behind one `ChannelSet`:
+
+- **Explicit** — the ids resolved from the `channels` config. Static, and
+  authoritative: an explicitly listed channel is served whatever the bot's
+  subscriptions do.
+- **Followed** — requested with the `"*"` sentinel: the channels the bot is
+  *subscribed* to. Seeded from `GET /users/me/subscriptions` at boot and then
+  maintained from `subscription` (op `add`/`remove`) and `stream` (op
+  `update`/`delete`) events, so the set moves while the relay runs.
+
+Three properties this shape buys:
+
+- An **empty** `channels` list stays fatal. "Serve the whole realm" is now
+  expressible, but only as a deliberate `"*"`, never as a missing key.
+- A followed queue is **never narrowed**: the set can grow at any moment, and a
+  narrow decided at boot would silently under-deliver forever after.
+- Events are lost while a queue is dead, so the set is **resynced on every
+  registration** (`RunnerConfig.OnRegister`) rather than left to drift until the
+  next restart.
+
+The set is written by the event loop and read by the handler on its turn
+goroutines, so it is `sync.RWMutex`-guarded, and `Sync` computes its join/leave
+diff *under* the lock — the map it publishes becomes shared the instant it is
+stored.
 
 Event queues get the same treatment. `queue_id` and `last_event_id` are held in
 memory only — queues die on server restart, so persisting them is false comfort.

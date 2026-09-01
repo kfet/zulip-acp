@@ -20,6 +20,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/state"
 
+	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
@@ -33,7 +34,7 @@ func main() {
 	configPath := flag.String("config", "", "path to JSON config file")
 	agentCmd := flag.String("agent-cmd", "", "agent argv (default: fir --mode acp); space-separated; overrides config")
 	stateDir := flag.String("state-dir", "", "root directory for per-conversation state")
-	channels := flag.String("channels", "", "comma-separated Zulip channel names or ids to serve; overrides config")
+	channelsFlag := flag.String("channels", "", "comma-separated Zulip channel names or ids to serve; overrides config")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir and agent command, then exit")
 	flag.Parse()
@@ -67,8 +68,8 @@ func main() {
 	if *agentCmd != "" {
 		cfg.AgentCmd = strings.Fields(*agentCmd)
 	}
-	if *channels != "" {
-		cfg.Channels = splitList(*channels)
+	if *channelsFlag != "" {
+		cfg.Channels = splitList(*channelsFlag)
 	}
 	if *stateDir != "" {
 		cfg.StateDir = *stateDir
@@ -131,26 +132,59 @@ func main() {
 	if err != nil {
 		log.Fatalf("zulip: list channels: %v", err)
 	}
-	served, err := cfg.ResolveChannels(streams)
+	explicit, err := cfg.ResolveChannels(streams)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	labels := make([]string, 0, len(served))
-	channelNames := make([]string, 0, len(served))
-	for id, name := range served {
+	follow := cfg.FollowsSubscriptions()
+	served := channels.New(channels.Config{Explicit: explicit, Follow: follow, Logf: log.Printf})
+	if follow {
+		// The set itself is seeded by the OnRegister hook below, which
+		// fires on the first registration too — one code path for the
+		// boot case and the queue-died case both.
+		log.Printf("zulip-acp: following the bot's subscriptions (%q in channels); subscribe it to a channel to have it served, no restart needed", config.ChannelSentinel)
+	}
+	labels := make([]string, 0, len(explicit))
+	for id, name := range explicit {
 		labels = append(labels, fmt.Sprintf("#%s (%d)", name, id))
-		channelNames = append(channelNames, name)
 	}
 	sort.Strings(labels)
-	sort.Strings(channelNames)
+	if len(labels) > 0 {
+		log.Printf("zulip-acp: serving %s", strings.Join(labels, ", "))
+	}
 	// Narrowing the event queue is an optimisation, not the allowlist:
 	// a /register narrow cannot express a union of channels, so with
 	// more than one served channel the queue is left unnarrowed and
-	// the handler filters. See zulipproto.NarrowChannels.
-	narrow := zulipproto.NarrowChannels(channelNames)
-	log.Printf("zulip-acp: serving %s", strings.Join(labels, ", "))
-	if narrow == nil {
-		log.Printf("zulip-acp: %d channels served, so the event queue is not narrowed; the channel allowlist filters", len(served))
+	// the handler filters. A followed set can grow at any moment, so
+	// it is never narrowed. See zulipproto.NarrowChannels.
+	var narrow [][2]string
+	if !follow {
+		narrow = zulipproto.NarrowChannels(served.Names())
+	}
+	switch {
+	case follow:
+		log.Printf("zulip-acp: the event queue is not narrowed: the served set follows the bot's subscriptions and can change at any moment")
+	case narrow == nil:
+		log.Printf("zulip-acp: the event queue is not narrowed (%d channels served); the channel allowlist filters", served.Len())
+	}
+
+	eventTypes := []string{zulipproto.EventMessage, zulipproto.EventUpdateMessage}
+	var onRegister func(context.Context)
+	if follow {
+		// Subscription changes are what move the served set, and
+		// stream events carry renames and archivals of channels
+		// already in it.
+		eventTypes = append(eventTypes, zulipproto.EventSubscription, zulipproto.EventStream)
+		// Events are lost while a queue is dead, so resync the set on
+		// every registration rather than let it drift until restart.
+		onRegister = func(ctx context.Context) {
+			subs, err := zc.Subscriptions(ctx)
+			if err != nil {
+				log.Printf("zulip: resync subscriptions: %v", err)
+				return
+			}
+			served.Sync(subs)
+		}
 	}
 
 	jr, err := journal.Open(filepath.Join(cfg.StateDir, "journal.json"))
@@ -207,10 +241,18 @@ func main() {
 
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{
 		Client:     zc,
-		EventTypes: []string{zulipproto.EventMessage, zulipproto.EventUpdateMessage},
+		EventTypes: eventTypes,
 		Narrow:     narrow,
-		Handle:     h.Handle,
-		Logf:       log.Printf,
+		OnRegister: onRegister,
+		Handle: func(ctx context.Context, ev zulipproto.Event) {
+			// The served set is updated from the same goroutine that
+			// dispatches messages, so a message can never be judged
+			// against a set older than the subscription event that
+			// preceded it.
+			served.Apply(ev)
+			h.Handle(ctx, ev)
+		},
+		Logf: log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("events: %v", err)
