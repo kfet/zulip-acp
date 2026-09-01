@@ -121,20 +121,6 @@ const (
 	KindUnknown
 )
 
-// String renders a Kind for tests and logs.
-func (k Kind) String() string {
-	switch k {
-	case KindProse:
-		return "prose"
-	case KindCommand:
-		return "command"
-	case KindUnknown:
-		return "unknown"
-	default:
-		return fmt.Sprintf("Kind(%d)", int(k))
-	}
-}
-
 // Result is what Parse decided.
 type Result struct {
 	// Kind is the classification.

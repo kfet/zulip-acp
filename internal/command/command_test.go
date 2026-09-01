@@ -126,19 +126,6 @@ func TestParseCarriesTheSpec(t *testing.T) {
 	}
 }
 
-func TestKindString(t *testing.T) {
-	for k, want := range map[Kind]string{
-		KindProse:   "prose",
-		KindCommand: "command",
-		KindUnknown: "unknown",
-		Kind(99):    "Kind(99)",
-	} {
-		if got := k.String(); got != want {
-			t.Fatalf("Kind(%d).String() = %q, want %q", k, got, want)
-		}
-	}
-}
-
 func TestDuplicateNamePanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {

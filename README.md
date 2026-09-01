@@ -155,7 +155,10 @@ history does not.
 Three rules worth knowing:
 
 - **Names are case-insensitive**, and only the *first* token counts. `!NEW`
-  works; `please !new` is ordinary prose.
+  works; `please !new` is ordinary prose. Everything after that token is the
+  argument, newlines included — so a multi-line `!model` is read as one
+  argument and, failing to match an id exactly, lists candidates instead of
+  switching.
 - **Prose that merely starts with a bang still reaches the agent.**
   `!important: fix the parser`, `!5 minutes left` and a lone `!` are all
   forwarded unchanged, because only a command-*shaped* token (a letter followed
