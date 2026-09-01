@@ -270,3 +270,19 @@ func TestAckEmoji(t *testing.T) {
 		})
 	}
 }
+
+// TestAckEmojiIsValidated rejects the shape an operator will actually
+// type: Zulip's UI shows `:eyes:`, but the API field is a bare
+// emoji_name. Colons would fail on EVERY turn with nothing but a log
+// line, so the config refuses to start instead.
+func TestAckEmojiIsValidated(t *testing.T) {
+	for _, bad := range []string{`":eyes:"`, `"eyes:"`, `"white check mark"`} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(`{"ack_emoji":`+bad+`}`), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("ack_emoji %s was accepted", bad)
+		}
+	}
+}

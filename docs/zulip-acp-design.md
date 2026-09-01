@@ -132,7 +132,7 @@ of naming, never correctness.
 ### 3. Two turn shapes, because ambient turns may be declined
 
 Both shapes open the same way: the triggering message gets an emoji reaction
-(`ack_emoji`, default `:eyes:`) the moment it is accepted, removed on every
+(`ack_emoji`, a bare emoji name, default `eyes`) the moment it is accepted, removed on every
 exit path — success, error, abstain, cancellation. Zulip has no typing
 indicator, and a reaction is the only acknowledgement that is instant, adds
 nothing to the topic, and can be **retracted**, which is what makes it safe on

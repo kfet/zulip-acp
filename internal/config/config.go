@@ -143,6 +143,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_message_chars %d exceeds Zulip's MAX_MESSAGE_LENGTH of %d — Zulip would silently truncate every message at the limit and the relay would lose output",
 			c.MaxMessageChars, zulipproto.MaxMessageLength)
 	}
+	// Zulip's UI writes reactions as `:eyes:`, but the API field is a
+	// bare emoji_name. A colonised or spaced value would fail on every
+	// single turn, non-fatally, with nothing but a log line to say so.
+	if e := c.GetAckEmoji(); strings.ContainsAny(e, ": \t") {
+		return fmt.Errorf("ack_emoji %q must be a bare Zulip emoji name such as %q — no colons, no spaces", e, DefaultAckEmoji)
+	}
 	for _, ch := range c.Channels {
 		if strings.TrimSpace(ch) == "" {
 			return fmt.Errorf("channels must not contain empty entries")
