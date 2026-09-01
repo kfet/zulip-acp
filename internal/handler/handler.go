@@ -78,6 +78,7 @@ type ChannelSet interface {
 // Poster is the Zulip surface the handler writes to.
 type Poster interface {
 	SendMessage(ctx context.Context, streamID int64, topic, content string) (int64, error)
+	SendDirectMessage(ctx context.Context, userIDs []int64, content string) (int64, error)
 	EditMessage(ctx context.Context, id int64, content string) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
 	Upload(ctx context.Context, filename string, r io.Reader) (string, error)
@@ -111,8 +112,16 @@ type Config struct {
 	// because a set that follows the bot's subscriptions changes
 	// underfoot while the relay runs.
 	Channels ChannelSet
-	// AllowedUsers, if non-nil, restricts who the relay answers.
+	// AllowedUsers, if non-nil, restricts who the relay answers. It
+	// applies to direct messages exactly as it does in a channel.
 	AllowedUsers map[int64]struct{}
+
+	// DMs enables direct-message conversations. Off by default: a
+	// relay hands the whole realm an agent with a shell, and the
+	// channel allowlist — which cannot gate a DM, because a DM is in
+	// no channel — is the only thing standing in the way. Serving DMs
+	// must therefore be something an operator asks for.
+	DMs bool
 
 	// PromptTimeout caps one agent turn.
 	PromptTimeout time.Duration
@@ -186,8 +195,17 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 // Missing this costs a spurious duplicate session: the same agent
 // session would keep running under the old name while a fresh one was
 // created under the new one.
+//
+// There is no DM analogue and this path must never touch one: a direct
+// message has no topic to rename, and its conv key lives in a disjoint
+// namespace, so Journal.Rename could not match one even if it were
+// called. The StreamID guard below makes that explicit rather than
+// incidental — Zulip sends no stream id on a DM update event.
 func (h *Handler) handleUpdate(ev zulipproto.Event) {
 	if ev.OrigTopic == "" || ev.Topic == "" || ev.OrigTopic == ev.Topic {
+		return
+	}
+	if ev.StreamID == 0 {
 		return
 	}
 	// A rename in a channel that has since left the served set is
@@ -229,46 +247,75 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	if _, isBot := h.cfg.BotSenderIDs[m.SenderID]; isBot {
 		return
 	}
-	if m.Type != "stream" {
-		// Direct messages are not served in v1: the conv-key shape and
-		// the gating rule are both different. See BACKLOG.md.
-		h.cfg.Logf("handler: ignoring non-channel message %d", m.ID)
+	if m.Type != zulipproto.MessageTypeStream && !m.IsDM() {
+		h.cfg.Logf("handler: ignoring message %d of unknown type %q", m.ID, m.Type)
 		return
-	}
-	if _, ok := h.cfg.Channels.Name(m.StreamID); !ok {
-		return
-	}
-	if h.cfg.AllowedUsers != nil {
-		if _, ok := h.cfg.AllowedUsers[m.SenderID]; !ok {
-			h.cfg.Logf("handler: dropping message %d from user %d (not allowed)", m.ID, m.SenderID)
-			return
-		}
 	}
 	text := strings.TrimSpace(m.Content)
 	if text == "" {
 		return
 	}
 
-	// Gating. An @-mention always summons and starts a conversation.
-	// Otherwise the relay answers only where it is already engaged —
-	// the topic is the membership record, which is exactly why it
-	// survives a restart with no extra state.
-	mentioned := h.mentioned(text)
-	existing, engaged := h.cfg.Journal.Lookup(m.StreamID, m.Topic)
-	if !mentioned && !engaged {
+	// Routing and gating in one step, because the two conversation
+	// shapes differ in both.
+	//
+	//   - In a channel an @-mention summons the relay and starts a
+	//     conversation; after that it answers ambiently, because the
+	//     topic itself is the membership record — which is exactly why
+	//     engagement survives a restart with no extra state.
+	//   - A direct message is addressed to the bot by construction:
+	//     there is nobody else in the conversation to be talking to.
+	//     Mention gating is therefore OFF and every DM is treated as
+	//     addressed, group DMs included.
+	var (
+		key       journal.Key
+		addressed bool
+	)
+	if m.IsDM() {
+		if !h.cfg.DMs {
+			h.cfg.Logf("handler: ignoring direct message %d (dms not enabled)", m.ID)
+			return
+		}
+		ids := m.Recipients()
+		if len(ids) == 0 {
+			// display_recipient is polymorphic, and this is the only
+			// way it can come back useless. Without the participant
+			// set there is no conv key and nobody to reply to.
+			h.cfg.Logf("handler: direct message %d has no usable recipient list", m.ID)
+			return
+		}
+		key, addressed = journal.DM(ids), true
+	} else {
+		// The channel allowlist gates channel messages only. A DM is
+		// in no channel, so there is nothing here to measure it
+		// against; AllowedUsers below is what gates it.
+		if _, ok := h.cfg.Channels.Name(m.StreamID); !ok {
+			return
+		}
+		key, addressed = journal.Channel(m.StreamID, m.Topic), h.mentioned(text)
+	}
+
+	if h.cfg.AllowedUsers != nil {
+		if _, ok := h.cfg.AllowedUsers[m.SenderID]; !ok {
+			h.cfg.Logf("handler: dropping message %d from user %d (not allowed)", m.ID, m.SenderID)
+			return
+		}
+	}
+
+	existing, engaged := h.cfg.Journal.Lookup(key)
+	if !addressed && !engaged {
 		return
 	}
 
 	conv := existing
 	if !engaged {
 		var err error
-		conv, err = h.cfg.Journal.Ensure(m.StreamID, m.Topic)
+		conv, err = h.cfg.Journal.Ensure(key)
 		if err != nil {
-			h.cfg.Logf("handler: allocate conversation for %q: %v", m.Topic, err)
+			h.cfg.Logf("handler: allocate conversation for %s: %v", key.Label(), err)
 			return
 		}
-		channel, _ := h.cfg.Channels.Name(m.StreamID)
-		h.cfg.Logf("handler: new conversation %s in #%s > %q", conv.ID, channel, m.Topic)
+		h.cfg.Logf("handler: new conversation %s in %s", conv.ID, h.describe(key))
 	}
 
 	prompt := h.stripMention(text)
@@ -285,7 +332,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	go func() {
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, mentioned, m.ID); err != nil {
+		if err := h.run(pctx, conv, prompt, addressed, m.ID); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -316,7 +363,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64) error {
 	defer h.ack(ctx, msgID)()
 
-	post := &topicPoster{client: h.cfg.Client, streamID: conv.StreamID, topic: conv.Topic}
+	post := &convPoster{client: h.cfg.Client, key: conv.Key}
 	split, err := rollover.New(rollover.Config{
 		Poster:     post,
 		Budget:     h.cfg.Budget,
@@ -451,7 +498,7 @@ func (h *Handler) ack(ctx context.Context, msgID int64) func() {
 // the failure and lose the agent's work, upload the whole transcript
 // as a file and post a short message linking it. Uploads are raw bytes
 // and never rendered, so this path cannot fail the same way.
-func (h *Handler) rescue(ctx context.Context, post *topicPoster, transcript string, cause error) {
+func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript string, cause error) {
 	if strings.TrimSpace(transcript) == "" {
 		return
 	}
@@ -643,6 +690,19 @@ func (h *Handler) mentionTokens() []string {
 	}
 }
 
+// describe renders a conversation key for the operator log, resolving
+// the channel name the allowlist knows.
+func (h *Handler) describe(k journal.Key) string {
+	if k.IsDM() {
+		return k.Label()
+	}
+	name, ok := h.cfg.Channels.Name(k.StreamID)
+	if !ok {
+		return k.Label()
+	}
+	return fmt.Sprintf("#%s > %q", name, k.Topic)
+}
+
 // --- inflight bookkeeping ------------------------------------------------
 
 func (h *Handler) cancelInflight(ctx context.Context, convID string) {
@@ -757,19 +817,25 @@ func spinnerLoop(ctx context.Context, split *rollover.Splitter, sink *streamingS
 
 // --- poster --------------------------------------------------------------
 
-// topicPoster binds the splitter's dumb Poster interface to one Zulip
-// topic. It makes no decisions — that is the whole point of keeping
-// split logic out of the HTTP layer.
-type topicPoster struct {
-	client   Poster
-	streamID int64
-	topic    string
+// convPoster binds the splitter's dumb Poster interface to one Zulip
+// conversation, channel topic or DM. The ONLY decision it makes is
+// which send endpoint the key implies; it never decides anything about
+// content, which is the whole point of keeping split logic out of the
+// HTTP layer. Rollover and the streaming edit path therefore work on a
+// DM unchanged — an edit is a PATCH on a message id and does not care
+// how the message was addressed.
+type convPoster struct {
+	client Poster
+	key    journal.Key
 }
 
-func (p *topicPoster) Post(ctx context.Context, content string) (int64, error) {
-	return p.client.SendMessage(ctx, p.streamID, p.topic, content)
+func (p *convPoster) Post(ctx context.Context, content string) (int64, error) {
+	if p.key.IsDM() {
+		return p.client.SendDirectMessage(ctx, p.key.UserIDs, content)
+	}
+	return p.client.SendMessage(ctx, p.key.StreamID, p.key.Topic, content)
 }
 
-func (p *topicPoster) Edit(ctx context.Context, id int64, content string) error {
+func (p *convPoster) Edit(ctx context.Context, id int64, content string) error {
 	return p.client.EditMessage(ctx, id, content)
 }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Direct-message support, opt-in with `"dms": true`.** 1:1 and group DMs with
+  the bot each map to their own ACP session. Mention-gating is off in a DM —
+  every message there is addressed to the bot by construction — so there is no
+  ambient/abstain path; streaming, 10k rollover, `outbox/` attachments and
+  interrupted-turn marking all work as they do in a topic. `channels` does not
+  gate DMs (a DM is in no channel); `allowed_user_ids` does. `"dms": true` with
+  no `channels` is a valid DM-only relay.
+
+### Changed
+
+- The journal is keyed on a typed `journal.Key` expressing both conversation
+  shapes — `(stream_id, topic)` for a channel, the sorted participant user-id
+  set for a DM — rather than a stringly `(stream_id, topic)` pair. The on-disk
+  shape is unchanged for channel conversations and needs no version bump: a DM
+  is the entry that carries `user_ids`.
+- The event queue is no longer narrowed to a single channel when DMs are
+  served: a `/register` channel narrow is a conjunction and would silently
+  exclude every DM.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added

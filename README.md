@@ -75,7 +75,8 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 
    > `@**fir-relay** what's in this repo?`
 
-   Follow-ups in the same topic need no mention.
+   Follow-ups in the same topic need no mention. With `"dms": true` you can
+   also just DM the bot — no mention needed there at all.
 
 ## How it behaves
 
@@ -102,6 +103,20 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   picks the session back up.
 - **The relay never answers a bot**, including its own messages and Zulip's
   system notices.
+- **Direct messages** (opt-in, `"dms": true`). Every message in a DM with the
+  bot — 1:1 or group — is addressed to it by construction, so **mention-gating
+  is off**: the relay answers every message, and there is no ambient/abstain
+  path. A DM conversation is keyed on the participant *set*, so the same people
+  always land in the same session however Zulip happens to order them, and a
+  group DM is its own conversation distinct from any 1:1 within it. Answers
+  stream, roll over and carry `outbox/` attachments exactly as in a topic.
+  DMs are **not** gated by `channels` — a DM is in no channel — so
+  `allowed_user_ids` is the only allowlist that applies to one; set it unless
+  every realm member should be able to open a session. Note that it gates the
+  *sender*, not the audience: a reply in a **group** DM is delivered to every
+  participant, so an allowlisted user can pull agent output in front of people
+  who are not on the list. `"dms": true` with no
+  `channels` at all is a valid DM-only relay.
 - **`"channels": ["*"]` follows the bot's subscriptions.** Add the bot to a
   channel and it is served within seconds — no config edit, no restart; remove
   it and the relay stops answering there. Both moves are logged. The sentinel
@@ -114,7 +129,8 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 
 ## Configuration
 
-Every key is optional except the credentials and `channels`.
+Every key is optional except the credentials and `channels` (which may be
+omitted only when `"dms": true` makes it a DM-only relay).
 
 | key | default | meaning |
 |---|---|---|
@@ -122,7 +138,8 @@ Every key is optional except the credentials and `channels`.
 | `bot_email` | — | bot's Zulip email. Env: `ZULIP_EMAIL` |
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
 | `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |
-| `allowed_user_ids` | everyone | restrict who the relay answers |
+| `dms` | `false` | serve direct messages (1:1 and group). Not gated by `channels` |
+| `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
 | `agent_cmd` | `["fir","--mode","acp"]` | agent argv |
 | `state_dir` | `$XDG_STATE_HOME/zulip-acp` | per-conversation cwds + journal |
 | `session_idle_timeout_seconds` | `1800` | idle session GC |

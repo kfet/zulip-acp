@@ -88,6 +88,7 @@ func main() {
 		fmt.Printf("agent-cmd:  %s\n", strings.Join(cfg.GetAgentCmd(), " "))
 		fmt.Printf("site:       %s\n", cfg.Site)
 		fmt.Printf("channels:   %s\n", strings.Join(cfg.Channels, ", "))
+		fmt.Printf("dms:        %t\n", cfg.DMs)
 		return
 	}
 
@@ -152,18 +153,25 @@ func main() {
 	if len(labels) > 0 {
 		log.Printf("zulip-acp: serving %s", strings.Join(labels, ", "))
 	}
+	if cfg.DMs {
+		log.Printf("zulip-acp: serving direct messages (every DM is addressed to the bot, so mention-gating is off)")
+	}
 	// Narrowing the event queue is an optimisation, not the allowlist:
 	// a /register narrow cannot express a union of channels, so with
 	// more than one served channel the queue is left unnarrowed and
 	// the handler filters. A followed set can grow at any moment, so
-	// it is never narrowed. See zulipproto.NarrowChannels.
+	// it is never narrowed — and a channel narrow would drop every DM
+	// on the floor, so serving DMs drops it too. See
+	// zulipproto.NarrowChannels.
 	var narrow [][2]string
 	if !follow {
-		narrow = zulipproto.NarrowChannels(served.Names())
+		narrow = zulipproto.NarrowChannels(served.Names(), cfg.DMs)
 	}
 	switch {
 	case follow:
 		log.Printf("zulip-acp: the event queue is not narrowed: the served set follows the bot's subscriptions and can change at any moment")
+	case narrow == nil && cfg.DMs:
+		log.Printf("zulip-acp: the event queue is not narrowed: a channel narrow would exclude direct messages; the allowlists filter")
 	case narrow == nil:
 		log.Printf("zulip-acp: the event queue is not narrowed (%d channels served); the channel allowlist filters", served.Len())
 	}
@@ -221,6 +229,7 @@ func main() {
 		BotSenderIDs:       bots,
 		Channels:           served,
 		AllowedUsers:       cfg.AllowedUsers(),
+		DMs:                cfg.DMs,
 		PromptTimeout:      cfg.PromptTimeout(),
 		EditInterval:       cfg.EditInterval(),
 		Budget:             cfg.Budget(),

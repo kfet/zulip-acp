@@ -34,33 +34,118 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 )
 
-// Conv is one conversation: a (channel, topic) pair, its stable
-// conv-id, and the id of the tail message the relay currently owns.
+// Key is what a conversation is reached by. Zulip has exactly two
+// conversation shapes and one type expresses both, so the journal
+// never needs a parallel map:
+//
+//   - a channel conversation, identified by (StreamID, Topic);
+//   - a direct message, identified by the SET of participating user
+//     ids — sorted, deduped, and INCLUDING the bot, exactly as Zulip
+//     reports it in display_recipient. A group DM is the same shape
+//     with more members.
+//
+// UserIDs being non-empty is the discriminant: a channel conversation
+// never carries one, and a DM has no channel or topic. That is why the
+// on-disk shape needs no version bump — a pre-DM journal has no
+// user_ids anywhere and loads as channel conversations unchanged.
+type Key struct {
+	// StreamID is the Zulip channel id (channel conversations only).
+	StreamID int64 `json:"stream_id,omitempty"`
+	// Topic is the current topic string, exactly as Zulip delivers it
+	// — never normalised, never case-folded (channel conversations
+	// only).
+	Topic string `json:"topic,omitempty"`
+	// UserIDs is the DM recipient set: sorted, deduped, bot included.
+	UserIDs []int64 `json:"user_ids,omitempty"`
+}
+
+// Channel returns the key for a channel topic.
+func Channel(streamID int64, topic string) Key {
+	return Key{StreamID: streamID, Topic: topic}
+}
+
+// DM returns the key for a direct-message conversation with the given
+// participants. The input is copied, sorted and deduped, so the same
+// set in any order — and Zulip's display_recipient order is not
+// stable — always yields the same key.
+func DM(userIDs []int64) Key {
+	ids := make([]int64, len(userIDs))
+	copy(ids, userIDs)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	if len(ids) == 0 {
+		// An empty set is not a conversation; callers must not build
+		// one, and returning the zero Key keeps IsDM honest.
+		return Key{}
+	}
+	return Key{UserIDs: ids}
+}
+
+// IsDM reports whether k identifies a direct message.
+func (k Key) IsDM() bool { return len(k.UserIDs) > 0 }
+
+// index is the canonical map key. The leading tag keeps the two
+// shapes in disjoint namespaces for good, so no channel key can ever
+// collide with a DM key.
+func (k Key) index() string {
+	if k.IsDM() {
+		return "d\x00" + k.userList()
+	}
+	return "c\x00" + strconv.FormatInt(k.StreamID, 10) + "\x00" + k.Topic
+}
+
+// userList renders the DM participant set as "4,9".
+func (k Key) userList() string {
+	parts := make([]string, len(k.UserIDs))
+	for i, id := range k.UserIDs {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(parts, ",")
+}
+
+// Label renders a key for the operator log.
+//
+// Deliberately NOT called String: Conv embeds Key, so a String method
+// here would be promoted and silently turn every `%v` of a Conv — which
+// is what carries the conv-id — into a rendering of its key alone.
+func (k Key) Label() string {
+	if k.IsDM() {
+		return "DM " + k.userList()
+	}
+	return "channel " + strconv.FormatInt(k.StreamID, 10) + " > " + strconv.Quote(k.Topic)
+}
+
+// normalise canonicalises a key loaded from disk, so a hand-edited
+// journal with an unsorted or duplicated user_ids list still indexes
+// the same as the set Zulip delivers.
+func (k Key) normalise() Key {
+	if k.IsDM() {
+		return DM(k.UserIDs)
+	}
+	return k
+}
+
+// Conv is one conversation: its key, its stable conv-id, and the id of
+// the tail message the relay currently owns.
 type Conv struct {
 	// ID is the stable, opaque conversation id. It is a safe single
 	// path component and is used as the acp-kit state manager key.
 	ID string `json:"id"`
-	// StreamID is the Zulip channel id.
-	StreamID int64 `json:"stream_id"`
-	// Topic is the current topic string, exactly as Zulip delivers it
-	// — never normalised, never case-folded.
-	Topic string `json:"topic"`
+	// Key is flattened into the enclosing JSON object, which is what
+	// keeps the pre-DM on-disk shape ({"id","stream_id","topic"})
+	// readable and writable unchanged.
+	Key
 	// TailID is the message the relay is currently streaming into, or
 	// 0 when no turn is in flight. A non-zero value surviving a
 	// restart means that turn was interrupted.
 	TailID int64 `json:"tail_id,omitempty"`
-}
-
-// Key is the (channel, topic) pair a Conv is reached by.
-func (c Conv) Key() string { return key(c.StreamID, c.Topic) }
-
-func key(streamID int64, topic string) string {
-	return strconv.FormatInt(streamID, 10) + "\x00" + topic
 }
 
 // file is the on-disk shape. Stored as a list so the file stays
@@ -99,6 +184,7 @@ func Open(path string) (*Journal, error) {
 	}
 	for i := range f.Convs {
 		c := f.Convs[i]
+		c.Key = c.Key.normalise()
 		j.index(&c)
 	}
 	return j, nil
@@ -108,31 +194,31 @@ func Open(path string) (*Journal, error) {
 // has no concurrent users yet).
 func (j *Journal) index(c *Conv) {
 	j.byID[c.ID] = c
-	j.byKey[c.Key()] = c
+	j.byKey[c.Key.index()] = c
 }
 
-// Lookup returns the conversation for (streamID, topic), if known.
-func (j *Journal) Lookup(streamID int64, topic string) (Conv, bool) {
+// Lookup returns the conversation for k, if known.
+func (j *Journal) Lookup(k Key) (Conv, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	c, ok := j.byKey[key(streamID, topic)]
+	c, ok := j.byKey[k.index()]
 	if !ok {
 		return Conv{}, false
 	}
 	return *c, true
 }
 
-// Ensure returns the conversation for (streamID, topic), allocating a
-// fresh conv-id and persisting it if this is the first time the relay
-// has seen the pair.
-func (j *Journal) Ensure(streamID int64, topic string) (Conv, error) {
+// Ensure returns the conversation for k, allocating a fresh conv-id
+// and persisting it if this is the first time the relay has seen the
+// key.
+func (j *Journal) Ensure(k Key) (Conv, error) {
 	j.mu.Lock()
-	if c, ok := j.byKey[key(streamID, topic)]; ok {
+	if c, ok := j.byKey[k.index()]; ok {
 		out := *c
 		j.mu.Unlock()
 		return out, nil
 	}
-	c := &Conv{ID: j.newID(), StreamID: streamID, Topic: topic}
+	c := &Conv{ID: j.newID(), Key: k}
 	j.index(c)
 	out := *c
 	err := j.save()
@@ -147,6 +233,10 @@ func (j *Journal) Ensure(streamID int64, topic string) (Conv, error) {
 // newTopic, keeping its conv-id — and therefore its live ACP session
 // and working directory — intact.
 //
+// Channel conversations only: a DM has no topic, so there is nothing
+// here for one to match. Its key is in a disjoint namespace, which is
+// what makes that structural rather than a convention.
+//
 // Returns ok=false when the old topic is unknown (nothing to migrate)
 // or when the new topic already has its own conversation, in which
 // case the existing one wins and the stale alias is dropped. The topic
@@ -154,7 +244,7 @@ func (j *Journal) Ensure(streamID int64, topic string) (Conv, error) {
 func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	oldKey, newKey := key(streamID, oldTopic), key(streamID, newTopic)
+	oldKey, newKey := Channel(streamID, oldTopic).index(), Channel(streamID, newTopic).index()
 	if oldKey == newKey {
 		return Conv{}, false, nil
 	}

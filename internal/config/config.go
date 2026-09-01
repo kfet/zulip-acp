@@ -56,7 +56,19 @@ type Config struct {
 	// never answers anywhere else.
 	Channels []string `json:"channels,omitempty"`
 
-	// AllowedUserIDs, if non-empty, restricts who the relay answers.
+	// DMs enables direct-message conversations: 1:1 and group DMs with
+	// the bot. Default FALSE — serving DMs is an explicit decision.
+	//
+	// The `channels` allowlist cannot gate a DM (a DM is in no
+	// channel), so with DMs on, anyone in the realm who is not
+	// excluded by allowed_user_ids can open a session with an agent
+	// that has a shell. Same reasoning as requiring `channels` to be
+	// set explicitly: "everything" must be asked for, never defaulted
+	// into. allowed_user_ids applies to DMs unchanged.
+	DMs bool `json:"dms,omitempty"`
+
+	// AllowedUserIDs, if non-empty, restricts who the relay answers,
+	// in channels and in DMs alike.
 	AllowedUserIDs []int64 `json:"allowed_user_ids,omitempty"`
 
 	// AgentCmd is the argv used to spawn the ACP agent.
@@ -267,10 +279,18 @@ func (c *Config) GetAgentCmd() []string {
 // An empty Channels list is an error rather than "everything": a relay
 // that answers in every channel of a realm by default is a footgun.
 // The sentinel exists so that "everything" is something an operator
-// asks for explicitly, never something a missing key produces.
+// asks for explicitly, never something a missing key produces. The one
+// exception is a DM-only relay ("dms": true with no channels), which
+// serves no channel at all.
 func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]string, error) {
 	if len(c.Channels) == 0 {
-		return nil, fmt.Errorf("no channels configured — set \"channels\" to the channel names or ids the relay should serve, or to [%q] to serve every channel the bot is subscribed to", ChannelSentinel)
+		if c.DMs {
+			// A DM-only relay is a legitimate deployment: DMs are not
+			// gated by the channel allowlist, so an empty one is not
+			// the footgun it would otherwise be.
+			return map[int64]string{}, nil
+		}
+		return nil, fmt.Errorf("no channels configured — set \"channels\" to the channel names or ids the relay should serve, or to [%q] to serve every channel the bot is subscribed to, or set \"dms\": true to serve direct messages only", ChannelSentinel)
 	}
 	byName := make(map[string]zulipproto.Stream, len(available))
 	byID := make(map[int64]zulipproto.Stream, len(available))

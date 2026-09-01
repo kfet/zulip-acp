@@ -331,3 +331,29 @@ func TestAckEmojiIsValidated(t *testing.T) {
 		}
 	}
 }
+
+// TestDMsOptIn: DMs are off unless asked for, and a DM-only relay is a
+// legitimate deployment with no channels at all.
+func TestDMsOptIn(t *testing.T) {
+	c, err := Load(writeConfig(t, `{"site":"https://z","bot_email":"b@x","bot_api_key":"k","dms":true}`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.DMs {
+		t.Fatal("dms:true did not load")
+	}
+	if (&Config{}).DMs {
+		t.Fatal("dms must default to off")
+	}
+	got, err := c.ResolveChannels([]zulipproto.Stream{{StreamID: 4, Name: "fleet"}})
+	if err != nil {
+		t.Fatalf("a DM-only relay must resolve to an empty channel set: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("channels = %v", got)
+	}
+	// Without DMs an empty channels list is still an error.
+	if _, err := (&Config{}).ResolveChannels(nil); err == nil {
+		t.Fatal("want error with neither channels nor dms")
+	}
+}

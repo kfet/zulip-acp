@@ -513,14 +513,14 @@ func TestServerErrorsPropagate(t *testing.T) {
 // channel NAME, and narrow terms are a conjunction, so more than one
 // channel cannot be narrowed at all.
 func TestNarrowChannels(t *testing.T) {
-	got := NarrowChannels([]string{"fleet"})
+	got := NarrowChannels([]string{"fleet"}, false)
 	if len(got) != 1 || got[0][0] != "channel" || got[0][1] != "fleet" {
 		t.Fatalf("one channel = %v", got)
 	}
-	if got := NarrowChannels([]string{"fleet", "ops"}); got != nil {
+	if got := NarrowChannels([]string{"fleet", "ops"}, false); got != nil {
 		t.Fatalf("two channels must not be narrowed (a narrow is a conjunction; the queue would deliver nothing), got %v", got)
 	}
-	if got := NarrowChannels(nil); got != nil {
+	if got := NarrowChannels(nil, false); got != nil {
 		t.Fatalf("no channels = %v", got)
 	}
 }

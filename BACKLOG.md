@@ -36,9 +36,6 @@ Things deliberately not done in v1, with the reason.
 
 - **`~/.zuliprc` support.** Zulip's own tooling reads an ini file with
   `email` / `key` / `site`. We accept config JSON + env only. Cheap to add.
-- **Direct messages.** v1 answers in channel topics only. DMs need a
-  different conv-key shape (a user-id set, not `(stream_id, topic)`) and a
-  separate gating decision.
 - **Startup model probe.** `slack-acp` probes the agent at boot purely so the
   provider emoji can render on turn one. Cosmetic; we resolve the emoji
   lazily from `agent.Models()` instead and skip ~150 lines of

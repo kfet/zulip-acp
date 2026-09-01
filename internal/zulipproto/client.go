@@ -182,9 +182,53 @@ type Message struct {
 	// in GET /users, so this field is the only reliable way to
 	// recognise them from a message event.
 	SenderRealm string `json:"sender_realm_str"`
+	// DisplayRecipient is Zulip's POLYMORPHIC recipient field, left
+	// raw on purpose: for a channel message it is the channel NAME (a
+	// JSON string), and for a direct message it is a JSON ARRAY of
+	// user objects. A typed field would fail to decode one of the two
+	// shapes and take the whole /events response down with it,
+	// silently wedging the queue. Use Recipients.
+	DisplayRecipient json.RawMessage `json:"display_recipient"`
 	// Client is the posting client's name ("website", "curl", and
 	// "Internal" for server-generated messages).
 	Client string `json:"client"`
+}
+
+// Message type strings. Zulip still calls a direct message "private"
+// on the wire, in both message objects and the send form.
+const (
+	MessageTypeStream  = "stream"
+	MessageTypePrivate = "private"
+)
+
+// IsDM reports whether m is a direct message (1:1 or group).
+func (m Message) IsDM() bool { return m.Type == MessageTypePrivate }
+
+// Recipients returns the user ids of a direct message's participants —
+// every recipient plus the sender, which for a DM to the relay always
+// includes the bot itself. The order Zulip uses is not contractual, so
+// callers must treat it as a set.
+//
+// It returns nil for a channel message, where display_recipient is the
+// channel name rather than a list.
+func (m Message) Recipients() []int64 {
+	if len(m.DisplayRecipient) == 0 {
+		return nil
+	}
+	var users []struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(m.DisplayRecipient, &users); err != nil {
+		return nil
+	}
+	out := make([]int64, 0, len(users))
+	for _, u := range users {
+		out = append(out, u.ID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SystemBotRealm is the realm Zulip's cross-realm system bots live in.
@@ -264,9 +308,41 @@ func (c *Client) SendMessage(ctx context.Context, streamID int64, topic, content
 		return 0, err
 	}
 	form := url.Values{
-		"type":    {"stream"},
+		"type":    {MessageTypeStream},
 		"to":      {strconv.FormatInt(streamID, 10)},
 		"topic":   {topic},
+		"content": {content},
+	}
+	var resp struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/messages", nil, form, &resp); err != nil {
+		return 0, err
+	}
+	return resp.ID, nil
+}
+
+// SendDirectMessage posts content to a direct conversation with the
+// given user ids and returns the new message id. A group DM is the
+// same call with more ids.
+//
+// `to` is a JSON ARRAY of user ids: the comma-separated form Zulip
+// also accepts is deprecated, and the email form is worse still. The
+// bot's own id may be included — Zulip ignores it — so the recipient
+// set can be passed through from display_recipient unchanged.
+//
+// Length is checked exactly as for a channel message: MAX_MESSAGE_LENGTH
+// applies to DMs too, and truncation there is just as silent.
+func (c *Client) SendDirectMessage(ctx context.Context, userIDs []int64, content string) (int64, error) {
+	if err := checkLength(content); err != nil {
+		return 0, err
+	}
+	if len(userIDs) == 0 {
+		return 0, fmt.Errorf("zulip: direct message with no recipients")
+	}
+	form := url.Values{
+		"type":    {MessageTypePrivate},
+		"to":      {mustJSON(userIDs)},
 		"content": {content},
 	}
 	var resp struct {
@@ -584,7 +660,7 @@ func (c *Client) send(req *http.Request, out any) error {
 
 // NarrowChannels builds the /register narrow for the given channels.
 //
-// Two traps live here, both measured on Zulip 12.2, and both of which
+// Three traps live here, all measured on Zulip 12.2, and all of which
 // fail by SILENTLY DELIVERING NOTHING — the queue registers fine and
 // simply never produces an event.
 //
@@ -595,13 +671,17 @@ func (c *Client) send(req *http.Request, out any) error {
 //     channel A *and* in channel B", which no message ever satisfies.
 //     There is no way to express a channel union in a /register
 //     narrow.
+//  3. For the same reason a channel narrow EXCLUDES DIRECT MESSAGES
+//     outright: a DM is in no channel, so it can never satisfy the
+//     term. A relay that serves DMs must therefore drop the narrow —
+//     hence serveDMs.
 //
-// So: exactly one channel gets a narrow; anything else gets none, and
-// the caller filters by channel itself. Over-delivery is cheap and the
-// relay already has a channel allowlist it must enforce regardless —
+// So: exactly one channel and no DMs gets a narrow; anything else gets
+// none, and the caller filters itself. Over-delivery is cheap and the
+// relay already has an allowlist it must enforce regardless —
 // under-delivery is silent and unrecoverable.
-func NarrowChannels(names []string) [][2]string {
-	if len(names) != 1 {
+func NarrowChannels(names []string, serveDMs bool) [][2]string {
+	if serveDMs || len(names) != 1 {
 		return nil
 	}
 	return [][2]string{{"channel", names[0]}}
