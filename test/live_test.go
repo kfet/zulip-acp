@@ -301,3 +301,74 @@ func TestReactionsAreIdempotentAgainstTheServer(t *testing.T) {
 		t.Fatal("a bogus emoji name should be an error")
 	}
 }
+
+// TestDirectMessageWireShape is evidence for the two DM facts the
+// relay is built on, neither of which is visible from a unit test:
+//
+//  1. `POST /messages` with `type=private` and `to` as a JSON ARRAY of
+//     user ids is accepted, and the bot's own id in that array is
+//     harmless — which is what lets the relay pass the participant set
+//     from display_recipient straight back.
+//  2. `display_recipient` comes back as an ARRAY of user objects on a
+//     DM, where a channel message returns a bare string. That
+//     polymorphism is why zulipproto keeps the field raw; a typed
+//     field would fail to decode the whole /events response and wedge
+//     the queue silently.
+//
+// It uses a message to the bot itself, so it needs no second account
+// and leaves nothing in a human's inbox.
+func TestDirectMessageWireShape(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+
+	me, err := c.Me(ctx)
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	body := "zulip-acp live DM probe " + topicFor(t)
+	id, err := c.SendDirectMessage(ctx, []int64{me.UserID}, body)
+	if err != nil {
+		t.Fatalf("send DM: %v", err)
+	}
+
+	got, err := c.GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.IsDM() {
+		t.Fatalf("type = %q, want private", got.Type)
+	}
+	ids := got.Recipients()
+	if len(ids) == 0 {
+		t.Fatalf("display_recipient did not decode as a user list: %s", got.DisplayRecipient)
+	}
+	found := false
+	for _, uid := range ids {
+		if uid == me.UserID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("recipients %v do not include the bot %d", ids, me.UserID)
+	}
+
+	// Editing a DM is the same PATCH as editing a channel message —
+	// the streaming path depends on that being true.
+	if err := c.EditMessage(ctx, id, body+" (edited)"); err != nil {
+		t.Fatalf("edit DM: %v", err)
+	}
+
+	// And a channel message's display_recipient is a bare string, not
+	// a list: the other half of the polymorphism.
+	cid, err := c.SendMessage(ctx, streamID, topicFor(t), "zulip-acp live channel probe")
+	if err != nil {
+		t.Fatalf("send channel: %v", err)
+	}
+	cm, err := c.GetMessage(ctx, cid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if cm.IsDM() || cm.Recipients() != nil {
+		t.Fatalf("channel message decoded as a DM: %s", cm.DisplayRecipient)
+	}
+}

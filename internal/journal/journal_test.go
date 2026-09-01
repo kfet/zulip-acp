@@ -21,14 +21,14 @@ func tmpJournal(t *testing.T) (*Journal, string) {
 
 func TestEnsureIsStableAndPersisted(t *testing.T) {
 	j, path := tmpJournal(t)
-	c1, err := j.Ensure(4, "session: fix the parser")
+	c1, err := j.Ensure(Channel(4, "session: fix the parser"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	if c1.ID == "" || c1.StreamID != 4 || c1.Topic != "session: fix the parser" {
 		t.Fatalf("conv = %+v", c1)
 	}
-	c2, err := j.Ensure(4, "session: fix the parser")
+	c2, err := j.Ensure(Channel(4, "session: fix the parser"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestEnsureIsStableAndPersisted(t *testing.T) {
 	}
 	// The same topic string in a DIFFERENT channel is a different
 	// conversation — the key is (stream_id, topic), not topic alone.
-	c3, err := j.Ensure(5, "session: fix the parser")
+	c3, err := j.Ensure(Channel(5, "session: fix the parser"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -50,11 +50,11 @@ func TestEnsureIsStableAndPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	got, ok := j2.Lookup(4, "session: fix the parser")
+	got, ok := j2.Lookup(Channel(4, "session: fix the parser"))
 	if !ok || got.ID != c1.ID {
 		t.Fatalf("after reload: %+v ok=%v", got, ok)
 	}
-	if _, ok := j2.Lookup(4, "unknown topic"); ok {
+	if _, ok := j2.Lookup(Channel(4, "unknown topic")); ok {
 		t.Fatal("unknown topic must not resolve")
 	}
 	if n := len(j2.Convs()); n != 2 {
@@ -68,7 +68,7 @@ func TestEnsureIsStableAndPersisted(t *testing.T) {
 func TestConvIDIsSafePathComponent(t *testing.T) {
 	j, _ := tmpJournal(t)
 	for _, topic := range []string{"../../etc/passwd", "a/b/c", ".hidden", "", "emoji 🙂 topic", strings.Repeat("x", 500)} {
-		c, err := j.Ensure(4, topic)
+		c, err := j.Ensure(Channel(4, topic))
 		if err != nil {
 			t.Fatalf("Ensure(%q): %v", topic, err)
 		}
@@ -81,7 +81,7 @@ func TestConvIDIsSafePathComponent(t *testing.T) {
 // TestRenameKeepsConvID is the whole reason the package exists.
 func TestRenameKeepsConvID(t *testing.T) {
 	j, path := tmpJournal(t)
-	orig, err := j.Ensure(4, "untitled")
+	orig, err := j.Ensure(Channel(4, "untitled"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -98,10 +98,10 @@ func TestRenameKeepsConvID(t *testing.T) {
 	if got.TailID != 99 {
 		t.Fatalf("tail lost on rename: %d", got.TailID)
 	}
-	if _, ok := j.Lookup(4, "untitled"); ok {
+	if _, ok := j.Lookup(Channel(4, "untitled")); ok {
 		t.Fatal("old topic still resolves after rename")
 	}
-	after, ok := j.Lookup(4, "session: real name")
+	after, ok := j.Lookup(Channel(4, "session: real name"))
 	if !ok || after.ID != orig.ID {
 		t.Fatalf("new topic = %+v ok=%v", after, ok)
 	}
@@ -110,7 +110,7 @@ func TestRenameKeepsConvID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if c, ok := j2.Lookup(4, "session: real name"); !ok || c.ID != orig.ID {
+	if c, ok := j2.Lookup(Channel(4, "session: real name")); !ok || c.ID != orig.ID {
 		t.Fatalf("rename not persisted: %+v ok=%v", c, ok)
 	}
 }
@@ -121,7 +121,7 @@ func TestRenameEdgeCases(t *testing.T) {
 	if _, ok, err := j.Rename(4, "nope", "other"); ok || err != nil {
 		t.Fatalf("unknown rename: ok=%v err=%v", ok, err)
 	}
-	a, err := j.Ensure(4, "alpha")
+	a, err := j.Ensure(Channel(4, "alpha"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -129,13 +129,13 @@ func TestRenameEdgeCases(t *testing.T) {
 	if _, ok, err := j.Rename(4, "alpha", "alpha"); ok || err != nil {
 		t.Fatalf("no-op rename: ok=%v err=%v", ok, err)
 	}
-	if c, ok := j.Lookup(4, "alpha"); !ok || c.ID != a.ID {
+	if c, ok := j.Lookup(Channel(4, "alpha")); !ok || c.ID != a.ID {
 		t.Fatal("no-op rename disturbed the conversation")
 	}
 	// Renaming onto an occupied topic: the destination wins, and the
 	// merged-away conv-id disappears rather than leaving two
 	// conversations answering to one topic.
-	b, err := j.Ensure(4, "beta")
+	b, err := j.Ensure(Channel(4, "beta"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestRenameEdgeCases(t *testing.T) {
 	if got.ID != b.ID {
 		t.Fatalf("destination did not win: %q vs %q", got.ID, b.ID)
 	}
-	if _, ok := j.Lookup(4, "alpha"); ok {
+	if _, ok := j.Lookup(Channel(4, "alpha")); ok {
 		t.Fatal("source topic still resolves")
 	}
 	for _, c := range j.Convs() {
@@ -161,7 +161,7 @@ func TestRenameEdgeCases(t *testing.T) {
 
 func TestTailTracking(t *testing.T) {
 	j, path := tmpJournal(t)
-	c, err := j.Ensure(4, "topic")
+	c, err := j.Ensure(Channel(4, "topic"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestTailTracking(t *testing.T) {
 func TestOpenTailsOrderedAndMultiple(t *testing.T) {
 	j, _ := tmpJournal(t)
 	for i, topic := range []string{"a", "b", "c"} {
-		c, err := j.Ensure(4, topic)
+		c, err := j.Ensure(Channel(4, topic))
 		if err != nil {
 			t.Fatalf("Ensure: %v", err)
 		}
@@ -259,7 +259,7 @@ func TestSaveErrors(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	j.path = filepath.Join(blocker, "sub", "journal.json")
-	if _, err := j.Ensure(4, "t"); err == nil {
+	if _, err := j.Ensure(Channel(4, "t")); err == nil {
 		t.Fatal("want mkdir error")
 	}
 
@@ -273,7 +273,7 @@ func TestSaveErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := j2.Ensure(4, "t"); err == nil {
+	if _, err := j2.Ensure(Channel(4, "t")); err == nil {
 		t.Fatal("want write error")
 	}
 
@@ -291,7 +291,7 @@ func TestSaveErrors(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	j3.path = dest
-	if _, err := j3.Ensure(4, "t"); err == nil {
+	if _, err := j3.Ensure(Channel(4, "t")); err == nil {
 		t.Fatal("want rename error")
 	}
 }
@@ -304,11 +304,11 @@ func TestSetTailAndRenameSaveErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	c, err := j.Ensure(4, "alpha")
+	c, err := j.Ensure(Channel(4, "alpha"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if _, err := j.Ensure(4, "beta"); err != nil {
+	if _, err := j.Ensure(Channel(4, "beta")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	// Point the journal at an undwritable path for the mutations below.
@@ -342,11 +342,11 @@ func TestNewIDRetriesOnCollision(t *testing.T) {
 		return len(b), nil
 	}
 	j, _ := tmpJournal(t)
-	a, err := j.Ensure(4, "one")
+	a, err := j.Ensure(Channel(4, "one"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	b, err := j.Ensure(4, "two")
+	b, err := j.Ensure(Channel(4, "two"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestConcurrentEnsure(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c, err := j.Ensure(4, "shared topic")
+			c, err := j.Ensure(Channel(4, "shared topic"))
 			if err != nil {
 				t.Errorf("Ensure: %v", err)
 				return

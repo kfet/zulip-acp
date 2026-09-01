@@ -34,10 +34,13 @@ const (
 
 // fakeZulip models the surface: a message store plus an upload store.
 type fakeZulip struct {
-	mu       sync.Mutex
-	next     int64
-	bodies   map[int64]string
-	topics   map[int64]string
+	mu     sync.Mutex
+	next   int64
+	bodies map[int64]string
+	topics map[int64]string
+	// dms records the recipient set of every message sent as a DM,
+	// keyed by message id. A channel message never appears here.
+	dms      map[int64][]int64
 	order    []int64
 	uploads  map[string][]byte
 	sendErr  error
@@ -62,6 +65,7 @@ func newZulip() *fakeZulip {
 	return &fakeZulip{
 		bodies:  map[int64]string{},
 		topics:  map[int64]string{},
+		dms:     map[int64][]int64{},
 		uploads: map[string][]byte{},
 		posted:  make(chan struct{}, 256),
 
@@ -85,6 +89,22 @@ func (z *fakeZulip) SendMessage(_ context.Context, _ int64, topic, content strin
 	z.next++
 	z.bodies[z.next] = content
 	z.topics[z.next] = topic
+	z.order = append(z.order, z.next)
+	z.signal()
+	return z.next, nil
+}
+
+// SendDirectMessage records the recipient set alongside the body, so
+// a test can assert both that a DM went out and who it went to.
+func (z *fakeZulip) SendDirectMessage(_ context.Context, userIDs []int64, content string) (int64, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.sendErr != nil {
+		return 0, z.sendErr
+	}
+	z.next++
+	z.bodies[z.next] = content
+	z.dms[z.next] = append([]int64(nil), userIDs...)
 	z.order = append(z.order, z.next)
 	z.signal()
 	return z.next, nil
@@ -901,7 +921,7 @@ func TestTailTrackingErrorsAreLogged(t *testing.T) {
 
 func mustSplitter(t *testing.T, z *fakeZulip) *rollover.Splitter {
 	t.Helper()
-	s, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	s, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1010,7 +1030,7 @@ func TestRenameEventsThatDoNothing(t *testing.T) {
 	for _, ev := range events {
 		hh.h.Handle(context.Background(), ev)
 	}
-	if c, ok := hh.j.Lookup(4, "topic"); !ok || c.Topic != "topic" {
+	if c, ok := hh.j.Lookup(journal.Channel(4, "topic")); !ok || c.Topic != "topic" {
 		t.Fatalf("a no-op rename disturbed the journal: %+v", hh.j.Convs())
 	}
 }
@@ -1049,15 +1069,15 @@ func TestMarkInterrupted(t *testing.T) {
 
 	// Three conversations: one with a live tail, one whose tail was
 	// already sealed, one whose message has vanished.
-	live, err := hh.j.Ensure(4, "live")
+	live, err := hh.j.Ensure(journal.Channel(4, "live"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	sealed, err := hh.j.Ensure(4, "sealed")
+	sealed, err := hh.j.Ensure(journal.Channel(4, "sealed"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	gone, err := hh.j.Ensure(4, "gone")
+	gone, err := hh.j.Ensure(journal.Channel(4, "gone"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -1100,7 +1120,7 @@ func TestMarkInterrupted(t *testing.T) {
 func TestMarkInterruptedEditFailureIsLogged(t *testing.T) {
 	hh := newHarness(t, newAgent("ok"), nil)
 	ctx := context.Background()
-	c, err := hh.j.Ensure(4, "live")
+	c, err := hh.j.Ensure(journal.Channel(4, "live"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -1279,7 +1299,7 @@ func TestOutboxMkdirFailure(t *testing.T) {
 
 func TestWatchdogLoop(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1317,7 +1337,7 @@ func TestWatchdogLoop(t *testing.T) {
 func TestWatchdogStopsOnFlushError(t *testing.T) {
 	z := newZulip()
 	z.sendErr = errors.New("zulip down")
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1335,7 +1355,7 @@ func TestWatchdogStopsOnFlushError(t *testing.T) {
 // testable loop.
 func TestWatchdogTickerWrapper(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1349,7 +1369,7 @@ func TestWatchdogTickerWrapper(t *testing.T) {
 
 func TestSpinnerAnimatesThenDisarms(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1379,7 +1399,7 @@ func TestSpinnerAnimatesThenDisarms(t *testing.T) {
 // TestSpinnerTickerWrapper covers the thin ticker wrapper.
 func TestSpinnerTickerWrapper(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1395,7 +1415,7 @@ func TestSpinnerTickerWrapper(t *testing.T) {
 
 func TestSpinnerStopsOnContextCancel(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1413,7 +1433,7 @@ func TestSpinnerStopsOnContextCancel(t *testing.T) {
 
 func TestSinkRendering(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1465,7 +1485,7 @@ func TestSinkRendering(t *testing.T) {
 
 func TestSinkHidesThinking(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1488,7 +1508,7 @@ func TestSinkHidesThinking(t *testing.T) {
 
 func TestSinkHeaderOmittedWhenEmpty(t *testing.T) {
 	z := newZulip()
-	split, err := rollover.New(rollover.Config{Poster: &topicPoster{client: z, streamID: 4, topic: "t"}})
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
@@ -1516,7 +1536,7 @@ func TestOneLineCapsRunes(t *testing.T) {
 
 func TestTopicPoster(t *testing.T) {
 	z := newZulip()
-	p := &topicPoster{client: z, streamID: 4, topic: "a topic"}
+	p := &convPoster{client: z, key: journal.Channel(4, "a topic")}
 	ctx := context.Background()
 	id, err := p.Post(ctx, "hello")
 	if err != nil {
@@ -1672,7 +1692,7 @@ func TestRescueUploadsOutputWhenPostingFails(t *testing.T) {
 func TestRescueFailuresAreLogged(t *testing.T) {
 	// Nothing to rescue: silent.
 	hh := newHarness(t, newAgent("x"), nil)
-	post := &topicPoster{client: hh.z, streamID: 4, topic: "t"}
+	post := &convPoster{client: hh.z, key: journal.Channel(4, "t")}
 	hh.h.rescue(context.Background(), post, "   ", errors.New("cause"))
 	hh.z.mu.Lock()
 	n := len(hh.z.uploads)
@@ -1695,7 +1715,7 @@ func TestRescueFailuresAreLogged(t *testing.T) {
 	hh2.z.mu.Lock()
 	hh2.z.sendErr = errors.New("zulip down")
 	hh2.z.mu.Unlock()
-	hh2.h.rescue(context.Background(), &topicPoster{client: hh2.z, streamID: 4, topic: "t"},
+	hh2.h.rescue(context.Background(), &convPoster{client: hh2.z, key: journal.Channel(4, "t")},
 		"real output", errors.New("cause"))
 	if !hh2.logged("could not announce it") {
 		t.Fatalf("logs = %v", hh2.logs)

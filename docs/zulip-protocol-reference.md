@@ -83,6 +83,38 @@ curl -u ... -X PATCH https://zulip.example/api/v1/messages/42 \
 the contrast with the `/register` narrow below, where a numeric operand means
 something else entirely.)
 
+A **direct message** is the same endpoint with `type=private` and `to` as a
+**JSON array of user ids** — 1:1 and group DMs differ only in how many ids are
+in the array. The comma-separated and email forms are deprecated:
+
+```bash
+curl -u ... -X POST https://zulip.example/api/v1/messages \
+  -d type=private -d 'to=[4,9]' \
+  --data-urlencode 'content=hello'
+```
+
+Including the bot's own id in `to` is harmless — Zulip ignores it — so the
+participant set from `display_recipient` can be passed straight through.
+Editing is identical for both: `PATCH /messages/<id>` does not care how the
+message was addressed. `MAX_MESSAGE_LENGTH` and its silent truncation apply to
+DMs exactly as to channel messages.
+
+### ⚠️ Trap: `display_recipient` is polymorphic
+
+The same field is a JSON **string** (the channel name) on a channel message and
+a JSON **array of user objects** on a DM:
+
+```json
+{"type":"stream",  "display_recipient":"fleet"}
+{"type":"private", "display_recipient":[{"id":4,...},{"id":9,...}]}
+```
+
+A typed Go field would fail to decode one of the two shapes and take the
+**whole `/events` response** down with it, silently wedging the queue. It is
+therefore kept as `json.RawMessage` and decoded lazily by
+`Message.Recipients()`. The array holds every participant, sender and bot
+included; its order is **not** contractual, so treat it as a set.
+
 **Edits are fast and effectively unthrottled**: 40 consecutive PATCHes measured
 at **15–19 edits/sec**, zero rate-limit responses, p50 ~84ms. Slack's
 `chat.update` 1/sec/channel throttle has no counterpart here. The relay still
@@ -188,8 +220,16 @@ message was posted in one of them.
 
 So a relay serving more than one channel must register **without** a channel
 narrow and filter for itself. Over-delivery is cheap; under-delivery is silent
-and unrecoverable. Both traps are handled by `zulipproto.NarrowChannels(names)`,
-which narrows exactly one channel and otherwise returns nil.
+and unrecoverable. Both traps are handled by
+`zulipproto.NarrowChannels(names, serveDMs)`, which narrows exactly one channel
+and otherwise returns nil.
+
+### ⚠️ Trap: a channel narrow excludes direct messages
+
+Same conjunction, third consequence: a DM is in no channel, so it can never
+satisfy a `["channel", …]` term. A queue narrowed to one channel delivers **no
+DM at all** — again silently. A relay that serves DMs must register without a
+channel narrow, which is what the `serveDMs` argument above is for.
 
 ### ⚠️ Trap: there is no `timeout` parameter
 

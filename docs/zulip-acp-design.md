@@ -28,10 +28,10 @@ contract (`statusline`). **A new surface relay is a protocol adapter only.**
   tunnel.
 - Restart-safe. The topic is the state; local files are a cache.
 
-## Non-goals (v1)
+## Non-goals
 
-Direct messages, inbound attachment handling, a self-drive escape hatch, and
-setup wizards. See [`BACKLOG.md`](../BACKLOG.md) for each, with reasons.
+Inbound attachment handling, a self-drive escape hatch, and setup wizards. See
+[`BACKLOG.md`](../BACKLOG.md) for each, with reasons.
 
 ## Shape
 
@@ -129,6 +129,32 @@ topic string in two channels is two conversations.
 an unknown topic is simply a new conversation. Losing the file costs continuity
 of naming, never correctness.
 
+#### One key type, two conversation shapes
+
+Zulip has exactly two conversation shapes, and `journal.Key` expresses both
+rather than the journal carrying a second, parallel map:
+
+| shape | key | index |
+|---|---|---|
+| channel topic | `(StreamID, Topic)` | `c\0<stream_id>\0<topic>` |
+| direct message | `UserIDs` — the participant set, sorted, deduped, **including the bot** | `d\0<id>,<id>,…` |
+
+`len(UserIDs) > 0` is the discriminant, and the leading tag byte keeps the two
+namespaces disjoint for good, so no channel key can ever collide with a DM key
+however the numbers line up. Sorting is what makes the DM key stable: Zulip's
+`display_recipient` order is not contractual, and an order-sensitive key would
+fork a fresh session on every message.
+
+The key is flattened into the persisted `Conv` object, so the pre-DM on-disk
+shape (`{"id","stream_id","topic"}`) still loads, still writes back byte-alike,
+and needs **no version bump** — a DM is simply the entry that carries
+`user_ids`. A journal from an older release loads as channel conversations
+unchanged.
+
+`Rename` is a channel-only operation and structurally cannot touch a DM: a DM
+has no topic, and its key is in the other namespace. The handler additionally
+drops any `update_message` event with no channel id before it gets that far.
+
 ### 3. Two turn shapes, because ambient turns may be declined
 
 Both shapes open the same way: the triggering message gets an emoji reaction
@@ -174,11 +200,30 @@ Gating, in order:
 2. Never act on any other bot's message either. Zulip posts topic moves and
    welcome notices as cross-realm system bots (`sender_realm_str:
    "zulipinternal"`), which land in engaged topics.
-3. Channel allowlist (`internal/channels.Set`, behind the handler's
-   `ChannelSet` interface), then optional user allowlist.
-4. Then: an `@-mention` starts a conversation; anything else is answered only in
-   an already-engaged topic. **The topic is the membership record**, which is
-   why engagement survives a restart with no extra state.
+3. Route by conversation shape.
+   - **Channel message**: channel allowlist (`internal/channels.Set`, behind
+     the handler's `ChannelSet` interface).
+   - **Direct message**: served only with `"dms": true`, and gated by the user
+     allowlist alone. The channel allowlist has nothing to say about a DM —
+     a DM is in no channel — so `allowed_user_ids` is the *only* thing between
+     the realm and a session, which is why `dms` defaults to **off**.
+   - Anything else is dropped and logged.
+4. Optional user allowlist, identically for both shapes.
+5. Then gating, which is where the two shapes genuinely differ:
+   - In a channel an `@-mention` starts a conversation; anything else is
+     answered only in an already-engaged topic. **The topic is the membership
+     record**, which is why engagement survives a restart with no extra state.
+   - In a DM every message is addressed to the bot by construction — there is
+     nobody else in the conversation to be talking to — so mention-gating is
+     **off** and every message is treated as addressed. Group DMs included.
+     A DM therefore never takes the ambient/abstain path.
+
+Posting back is the mirror image: `convPoster` binds the splitter's dumb
+`Poster` interface to one conversation and makes exactly one decision — a DM key
+posts via `POST /messages` with `type=private` and `to` as a JSON array of user
+ids, a channel key with `type=stream`. Everything downstream is untouched: an
+edit is a `PATCH` on a message id and cannot tell the shapes apart, so streaming
+and 10k rollover work on a DM unchanged.
 
 ## Streaming and back-pressure
 
@@ -283,7 +328,7 @@ an agent cannot use a convention it is never told about.
 cmd/zulip-acp/          flags + wiring (excluded from the coverage gate)
 internal/config/        JSON config, DisallowUnknownFields
 internal/handler/       gating, turn execution, streaming sink, outbox, poster
-internal/journal/       (stream_id, topic) → conv-id alias map + tail ids
+internal/journal/       conv key (channel topic | DM user set) → conv-id + tail ids
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header
 internal/sysprompt/     built-in Zulip formatting block

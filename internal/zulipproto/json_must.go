@@ -9,10 +9,11 @@ import (
 // mustJSON marshals v, panicking on failure.
 //
 // Every call site passes a closed, hand-built shape — []string,
-// [][]string, or a slice of map[string]any holding only strings and
-// int64 — none of which encoding/json can fail on. There is no input
-// a caller can supply that reaches the error branch, so returning the
-// error would leave an `if err != nil` that no test can ever cover.
+// []int64, [][]string, or a slice of map[string]any holding only
+// strings and int64 — none of which encoding/json can fail on. There
+// is no input a caller can supply that reaches the error branch, so
+// returning the error would leave an `if err != nil` that no test can
+// ever cover.
 func mustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
