@@ -4,6 +4,20 @@ Things deliberately not done in v1, with the reason.
 
 ## acp-kit promotion candidates
 
+- **`internal/command` → `acp-kit/command`.** The `!command` parse core —
+  sigil detection, the `!!` escape, first-token extraction, case-insensitive
+  name/alias lookup, the ordered `Spec` registry — is written with zero Zulip
+  imports precisely so it can move. Only the concrete command list, the
+  dispatch switch and the Zulip-markdown rendering are local (in
+  `internal/handler/command.go`). It is **not** promoted now because acp-kit
+  promotion needs a second consumer to shape the API and neither sibling is
+  one today: `poe-acp`'s command surface is a hand-rolled chain fused with its
+  OAuth login broker, and `slack-acp` has no command surface at all.
+  `acp-kit/statusline` is not the precedent it looks like — that contract is
+  shared *by construction*, because relays and agent must agree on bytes.
+  Promote when `slack-acp` grows a command surface, with two real consumers
+  to negotiate `Spec` and dispatch against.
+
 - **`ValidatingSink.Release` — live streaming on the ambient path ("Tier 2").**
   `zulip-acp` now posts a `Thinking…` placeholder as soon as the streamed text
   diverges from the silent sentinel (`handler.sentinelWatch`), but the answer

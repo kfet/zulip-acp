@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/build"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -795,5 +796,21 @@ func TestConcurrentAppendAndFlush(t *testing.T) {
 	checkInvariant(t, s, f)
 	if got := strings.Join(s.RawSlices(), ""); got != s.Transcript() {
 		t.Fatal("invariant broken under concurrency")
+	}
+}
+
+// TestNoZulipImports enforces the rule in the package doc: the
+// splitter must never import anything Zulip-specific, so that HTTP
+// code can never make a split decision and the package stays a
+// promotion candidate for acp-kit/chunker. See BACKLOG.md.
+func TestNoZulipImports(t *testing.T) {
+	p, err := build.ImportDir(".", 0)
+	if err != nil {
+		t.Fatalf("ImportDir: %v", err)
+	}
+	for _, imp := range append(append([]string{}, p.Imports...), p.TestImports...) {
+		if strings.Contains(imp, "zulip-acp/") {
+			t.Fatalf("internal/rollover imports %q; it must stay Zulip-free", imp)
+		}
 	}
 }

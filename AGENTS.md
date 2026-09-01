@@ -28,8 +28,9 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 ```
 cmd/zulip-acp/          entry point: flags + wiring
 docs/                   design doc + Zulip protocol reference
+internal/command/       `!command` parse core (NO Zulip imports)
 internal/config/        JSON config loader (DisallowUnknownFields)
-internal/handler/       event → ACP prompt; streaming sink; topic poster
+internal/handler/       event → ACP prompt; streaming sink; topic poster; commands
 internal/journal/       (stream_id, topic) → conv-id alias map + tail ids
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status header renderer
@@ -59,6 +60,11 @@ Zulip wire protocol it stays here.
   promotion candidate for `acp-kit/chunker` (see `BACKLOG.md`); the import
   graph is what keeps that option open. HTTP code must never make a split
   decision.
+- **`internal/command` must never import anything Zulip-specific** either — no
+  `zulipproto`, no `journal`. It is the `!command` grammar and nothing else;
+  the concrete command list, dispatch switch and Zulip-markdown rendering live
+  in `internal/handler/command.go`. Same discipline, same reason: it is a
+  promotion candidate for `acp-kit/command` (see `BACKLOG.md`).
 
 ## Git
 

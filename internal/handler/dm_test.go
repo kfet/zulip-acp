@@ -36,13 +36,7 @@ func dmHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 // deliverDM feeds a direct message and waits for the turn to finish.
 func (hh *harness) deliverDM(t *testing.T, sender int64, content string, recipients ...int64) {
 	t.Helper()
-	hh.h.Handle(context.Background(), zulipproto.Event{
-		Type: zulipproto.EventMessage,
-		Message: &zulipproto.Message{
-			ID: 1, SenderID: sender, SenderName: "Kfet", Content: content,
-			Type: zulipproto.MessageTypePrivate, DisplayRecipient: dmRecipients(recipients...),
-		},
-	})
+	hh.h.Handle(context.Background(), dmEvent(sender, content, recipients...))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hh.h.WaitIdle(ctx); err != nil {

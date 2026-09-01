@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Relay `!command` surface, in channel topics and DMs alike.** `!help`,
+  `!status`, `!id`, `!model [id]`, `!new` (`!reset`) and `!stop` (`!cancel`)
+  are handled by the relay itself: they never reach the agent and consume no
+  turn, so `!stop` and `!status` still work when the agent is wedged. Replies
+  are ordinary messages posted where the command arrived — no placeholder, no
+  streaming, no `:eyes:` lifecycle.
+- **`!new` (`!reset`) retires a conversation and allocates a fresh conv-id.**
+  This is the only way to start over in a **direct message**, whose key is the
+  participant set and therefore fixed forever. The retired conversation keeps
+  its `state/convs/<id>/` directory — the reply names it — and its recorded
+  tail message is cleared so the next turn cannot stream into it. Any turn
+  running in the retired conversation is cancelled first. A `!model` choice
+  carries over; the history does not.
+- **`!model [id]` shows the agent's models or switches this conversation to
+  one**, via acp-kit's `AgentProc.SetModel`. The choice is sticky per
+  conversation, in memory only, and pushed to the ACP session at the start of
+  the next turn — re-applied automatically if idle GC swaps the session out.
+- `journal.Journal.Retire` and the `retired` field on a journal entry. A
+  retired conversation stays addressable by id but never re-claims its key, so
+  a turn still unwinding in it resolves cleanly and the file records which
+  state directories are dead. Absent in a pre-`!new` journal, so no version
+  bump.
+- `zulipproto.Message.RecipientNames`, for rendering DM participants in human
+  terms in `!status`.
+
+### Changed
+
+- The built-in system prompt tells the agent that `!`-commands are handled by
+  the relay and never reach it, so it points users at `!help` instead of
+  inventing commands.
+- A message that merely *starts* with `!` is still ordinary prose and reaches
+  the agent byte-for-byte: only a command-shaped first token (a letter, then
+  letters/digits/`_`/`-`) is parsed as a command. `!important: fix this` and
+  `!5 minutes` are forwarded unchanged. A command-shaped token naming nothing
+  known gets a short error and is not forwarded either. To send prose that
+  really does begin with a command name, double the bang — `!!new` arrives as
+  `!new`.
+
 ## [0.4.0] - 2026-09-01
 
 ### Added
