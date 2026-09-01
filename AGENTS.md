@@ -1,11 +1,3 @@
-Use idiomatic Go. Keep it simple.
-
-Prefer `sync/atomic`, `sync.Once`, and channels over manual mutex management when appropriate.
-
-Do not ignore any issues, address them promptly, even if preexisting. Do not postpone any work, even if it seems daunting — just break it down into smaller tasks. **Never dismiss a problem as "pre-existing" or "out of scope" — you own this entire codebase. If you see it, you fix it.**
-
-Do not leave incomplete or stubbed code. Ensure all code is functional and tested.
-
 ## What this is
 
 `zulip-acp` bridges a **self-hosted Zulip server** to an ACP-speaking coding
@@ -20,6 +12,16 @@ is shared in `github.com/kfet/acp-kit`.
 See [docs/zulip-acp-design.md](docs/zulip-acp-design.md) for the design and
 [docs/zulip-protocol-reference.md](docs/zulip-protocol-reference.md) for the
 wire details.
+
+## How to work here
+
+Use idiomatic Go. Keep it simple.
+
+Prefer `sync/atomic`, `sync.Once`, and channels over manual mutex management when appropriate.
+
+Do not ignore any issues, address them promptly, even if preexisting. Do not postpone any work, even if it seems daunting — just break it down into smaller tasks. **Never dismiss a problem as "pre-existing" or "out of scope" — you own this entire codebase. If you see it, you fix it.**
+
+Do not leave incomplete or stubbed code. Ensure all code is functional and tested.
 
 ## Repository layout
 
@@ -59,6 +61,12 @@ Zulip wire protocol it stays here.
   decision.
 
 ## Git
+
+More than one agent may hold a worktree of this repository at the same time.
+Before any history rewrite, force-push, or ff-merge to main, run
+`git worktree list` and check **every** worktree's index — a rewrite here does
+not clean another worktree's staged files, and a stale index can silently
+resurrect deleted files on the next merge.
 
 Git commands that require an editor (`git rebase --continue`, `git commit`,
 `git merge --continue`) will open vim non-interactively and hang. Always

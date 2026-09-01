@@ -46,9 +46,9 @@ Things deliberately not done in v1, with the reason.
   possible when one line exceeds the whole budget) can break a span. Cosmetic
   and rare; documented rather than fixed.
 
-## Recorded from the brief, not built
+## Recorded from the v1 design, not built
 
-- **Relay-initiated session naming.** The brief prescribes `<slug> · <4-char-id>`
+- **Relay-initiated session naming.** The v1 design prescribes `<slug> · <4-char-id>`
   for topics the *relay* creates. v1 has no code path that starts a topic — the
   human always names it — so the rule has nothing to apply to. It is recorded
   here so that whenever a relay-initiated path appears (a scheduled digest, an

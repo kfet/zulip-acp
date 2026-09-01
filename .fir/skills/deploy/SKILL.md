@@ -132,7 +132,7 @@ Wants=network-online.target
 # (fir) lives in ~/.local/bin, so it MUST be set explicitly, or the relay
 # starts, authenticates, resolves channels - and then dies with
 #   agent start: start agent: exec: "fir": executable file not found in $PATH
-# looping on Restart=on-failure. Hit for real on the zbox deploy.
+# looping on Restart=on-failure. Hit for real on the first deployment.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/zulip-acp/env
 ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
