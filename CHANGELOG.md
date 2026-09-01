@@ -29,10 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Sanitised `BRIEF.md` and `REPORT.md`: the live trial server's hostname and
-  API keys are replaced with placeholders, across the whole history. They were
-  build-time scaffolding for a disposable tailnet-only container and never
-  belonged in a repository intended to go public.
+- Removed `BRIEF.md` and `REPORT.md` from the repository and from its whole
+  history. They were agent build-session scaffolding — a task brief and a
+  status report — not project documentation. Everything durable they recorded
+  already lives in `docs/zulip-protocol-reference.md`, `docs/zulip-acp-design.md`
+  and `BACKLOG.md`.
 - `.gitignore` brought to parity with the sibling relays (`.env`, `.envrc`,
   `*.local.json`, `.DS_Store`, `/.fir/`, `*.test`).
 
