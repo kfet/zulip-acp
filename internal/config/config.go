@@ -121,6 +121,30 @@ type Config struct {
 	// acknowledgement entirely. It is a pointer precisely so those two
 	// cases stay distinguishable.
 	AckEmoji *string `json:"ack_emoji,omitempty"`
+
+	// RelayMCP enables the agent→relay loopback: the relay hosts an
+	// MCP server on a private unix socket and advertises it to the
+	// agent, so the agent can read its own status, switch model, post
+	// out of band, and schedule prompts back into this conversation.
+	//
+	// Default FALSE, and deliberately so. It hands the agent a way to
+	// speak into the chat outside a turn and to arm work that runs
+	// with no human watching, which is a real widening of what a
+	// prompt-injected agent could do. Turn it on knowingly.
+	RelayMCP bool `json:"relay_mcp,omitempty"`
+
+	// MaxSchedulesPerConv, MaxSchedulesTotal and MaxScheduleDepth
+	// bound scheduled prompts. 0 uses acp-kit/schedule's defaults
+	// (10 / 100 / 3). MaxScheduleDepth is the important one: it caps
+	// how long a schedule→turn→schedule chain can get, so recursion
+	// always terminates.
+	MaxSchedulesPerConv int `json:"max_schedules_per_conv,omitempty"`
+	MaxSchedulesTotal   int `json:"max_schedules_total,omitempty"`
+	MaxScheduleDepth    int `json:"max_schedule_depth,omitempty"`
+
+	// MinScheduleIntervalSeconds floors a repeating schedule. 0 uses
+	// acp-kit/schedule's default of 60s.
+	MinScheduleIntervalSeconds int `json:"min_schedule_interval_seconds,omitempty"`
 }
 
 // Load reads and validates the config file. Unknown fields are an
@@ -154,6 +178,12 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxMessageChars < 0 {
 		return fmt.Errorf("max_message_chars must be >= 0")
+	}
+	if c.MaxSchedulesPerConv < 0 || c.MaxSchedulesTotal < 0 || c.MaxScheduleDepth < 0 {
+		return fmt.Errorf("schedule limits must be >= 0")
+	}
+	if c.MinScheduleIntervalSeconds < 0 {
+		return fmt.Errorf("min_schedule_interval_seconds must be >= 0")
 	}
 	if c.MaxMessageChars > zulipproto.MaxMessageLength {
 		return fmt.Errorf("max_message_chars %d exceeds Zulip's MAX_MESSAGE_LENGTH of %d — Zulip would silently truncate every message at the limit and the relay would lose output",
@@ -241,6 +271,12 @@ func (c *Config) EditInterval() time.Duration {
 		return DefaultEditInterval
 	}
 	return time.Duration(c.EditIntervalMs) * time.Millisecond
+}
+
+// MinScheduleInterval returns the configured repeat floor, or 0 to let
+// acp-kit/schedule apply its own default.
+func (c *Config) MinScheduleInterval() time.Duration {
+	return time.Duration(c.MinScheduleIntervalSeconds) * time.Second
 }
 
 // GetSilentSentinel returns the configured sentinel or the default.

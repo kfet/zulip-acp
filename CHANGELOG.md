@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The agent→relay loopback (`"relay_mcp": true`, off by default).** The
+  relay hosts an MCP server on a private unix socket and advertises it to its
+  own child agent, so the agent can drive the relay from inside a turn. ACP
+  has no agent-initiated message and the streaming sink is bound per turn, but
+  an MCP tool call runs agent→client — so this needs no protocol extension.
+  Tools: `status`, `list_models`, `set_model`, `new_session`, `post`,
+  `schedule`, `list_schedules`, `unschedule`.
+- **`post`** — send a message into the current conversation out of band:
+  progress on a long task, or a result that arrives after the turn that
+  started it has ended. It posts through the rollover splitter like every
+  agent answer, so a long post cannot be silently truncated by Zulip.
+- **Scheduled prompts.** A schedule fires as a prompt back into the
+  conversation it was armed in — same conv-id, same ACP session, so the agent
+  has the topic's full history — and the answer streams into the topic
+  through the existing path. Persisted in `<state-dir>/schedules.json`
+  alongside the journal, so they survive a restart. Bounded by
+  `max_schedule_depth` (3), `max_schedules_per_conv` (10),
+  `max_schedules_total` (100) and `min_schedule_interval_seconds` (60).
+- `!schedules` and `!unschedule <id>`, so a human can see and kill work the
+  agent armed; `!status` now reports how many schedules are armed here.
+- `internal/zulipmcp`: the MCP server's Zulip-side identity (socket naming,
+  env vars, the `mcp-serve` redirector subcommand). It owns no tools — those
+  are `acp-kit/relaytool`'s, because every one is relay-generic.
+- `journal.LookupID`: resolves a conv-id back to its conversation, which is
+  what turns an MCP session key into a broker conversation token.
+
+### Security and safety
+
+- **A tool call never names its conversation.** `mcphost` binds the session
+  key server-side from the connection token, so the conversation a tool acts
+  on is unspoofable. `post` deliberately has **no target parameter** — an
+  agent that could post into arbitrary channels would be a realm-wide
+  megaphone for anything that can prompt-inject it, so in v1 that is not a
+  config toggle, it is inexpressible.
+- **No `stop` tool, and `new_session` is deferred**, under one rule: a
+  loopback tool must never destroy the turn that is calling it.
+- **The own-sender guard is now load-bearing.** The agent posting into its own
+  topic produces an event from the bot's own user id; `handleMessage` drops it
+  before any allowlist. Covered by `TestLoopbackPostDoesNotFeedItselfBack`,
+  which posts an @-mention into an engaged topic — every other gate would let
+  it through.
+- **A scheduled turn re-applies every gate at fire time**, not arm time: the
+  channel must still be served, DMs must still be enabled, and the
+  conversation must still exist. Failing one disarms the schedule instead of
+  retrying it forever. A scheduled turn also never supersedes a human one — it
+  waits for the conversation to go idle.
+
+### Changed
+
+- **AGENTS.md no longer says "no MCP surface".** That line described a
+  deliberate constraint which this change deliberately lifts, for the one
+  case the protocol makes correct: a private, single-consumer, token-scoped
+  server offered only to the relay's own child agent. The relay still exposes
+  no MCP surface to anything outside its own process.
+- `!schedules` and `!unschedule` appear only when `relay_mcp` is on. The
+  Handler implements `command.Scheduler` unconditionally, so the capability is
+  gated on `CanSchedule()` rather than on the type assertion.
+- Requires `acp-kit` v0.9.1.
+
 ## [0.6.0] - 2026-09-01
 
 ### Changed

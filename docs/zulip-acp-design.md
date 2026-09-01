@@ -581,6 +581,173 @@ complete before it is composed. A reply that cannot be posted is logged and
 dropped — unlike agent output, it costs nothing to ask for again, so the
 `rescue` path does not apply.
 
+## The agent→relay loopback
+
+Off by default (`"relay_mcp": true`). It gives the agent a way to drive the
+relay from inside a turn: read its own status, switch model, **post out of
+band**, and **schedule a prompt back into this conversation**.
+
+### Why MCP, and not an ACP extension
+
+ACP has no agent-initiated message. The agent speaks only inside a turn it was
+prompted for, and this relay's streaming sink is bound per turn
+(`handler.run` → `state.Manager.GetOrCreate`), so an out-of-turn
+`session/update` has nowhere to land. But an **MCP tool call runs
+agent→client**, which ACP fully supports. So the loopback needs no protocol
+extension: the relay hosts an MCP server, advertises it on `session/new`, and
+the agent calls into it like any other tool.
+
+The transport is `acp-kit/mcphost`: a private 0700 directory, a 0600 unix
+socket, and a dumb redirector subprocess (`zulip-acp mcp-serve`) that the
+agent spawns and that does nothing but pipe stdio to the socket after writing
+a one-line token preamble.
+
+### Identity is the foundation
+
+`mcphost` resolves the token to a **session key server-side**. A tool call
+therefore already knows, unspoofably, which conversation it came from.
+Nothing in the tool surface accepts a conversation as an argument — the
+handler maps the session key (a conv-id) to the broker's conversation token
+via `Journal.LookupID`, and every tool acts on that conversation and only that
+one. `TestConversationIsNeverAnArgument` in acp-kit enforces it against the
+schemas.
+
+Take that guarantee away and `post` becomes a realm-wide megaphone for
+anything that can prompt-inject the agent.
+
+### One implementation, two front ends
+
+The command surface and the MCP surface are **one implementation**. Both go
+through the exported actions on `acp-kit/command.Broker`; the `!command`
+handlers are renderers over those actions, and `acp-kit/relaytool` hands the
+same results to the agent. Forking them is the mistake v0.5.0 made with the
+command surface itself and v0.6.0 corrected — it must not be re-made one layer
+up.
+
+The relay-side seam is a single type: the `Controller` the `Handler` already
+implemented, plus two OPTIONAL capabilities in the shape of `TurnStopper`:
+
+| capability | enables | zulip-acp | poe-acp |
+|---|---|---|---|
+| `Controller` | `!status`, `!model`, `!new`, and their tools | yes | yes |
+| `TurnStopper` | `!stop` | yes | no — one HTTP request per turn |
+| `Poster` | `post` tool | yes | no — nothing to speak on after the response |
+| `Scheduler` | `schedule` tools, `!schedules`, `!unschedule` | yes | no — same reason |
+
+### What is deliberately not exposed
+
+**A loopback tool must never destroy the turn that is calling it.** Two
+commands fall foul of that one rule:
+
+- **No `stop` tool.** An agent cancelling its own in-flight turn either does
+  nothing or kills the very turn whose tool call asked for it, leaving the
+  result undeliverable and the user reading *(superseded)*. Deferring it to
+  end-of-turn would make it a no-op by definition. There is no coherent
+  reading, so there is no tool. `!stop` remains, for the human, where it makes
+  sense.
+- **`new_session` is deferred.** Resetting a session cancels the turn in
+  flight — the same foot-gun. So the tool records the intent and the relay
+  applies it in `Handler.endTurn`, after the turn has left the inflight map.
+  Same `Controller`, same implementation, honest timing. The `defer` ordering
+  in `handleMessage` and `FireSchedule` is load-bearing: `endTurn` is
+  registered first so it runs last.
+
+### `post` and its blast radius
+
+`post` sends a message into the current conversation, out of band. It is what
+makes *"go do X and tell me when it lands"* expressible.
+
+There is **no target parameter**, in v1 and by decision. An agent that can
+post into arbitrary channels is a new and serious capability, and the
+conservative form of that decision is not an `allowed_user_ids` check or a
+config allowlist — both of which are one flag away from being wrong — but
+making it *inexpressible*. Widening it later means adding a parameter, an
+allowlist and a threat model, in that order.
+
+It posts through the **rollover splitter**, like every agent answer. Zulip
+truncates past `MAX_MESSAGE_LENGTH` silently; a `post` that called
+`SendMessage` directly would be a brand-new way to lose output.
+
+### The loop hazard
+
+The agent posts → Zulip delivers that message back on the event queue → the
+relay must not treat its own words as a new turn. `handleMessage`'s **first**
+guard, before any allowlist, is `m.SenderID == h.cfg.BotUserID`. That guard
+was always correct; the loopback is what makes it load-bearing, so it has a
+test of its own — `TestLoopbackPostDoesNotFeedItselfBack` posts an
+@-mention of the bot into an engaged topic, which every *other* gate would
+wave through, and asserts no turn results.
+
+### Scheduling
+
+`schedule` / `list_schedules` / `unschedule`. On fire the relay injects the
+stored text as a **prompt** into the conversation it was scheduled from — same
+conv-id, same ACP session, so the agent has the topic's full history — and the
+answer streams into that topic through the existing path: rollover,
+statusline, attachments. Schedules live in `<state-dir>/schedules.json`,
+alongside the journal, so they survive a restart.
+
+This is the layer `mintick` (host-level cron) cannot serve: it can run a
+command at a time, but it cannot deliver into a conversation *with context*.
+The converse also holds — host chores stay in host cron. Nothing here is a
+general-purpose scheduler.
+
+**Runaway control** is first-class, because a scheduled prompt whose turn
+schedules another is unbounded recursion that costs real money.
+`acp-kit/schedule` applies four bounds, all on by default:
+
+| bound | default | config |
+|---|---|---|
+| chain depth (`schedule→turn→schedule`) | 3 | `max_schedule_depth` |
+| armed per conversation | 10 | `max_schedules_per_conv` |
+| armed in total | 100 | `max_schedules_total` |
+| repeat floor | 60s | `min_schedule_interval_seconds` |
+
+Depth is *derived*, never supplied: an item armed inside a firing scheduled
+turn takes its parent's depth plus one. That works only because `Fire` blocks
+for the whole turn, which is why `Handler.FireSchedule` is synchronous. A
+missed window is skipped rather than replayed, so a relay that was down for a
+day does not fire a minutely schedule 1440 times on startup.
+
+None of that removes the need for a human to be able to **look and kill**:
+`!schedules` lists what is armed here, `!unschedule <id>` cancels one, and
+`!status` reports the count so armed work nobody started is noticed.
+
+Two semantics worth stating out loud, because both are choices:
+
+- **Delivery is at-most-once.** A due item is claimed — advanced, or removed if
+  it is a one-shot — in the same critical section that reads it, and only then
+  fired. A crash in the window between loses that firing. The alternative,
+  claiming after a successful fire, double-fires on every restart, and a
+  duplicate unattended turn costs real money where a missed one costs a
+  reminder.
+- **`!new` does not cancel schedules.** They are keyed on the conversation
+  KEY, which `!new` does not change, so a schedule armed before a reset still
+  fires — into the fresh conversation. That is deliberate: `!new` clears
+  context, it does not cancel commitments. A human who asked to be told when
+  something lands did not ask to stop being told by starting a new session.
+  `!unschedule` is how you cancel one, and `!status` keeps the count visible.
+
+### A scheduled turn has no human in the loop
+
+Every gate an interactive turn passes is re-applied at **fire** time, not arm
+time, and failing one returns `schedule.ErrGone`, which disarms the item
+rather than retrying it forever:
+
+- the channel must still be served (unsubscribe and it stops firing);
+- direct messages must still be enabled;
+- the conversation must still exist in the journal.
+
+The one gate with no analogue is `allowed_user_ids`: a scheduled prompt has no
+sender. It needs none — it can only exist because an allowed user drove a turn
+that armed it, and it re-enters that same conversation, so it can never reach
+anywhere its author could not.
+
+A scheduled turn also **never supersedes a human one**. Where a follow-up
+message cancels the turn in flight, `FireSchedule` waits for the conversation
+to go idle (`awaitConvIdle`, on the existing inflight condition variable) and
+then runs as an ordinary addressed turn.
+
 ## Layout
 
 ```
@@ -588,10 +755,14 @@ cmd/zulip-acp/          flags + wiring (excluded from the coverage gate)
 internal/command/       `!command` parse core — NO Zulip imports
 internal/config/        JSON config, DisallowUnknownFields
 internal/handler/       gating, commands, turn execution, streaming sink, outbox, poster
+internal/handler/loopback.go
+                        agent→relay loopback: conv-id → broker token, out-of-band
+                        post, scheduled-prompt firing and its gates
 internal/journal/       conv key (channel topic | DM user set) → conv-id + tail ids
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header
 internal/sysprompt/     built-in Zulip formatting block
+internal/zulipmcp/      MCP server identity: socket naming, env vars, subcommand
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
 test/                   live-server tests (ZULIP_LIVE=1), coverage-exempt
 ```

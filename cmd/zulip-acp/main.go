@@ -19,19 +19,35 @@ import (
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/acp-kit/relaytool"
+	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
+
+	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/sysprompt"
+	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 var version = "dev"
 
 func main() {
+	// The redirector subcommand must be intercepted before anything
+	// else: the agent spawns THIS binary as the MCP stdio server, and
+	// that process must not parse flags, read config or start a relay.
+	if handled, err := mcphost.MaybeRunRedir(zulipmcp.RedirConfig()); handled {
+		if err != nil {
+			log.Fatalf("mcp-serve: %v", err)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "", "path to JSON config file")
 	agentCmd := flag.String("agent-cmd", "", "agent argv (default: fir --mode acp); space-separated; overrides config")
 	stateDir := flag.String("state-dir", "", "root directory for per-conversation state")
@@ -90,6 +106,7 @@ func main() {
 		fmt.Printf("site:       %s\n", cfg.Site)
 		fmt.Printf("channels:   %s\n", strings.Join(cfg.Channels, ", "))
 		fmt.Printf("dms:        %t\n", cfg.DMs)
+		fmt.Printf("relay-mcp:  %t\n", cfg.RelayMCP)
 		return
 	}
 
@@ -201,7 +218,28 @@ func main() {
 		log.Fatalf("journal: %v", err)
 	}
 
-	agent, err := client.Start(ctx, cfg.AgentClientConfig(os.Stderr))
+	// The self-hosted MCP server must exist before the agent starts:
+	// its per-session config is minted at session/new, so the client
+	// needs the hook wired at construction.
+	var mcpHost *mcphost.Host
+	if cfg.RelayMCP {
+		mcpHost, err = mcphost.New(zulipmcp.HostConfig())
+		if err != nil {
+			log.Fatalf("relay-mcp: %v", err)
+		}
+		defer func() { _ = mcpHost.Close() }()
+	}
+
+	clientCfg := cfg.AgentClientConfig(os.Stderr)
+	if mcpHost != nil {
+		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
+			// A fresh token per session, bound server-side to the
+			// conv-id. The conversation is never sent by the client,
+			// so a tool call cannot claim to be from another topic.
+			return mcpHost.ServerConfigForSession(filepath.Base(cwd))
+		}
+	}
+	agent, err := client.Start(ctx, clientCfg)
 	if err != nil {
 		log.Fatalf("agent start: %v", err)
 	}
@@ -225,10 +263,42 @@ func main() {
 	// here calls SetController.
 	broker := command.New(agent)
 
-	h, err := handler.New(handler.Config{
+	// The loopback: the schedule store fires back into the Handler and
+	// the tools resolve conversations through it, while the Handler
+	// holds both. The cycle is broken by capturing h, which is assigned
+	// below before any event, tool call or tick can reach it.
+	var h *handler.Handler
+	var schedules *schedule.Store
+	var tools *relaytool.Tools
+	if cfg.RelayMCP {
+		schedules, err = schedule.Open(schedule.Config{
+			Path:        filepath.Join(cfg.StateDir, "schedules.json"),
+			Fire:        func(ctx context.Context, it schedule.Item) error { return h.FireSchedule(ctx, it) },
+			MaxDepth:    cfg.MaxScheduleDepth,
+			MaxPerConv:  cfg.MaxSchedulesPerConv,
+			MaxTotal:    cfg.MaxSchedulesTotal,
+			MinInterval: cfg.MinScheduleInterval(),
+			Logf:        log.Printf,
+		})
+		if err != nil {
+			log.Fatalf("schedules: %v", err)
+		}
+		tools, err = relaytool.New(relaytool.Config{
+			Broker:    broker,
+			ConvToken: func(k string) (string, bool) { return h.ConvToken(k) },
+			Logf:      log.Printf,
+		})
+		if err != nil {
+			log.Fatalf("relay-mcp: %v", err)
+		}
+	}
+
+	h, err = handler.New(handler.Config{
 		Client:             zc,
 		Agent:              agent,
 		Commands:           broker,
+		Schedules:          schedules,
+		Loopback:           tools,
 		Version:            version,
 		AgentCmd:           strings.Join(cfg.GetAgentCmd(), " "),
 		StartTime:          time.Now(),
@@ -257,6 +327,18 @@ func main() {
 	// is dead. Say so rather than leaving a truncated answer that looks
 	// complete.
 	h.MarkInterrupted(ctx)
+
+	// Tools are registered only once the Handler exists: handler.New is
+	// what wires it in as the broker's Controller, and relaytool asks
+	// the broker which optional capabilities that Controller has.
+	if cfg.RelayMCP {
+		tools.Register(mcpHost)
+		if err := mcpHost.Listen(); err != nil {
+			log.Fatalf("relay-mcp listener: %v", err)
+		}
+		go schedules.Run(ctx)
+		log.Printf("zulip-acp: relay MCP loopback on %s — the agent can post and schedule into its own conversation", mcpHost.SocketPath())
+	}
 
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{
 		Client:     zc,
