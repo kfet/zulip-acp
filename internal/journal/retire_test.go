@@ -258,3 +258,32 @@ func TestFailedWritesLeaveTheJournalUnchanged(t *testing.T) {
 		}
 	})
 }
+
+// TestActiveCountExcludesRetired: retired entries stay in the file as
+// the record of which state directories are dead, so a caller
+// reporting "active conversations" must not count them.
+func TestActiveCountExcludesRetired(t *testing.T) {
+	j, _ := tmpJournal(t)
+	if got := j.ActiveCount(); got != 0 {
+		t.Fatalf("ActiveCount = %d on an empty journal", got)
+	}
+	for _, topic := range []string{"a", "b"} {
+		if _, err := j.Ensure(Channel(4, topic)); err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+	}
+	if got := j.ActiveCount(); got != 2 {
+		t.Fatalf("ActiveCount = %d, want 2", got)
+	}
+	if _, _, _, err := j.Retire(Channel(4, "a")); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	// Retire adds a fresh conv AND retires the old one, so the live
+	// count is unchanged while the file grew.
+	if got := j.ActiveCount(); got != 2 {
+		t.Fatalf("ActiveCount = %d after Retire, want 2", got)
+	}
+	if got := len(j.Convs()); got != 3 {
+		t.Fatalf("Convs = %d, want 3 including the retired one", got)
+	}
+}

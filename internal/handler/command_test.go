@@ -871,3 +871,49 @@ func TestSetModelOverrideRejectsAnUnknownID(t *testing.T) {
 		t.Fatal("a rejected id was recorded anyway")
 	}
 }
+
+// TestEscapeWinsOverAPendingLogin pins a deliberate ordering choice.
+// Someone typing "!!foo" mid-login is plainly not pasting a redirect
+// URL, so the escape is honoured — the text reaches the agent as
+// "!foo" and the login stays pending for the paste that follows.
+// Consuming it as a malformed redirect would abort the login instead.
+func TestEscapeWinsOverAPendingLogin(t *testing.T) {
+	agent := newAgent("ok")
+	agent.authMethods = []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic"}}
+	agent.authResult = client.AuthResult{State: "needs_redirect", URL: "https://example/auth", ID: "a1"}
+	hh := dmCmdHarness(t, agent, nil)
+
+	hh.deliverDM(t, humanID, "!login anthropic", humanID, botID)
+	hh.z.reset()
+
+	hh.deliverDM(t, humanID, "!!not a url", humanID, botID)
+	if len(hh.a.prompts) != 1 || !strings.Contains(hh.a.prompts[0], "!not a url") {
+		t.Fatalf("escape was eaten by the pending login: %q", hh.a.prompts)
+	}
+	// The login is still pending, so the real paste still completes it.
+	agent.authResult = client.AuthResult{State: "ok"}
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "https://example/callback?code=xyz", humanID, botID)
+	if !strings.Contains(hh.only(t), "Authenticated") {
+		t.Fatalf("login did not survive the escape: %q", hh.only(t))
+	}
+}
+
+// TestActiveConversationCountExcludesRetired: retired entries stay in
+// the journal as the record of which state directories are dead, so
+// counting them would make `!status` report a number that only ever
+// grows with every `!new`.
+func TestActiveConversationCountExcludesRetired(t *testing.T) {
+	hh := dmCmdHarness(t, newAgent("x"), nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.deliverDM(t, humanID, "!new", humanID, botID)
+	hh.deliverDM(t, humanID, "!new", humanID, botID)
+	if got := len(hh.j.Convs()); got != 3 {
+		t.Fatalf("journal holds %d convs, want 3 (one live, two retired)", got)
+	}
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!status", humanID, botID)
+	if got := hh.only(t); !strings.Contains(got, "active conversations: 1") {
+		t.Fatalf("status = %q, want one active conversation", got)
+	}
+}

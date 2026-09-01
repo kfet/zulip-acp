@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Command names are matched case-insensitively on the verb; the argument keeps
   its case, since a model id is a literal the agent must match.
 
+### Fixed
+
+- `!status` no longer counts **retired** conversations in "active
+  conversations". Retired entries stay in the journal as the record of which
+  state directories are dead, so the number only ever grew with every `!new`.
+
 ### Removed
 
 - **`!id`**, added in v0.5.0. `!status` already prints the conversation id on

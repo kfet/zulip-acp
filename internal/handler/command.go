@@ -63,6 +63,16 @@ var zulipWidgets = map[string]bool{
 
 // isWidget reports whether trimmed, mention-stripped text is one of
 // Zulip's message-shaped slash commands.
+//
+// The name is lower-cased before matching, which is deliberately MORE
+// permissive than Zulip itself — its markdown processor matches "/me"
+// case-sensitively, so "/ME" is not a me-message server-side. The
+// over-match is the safe direction and must stay that way: a
+// false positive here can only forward a message to the agent
+// unchanged, never eat one, and none of "me", "poll" or "todo" is a
+// relay command, so nothing is shadowed. Do not "fix" this into a
+// case-sensitive match — that trades a harmless pass-through for the
+// chance of swallowing a widget.
 func isWidget(text string) bool {
 	if !strings.HasPrefix(text, "/") {
 		return false
@@ -94,7 +104,11 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 
 	// A leading "!!" is this relay's escape for prose that genuinely
 	// starts with a sigil. Checked before the broker so the broker
-	// never sees it.
+	// never sees it — and deliberately BEFORE the pending-login check
+	// too: someone typing "!!foo" mid-login is plainly not pasting a
+	// redirect URL, so honouring the escape does what they asked and
+	// leaves the login pending for the paste that follows. Consuming
+	// it as a malformed redirect would abort the login instead.
 	if rest, ok := strings.CutPrefix(text, doubleSigil); ok {
 		return command.DisplaySigil + rest, false
 	}
@@ -258,8 +272,9 @@ func (h *Handler) convFor(token string) (journal.Key, journal.Conv, bool) {
 // StatusFor satisfies command.Controller.
 func (h *Handler) StatusFor(token string) command.SessionStatus {
 	key, conv, engaged := h.convFor(token)
-	_, current := h.cfg.Agent.Models()
-	models, _ := h.cfg.Agent.Models()
+	// One call, not two: separate reads could straddle a model-state
+	// update and report a current model that is not in the list.
+	models, current := h.cfg.Agent.Models()
 	st := command.SessionStatus{
 		EffectiveModel:  current,
 		DefaultModel:    current,
@@ -286,7 +301,7 @@ func (h *Handler) RelayInfo(token string) command.RelayInfo {
 		Version:         h.cfg.Version,
 		AgentCmd:        h.cfg.AgentCmd,
 		ModelsAvailable: len(models),
-		ActiveSessions:  len(h.cfg.Journal.Convs()),
+		ActiveSessions:  h.cfg.Journal.ActiveCount(),
 	}
 	if !h.cfg.StartTime.IsZero() {
 		ri.Uptime = h.now().Sub(h.cfg.StartTime).Round(time.Second).String()
@@ -341,7 +356,7 @@ func (h *Handler) ResetSession(token string) error {
 	// second of which nothing can reach.
 	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
 	if err != nil {
-		h.cfg.Logf("handler: retiring conversation %s: %v", conv.ID, err)
+		h.cfg.Logf("handler: retiring conversation in %s: %v", h.describe(key), err)
 		return err
 	}
 	if !existed {
@@ -363,6 +378,7 @@ func (h *Handler) StopTurn(token string) bool {
 	if !engaged {
 		return false
 	}
+	// context.Background: see ResetSession.
 	return h.cancelInflight(context.Background(), conv.ID)
 }
 
