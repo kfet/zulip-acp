@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the stream above acp-kit's `ValidatingSink` and puts the placeholder (and its
   spinner) up at that point. The answer still lands via the normal end-of-turn
   commit, so an abstaining turn still posts nothing.
-- `deploy` and `update` skills (`.fir/skills/`), modelled on poe-acp's, defining
+- `deploy` and `update` skills (`skills/`), modelled on poe-acp's, defining
   the canonical deployment layout: binary in `~/.local/bin`, config/env/state
   under `~/.config/zulip-acp/`, supervision by a systemd user unit, logs to
   journald. The unit **must** set `Environment=PATH=%h/.local/bin:...`: systemd
@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `BACKLOG.md`.
 - `.gitignore` brought to parity with the sibling relays (`.env`, `.envrc`,
   `*.local.json`, `.DS_Store`, `/.fir/`, `*.test`).
+- Skills moved from `.fir/skills/` to **`skills/`**, and `.fir/` is now ignored
+  wholesale. Agent configuration is per-deployment, so the repository ships the
+  content and each deployment wires it up locally — either a symlink
+  (`.fir/skills -> ../skills`, which fir follows and de-duplicates) or a
+  settings entry (`"skills": ["skills"]`). Nothing agent-specific is tracked.
 
 ## [0.1.1] - 2026-08-31
 
