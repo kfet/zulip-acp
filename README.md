@@ -325,7 +325,7 @@ make test     # quick
 Live tests run against a real server and are excluded from the coverage gate:
 
 ```bash
-ZULIP_LIVE=1 ZULIP_SITE=… ZULIP_EMAIL=… ZULIP_API_KEY=… ZULIP_CHANNEL=fleet \
+ZULIP_LIVE=1 ZULIP_SITE=… ZULIP_EMAIL=… ZULIP_API_KEY=… ZULIP_CHANNEL=zulip-acp-tests \
   go test -v ./test/
 ```
 
