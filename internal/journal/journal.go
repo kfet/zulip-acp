@@ -146,6 +146,16 @@ type Conv struct {
 	// 0 when no turn is in flight. A non-zero value surviving a
 	// restart means that turn was interrupted.
 	TailID int64 `json:"tail_id,omitempty"`
+	// OptsID is the message id of this conversation's `!opts` control
+	// message — the single self-updating options panel the relay
+	// PATCHes rather than re-posting. 0 when there is none yet.
+	//
+	// It lives here, next to TailID, because it is the same kind of
+	// fact: "which message in this conversation does the relay own".
+	// Losing it costs one extra control message, never correctness —
+	// the topic is truth and a stale id simply fails its edit and is
+	// replaced.
+	OptsID int64 `json:"opts_id,omitempty"`
 	// Retired marks a conversation the user replaced with `!new`. It
 	// keeps its id — and therefore its state/convs/<id>/ directory,
 	// which is never deleted — but it no longer answers to its key,
@@ -323,7 +333,9 @@ func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool,
 //
 // The retired conversation's tail is cleared as part of the same
 // atomic write: the next turn must never stream into the message the
-// retired conversation was mid-way through.
+// retired conversation was mid-way through. Its `!opts` control
+// message id moves to the fresh conversation instead of being
+// cleared — see below.
 //
 // Returns existed=false, and allocates nothing, when k is unknown —
 // there is no conversation to retire, and inventing one would create
@@ -337,16 +349,22 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 		return Conv{}, Conv{}, false, nil
 	}
 	prevTail := old.TailID
+	prevOpts := old.OptsID
 	old.Retired = true
 	old.TailID = 0
+	// The `!opts` panel belongs to the PLACE, not to the session: it
+	// is still sitting in the same topic after `!new`, so the fresh
+	// conversation inherits it and keeps updating that one message
+	// instead of leaving a stale panel behind and posting a second.
+	old.OptsID = 0
 	delete(j.byKey, idx)
-	c := &Conv{ID: j.newID(), Key: k}
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commit(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, idx)
-		old.Retired, old.TailID = false, prevTail
+		old.Retired, old.TailID, old.OptsID = false, prevTail, prevOpts
 		j.byKey[idx] = old
 	})
 }
@@ -366,6 +384,28 @@ func (j *Journal) SetTail(convID string, msgID int64) error {
 	prev := c.TailID
 	c.TailID = msgID
 	return j.commit(func() { c.TailID = prev })
+}
+
+// SetOpts records the message id of a conversation's `!opts` control
+// message. Pass 0 to forget it.
+//
+// Separate from SetTail on purpose: the two are owned by different
+// lifecycles — the tail belongs to one turn, the control message
+// outlives every turn in the conversation — and folding them into one
+// setter would make a streaming turn able to clobber the panel's id.
+func (j *Journal) SetOpts(convID string, msgID int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok {
+		return fmt.Errorf("journal: unknown conversation %q", convID)
+	}
+	if c.OptsID == msgID {
+		return nil
+	}
+	prev := c.OptsID
+	c.OptsID = msgID
+	return j.commit(func() { c.OptsID = prev })
 }
 
 // OpenTails returns every conversation with a tail message still

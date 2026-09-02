@@ -9,8 +9,9 @@ import (
 // mustJSON marshals v, panicking on failure.
 //
 // Every call site passes a closed, hand-built shape — []string,
-// []int64, [][]string, or a slice of map[string]any holding only
-// strings and int64 — none of which encoding/json can fail on. There
+// []int64, [][]string, the zform widget document, or a slice of
+// map[string]any holding only strings and int64 — none of which
+// encoding/json can fail on. There
 // is no input a caller can supply that reaches the error branch, so
 // returning the error would leave an `if err != nil` that no test can
 // ever cover.

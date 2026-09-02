@@ -140,6 +140,7 @@ offer the same surface.
 | command | what it does |
 | --- | --- |
 | `!help` | list these commands |
+| `!opts` | interactive options panel — buttons in the Zulip web app, a plain command list everywhere else |
 | `!status` | where you are, the conversation and its state directory, model, session, relay version and uptime |
 | `!model` | list the models the agent reports |
 | `!model <filter>` | narrow that list |
@@ -153,6 +154,10 @@ offer the same surface.
 
 Older spellings still work and are not going away: `!models`, `!relay`,
 `!bot`, `!whoami`, `!reset`, `!cancel-login`.
+
+`!opts` is the one command that is **not** in the shared broker: it renders
+controls that already exist onto a surface only Zulip has. See
+[Options panel](#options-panel).
 
 Commands the **agent** advertises are forwarded to it when they are on a small
 curated allowlist — `!reload`, `!logout`, `!compact`, `!session`,
@@ -178,8 +183,10 @@ choice carries over; the history does not.
   `/ping`, are handled by your client and never reach a bot at all.)
 - **Prose that merely starts with a bang still reaches the agent.**
   `!important: fix the parser`, `!5 minutes left` and a lone `!` are forwarded
-  unchanged. A command-shaped `!` token that names nothing gets a short error
-  and is **not** forwarded either — `!hepl` should not become an agent turn.
+  unchanged. A command-shaped `!` token that names nothing answers with the
+  **options panel** and is **not** forwarded either — `!hepl` should not become
+  an agent turn, and the moment you mistype a command is the moment you most
+  need the menu.
 - **To say something that really does start with a command name, double the
   bang.** `!!new` arrives at the agent as `!new`.
 
@@ -190,6 +197,41 @@ relay stays out of topics it was never summoned to, `!help` included.
 `allowed_user_ids` gates commands exactly as it gates prompts, and the
 never-answer-a-bot guard runs ahead of all command parsing. No command ever
 allocates a conversation: `!help` in a fresh topic leaves nothing on disk.
+
+### Options panel
+
+`!opts` posts one **live** control message per conversation, kept current:
+
+- Its header is the current state — the model this conversation will actually
+  use — so the panel is the menu and the status line at once.
+- In the Zulip **web app** it renders as buttons, using Zulip's `zform` widget.
+  A button carries a `reply` string that the web client sends as an *ordinary
+  message from you*, so every button is just a command you could have typed;
+  nothing new hides behind one, and clicks pass through the same gates and the
+  same allowlist as text.
+- **Everywhere else — the phone app included — the buttons do not render**, so
+  the panel's markdown body lists the same commands and is written to be usable
+  with a thumb. If the server refuses the widget outright (widgets disabled, or
+  an older Zulip), the panel still posts without it.
+- Model buttons come from the agent's own probe, so one can never offer a model
+  the agent does not have. The list is capped; `!model <filter>` reaches the
+  rest.
+- Changing a setting is acknowledged with an **emoji reaction** on your
+  message — no reply, and nothing about your configuration enters the
+  transcript the model reads. That includes a change the *agent* makes through
+  its loopback tool: every model change goes through one place, so the panel
+  never claims a model you are not on.
+- **A widget message cannot be edited.** Zulip refuses a content edit on any
+  message carrying a widget (`"Widgets cannot be edited."`), so the panel
+  updates by being **re-posted and the old one deleted** — the one and only
+  thing this relay ever deletes. The topic still holds exactly one live panel,
+  and it lands where you are reading rather than somewhere above the fold. If
+  the realm forbids the bot deleting its own message, the old panel is rewritten
+  to a one-line pointer where that is possible, and otherwise simply left: stale,
+  never wrong, since every button on it is still a valid command.
+- Before a place has a conversation, the panel says so and how to start one:
+  commands never allocate one, and in an unengaged channel topic a button's
+  reply would not even be answered.
 
 ## Configuration
 

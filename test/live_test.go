@@ -456,3 +456,50 @@ func TestBeforeIDPagesBackwardsExclusively(t *testing.T) {
 		t.Fatalf("previous page = %+v, want %v oldest first and no overlap", prev, ids[:2])
 	}
 }
+
+// TestWidgetMessageCannotBeEdited is the server fact the whole `!opts`
+// panel lifecycle is built on. A zform is stored as a submessage and
+// Zulip refuses a content edit on any message that has one, so a
+// self-updating panel MUST be re-posted rather than PATCHed.
+//
+// It fails in the cruellest direction: the degraded, widget-less panel
+// edits perfectly well, so an implementation that PATCHes looks correct
+// exactly where the feature is doing nothing. This test is the guard
+// against a future "simplification" back to editing.
+func TestWidgetMessageCannotBeEdited(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+	widget := zulipproto.ZForm("Options", []zulipproto.ZFormChoice{
+		zulipproto.Choice("one", "Model one", "!model a/one"),
+	})
+
+	id, err := c.SendMessageWidget(ctx, streamID, topic, "**panel** body", widget)
+	if err != nil {
+		t.Fatalf("send with widget: %v", err)
+	}
+	if err := c.EditMessage(ctx, id, "edited body"); err == nil {
+		t.Fatal("the server accepted an edit on a widget message — the panel could be PATCHed after all, " +
+			"which would make the re-post lifecycle in internal/handler/opts.go unnecessary")
+	} else if !zulipproto.RejectedByServer(err) {
+		t.Fatalf("edit failed for the wrong reason: %v", err)
+	} else {
+		t.Logf("as expected, the server refused: %v", err)
+	}
+
+	// The control: the same message without a widget edits fine.
+	plain, err := c.SendMessage(ctx, streamID, topic, "plain body")
+	if err != nil {
+		t.Fatalf("send plain: %v", err)
+	}
+	if err := c.EditMessage(ctx, plain, "plain body, edited"); err != nil {
+		t.Fatalf("editing a widget-less message must work: %v", err)
+	}
+
+	// Retiring a panel by deletion is the primary path; a realm may
+	// forbid it, which the relay degrades around, so only report.
+	if err := c.DeleteMessage(ctx, id); err != nil {
+		t.Logf("this realm does not let the bot delete its own message (%v) — "+
+			"the relay falls back to leaving a stale panel", err)
+	}
+}

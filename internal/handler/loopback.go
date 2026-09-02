@@ -263,10 +263,12 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // `!new` does what they wanted anyway; carrying a rename through would
 // mean tracking identity across a turn for one vanishingly rare case.
 func (h *Handler) endTurn(conv journal.Conv) {
-	if h.cfg.Loopback == nil {
-		return
+	if h.cfg.Loopback != nil {
+		h.cfg.Loopback.EndTurn(conv.Key.Token())
 	}
-	h.cfg.Loopback.EndTurn(conv.Key.Token())
+	if h.cfg.OnTurnEnd != nil {
+		h.cfg.OnTurnEnd(conv.ID)
+	}
 }
 
 // Compile-time proof that the Handler satisfies the loopback
