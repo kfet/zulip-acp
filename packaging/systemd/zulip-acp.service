@@ -6,8 +6,21 @@
 #   systemctl --user enable --now zulip-acp
 #   loginctl enable-linger $USER
 #
-# zulip-acp is a plain long-poll relay: Type=simple, hard restart only
-# (no sd_notify, no graceful worker swap). See README.md "Running as a service".
+# GRACEFUL RELOAD
+# ---------------
+# `systemctl --user reload zulip-acp` sends SIGHUP, which makes the relay:
+#   1. stop polling the Zulip event queue WITHOUT deleting it (messages keep
+#      accumulating server-side, so nothing posted during the window is lost);
+#   2. wait for every in-flight agent turn to finish posting;
+#   3. re-exec the on-disk binary IN PLACE (same PID).
+#
+# Use it for any binary-only or config-only change. The PID never moves, so
+# systemd never observes the service stop, and an agent hosted by this relay
+# can run the reload from inside its own turn and still finish its reply.
+#
+# A hard restart is still required for a change to THIS FILE, and for the
+# first cutover onto a build that has reload support at all (the older
+# binary has no SIGHUP handler and would simply die).
 
 [Unit]
 Description=zulip-acp (fir fleet relay)
@@ -22,8 +35,13 @@ Wants=network-online.target
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/zulip-acp/env
 ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
+# Graceful reload: drain in-flight turns, then re-exec in place.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
+# A stop drains in-flight turns first (-drain-deadline, 30s by default).
+# Keep this comfortably above that or systemd SIGKILLs mid-drain.
+TimeoutStopSec=90s
 
 [Install]
 WantedBy=default.target

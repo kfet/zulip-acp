@@ -55,6 +55,22 @@ type RunnerConfig struct {
 	// DefaultSilence.
 	Silence time.Duration
 
+	// Handoff, when non-nil, stops the loop as soon as it is closed —
+	// WITHOUT deleting the event queue. That is the whole point: the
+	// queue keeps buffering server-side while the relay re-execs, and
+	// the successor process resumes it via ResumeQueueID. Run returns
+	// ErrHandoff in that case, and Cursor reports what to hand on.
+	Handoff <-chan struct{}
+	// ResumeQueueID and ResumeLastEventID seed the loop with a queue
+	// inherited from a previous process image instead of registering a
+	// fresh one. ResumeQueueID == "" means a cold start.
+	//
+	// Registering fresh is not a neutral alternative: /register hands
+	// back the server's CURRENT last_event_id, so every message posted
+	// before that instant is behind the cursor and is never delivered.
+	ResumeQueueID     string
+	ResumeLastEventID int64
+
 	// Now and Sleep are injected by tests so the backoff and liveness
 	// logic can be driven without wall-clock waits. Nil uses the real
 	// clock.
@@ -79,7 +95,19 @@ type Runner struct {
 	lastEventID int64
 	lastActive  time.Time
 	backoff     time.Duration
+	// resuming is true until the first poll of an INHERITED queue, so
+	// OnRegister still fires exactly once for a resumed queue: the
+	// caller's derived state (the followed channel set) would otherwise
+	// start empty and stay empty until the queue happened to die.
+	resuming bool
 }
+
+// ErrHandoff is returned by Run when the loop stopped because its
+// Handoff channel closed. The event queue is deliberately still alive
+// on the server; the caller is expected to pass Cursor() to a successor
+// process image and exec it promptly, because an unpolled queue is
+// garbage-collected after a few minutes.
+var ErrHandoff = errors.New("zulip: event loop handed off (queue left alive)")
 
 // NewRunner constructs a Runner.
 func NewRunner(cfg RunnerConfig) (*Runner, error) {
@@ -107,35 +135,92 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	if cfg.Jitter == nil {
 		cfg.Jitter = jitter
 	}
-	return &Runner{cfg: cfg, lastEventID: -1}, nil
+	r := &Runner{cfg: cfg, lastEventID: -1}
+	if cfg.ResumeQueueID != "" {
+		r.queueID = cfg.ResumeQueueID
+		r.lastEventID = cfg.ResumeLastEventID
+		r.resuming = true
+	}
+	return r, nil
 }
 
 // LastEventID exposes the cursor, for logging and tests.
 func (r *Runner) LastEventID() int64 { return r.lastEventID }
 
-// Run drives the loop until ctx is cancelled, then tears the queue
-// down best-effort. It returns ctx.Err().
+// Cursor reports the queue and position the loop stopped at, for
+// handing to a successor process image. QueueID is "" when there is no
+// live queue to hand on. Call it only after Run has returned.
+func (r *Runner) Cursor() (queueID string, lastEventID int64) {
+	return r.queueID, r.lastEventID
+}
+
+// Run drives the loop until ctx is cancelled or Handoff fires.
+//
+// On ctx cancellation it tears the queue down best-effort and returns
+// ctx.Err(). On handoff it leaves the queue ALIVE and returns
+// ErrHandoff — see Cursor.
 func (r *Runner) Run(ctx context.Context) error {
-	defer r.teardown()
-	for ctx.Err() == nil {
+	// The poll context is what a handoff cancels: it aborts the
+	// in-flight long poll immediately. Events already fetched are still
+	// dispatched under the CALLER's ctx, so a batch retrieved a
+	// microsecond before the reload signal is handled in full rather
+	// than half-dropped behind an advanced cursor.
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	defer cancelPoll()
+	if r.cfg.Handoff != nil {
+		go func() {
+			select {
+			case <-r.cfg.Handoff:
+				cancelPoll()
+			case <-pollCtx.Done():
+			}
+		}()
+	}
+	if r.resuming {
+		r.lastActive = r.cfg.Now()
+		r.cfg.Logf("zulip: resuming inherited event queue %s (last_event_id=%d) — nothing posted during the reload is lost", r.queueID, r.lastEventID)
+		if r.cfg.OnRegister != nil {
+			r.cfg.OnRegister(ctx)
+		}
+		r.resuming = false
+	}
+	for pollCtx.Err() == nil {
 		if r.queueID == "" {
-			if !r.register(ctx) {
+			if !r.register(pollCtx, ctx) {
 				continue
 			}
 		}
-		r.poll(ctx)
+		r.poll(pollCtx, ctx)
 	}
+	// Distinguish "the caller is shutting us down" from "the caller is
+	// about to exec a new image": only the former may delete the queue.
+	if ctx.Err() == nil {
+		return ErrHandoff
+	}
+	r.teardown()
 	return ctx.Err()
 }
 
-// register creates a fresh queue. Returns false when the attempt
-// failed and the caller should loop again (after the backoff it has
-// already applied).
-func (r *Runner) register(ctx context.Context) bool {
-	res, err := r.cfg.Client.Register(ctx, r.cfg.EventTypes, r.cfg.Narrow)
+// Discard deletes the event queue the loop stopped on, best-effort.
+//
+// It exists for exactly one case: Run handed off (leaving the queue
+// alive for a successor image) and the caller then decided NOT to
+// exec — an operator SIGTERM landing during the reload drain. Without
+// it that queue would sit unpolled until the server garbage-collects
+// it. Calling it after a normal shutdown is a no-op, since teardown
+// already cleared the id.
+func (r *Runner) Discard() { r.teardown() }
+
+// register creates a fresh queue. pollCtx bounds the request; dispatch
+// is the caller's context, handed to OnRegister so a resync started
+// here is not cancelled by a handoff mid-flight. Returns false when the
+// attempt failed and the caller should loop again (after the backoff it
+// has already applied).
+func (r *Runner) register(pollCtx, dispatch context.Context) bool {
+	res, err := r.cfg.Client.Register(pollCtx, r.cfg.EventTypes, r.cfg.Narrow)
 	if err != nil {
 		r.cfg.Logf("zulip: register failed: %v", err)
-		r.wait(ctx)
+		r.wait(pollCtx)
 		return false
 	}
 	r.queueID = res.QueueID
@@ -144,16 +229,19 @@ func (r *Runner) register(ctx context.Context) bool {
 	r.backoff = 0
 	r.cfg.Logf("zulip: event queue %s registered (last_event_id=%d)", res.QueueID, res.LastEventID)
 	if r.cfg.OnRegister != nil {
-		r.cfg.OnRegister(ctx)
+		r.cfg.OnRegister(dispatch)
 	}
 	return true
 }
 
 // poll performs one long poll and dispatches whatever it returns.
-func (r *Runner) poll(ctx context.Context) {
-	evs, err := r.cfg.Client.GetEvents(ctx, r.queueID, r.lastEventID)
+// pollCtx bounds the HTTP request and is cancelled by a handoff;
+// dispatch is the caller's context and is what the handler sees, so a
+// batch already in hand is delivered in full.
+func (r *Runner) poll(pollCtx, dispatch context.Context) {
+	evs, err := r.cfg.Client.GetEvents(pollCtx, r.queueID, r.lastEventID)
 	if err != nil {
-		r.pollFailed(ctx, err)
+		r.pollFailed(pollCtx, err)
 		return
 	}
 	r.backoff = 0
@@ -170,7 +258,7 @@ func (r *Runner) poll(ctx context.Context) {
 			// point of a heartbeat.
 			continue
 		}
-		r.cfg.Handle(ctx, ev)
+		r.cfg.Handle(dispatch, ev)
 	}
 	if r.cfg.Now().Sub(r.lastActive) > r.cfg.Silence {
 		r.cfg.Logf("zulip: no events (not even a heartbeat) for %s — re-registering queue %s", r.cfg.Silence, r.queueID)

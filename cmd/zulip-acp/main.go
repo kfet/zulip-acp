@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/reload"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -53,6 +56,13 @@ func main() {
 	channelsFlag := flag.String("channels", "", "comma-separated Zulip channel names or ids to serve; overrides config")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir and agent command, then exit")
+	reloadDrain := flag.Duration("reload-drain-deadline", reload.DefaultReloadDrain,
+		"how long a SIGHUP graceful reload waits for in-flight turns to finish before re-execing anyway. "+
+			"Nothing external is waiting on this — the Zulip event queue buffers server-side meanwhile — and agent turns "+
+			"legitimately run tens of minutes, so this is a leak backstop, not a working bound (prompt_timeout bounds a turn as work)")
+	stopDrain := flag.Duration("drain-deadline", reload.DefaultStopDrain,
+		"how long a SIGINT/SIGTERM shutdown waits for in-flight turns to finish posting. Something external IS waiting "+
+			"(systemd SIGKILLs the cgroup at TimeoutStopSec), so keep it comfortably underneath that")
 	flag.Parse()
 
 	kitlog.Register("ZULIP_ACP_DEBUG")
@@ -121,6 +131,58 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// SIGHUP is the graceful reload: stop all INTAKE — the event poll and
+	// the schedule timers — let the in-flight turns finish, then exec the
+	// on-disk binary in place. Nothing accumulates locally meanwhile: the
+	// Zulip event queue buffers server-side, and an overdue schedule is
+	// claimed by the successor image on its next tick.
+	//
+	// Only intake stops. Turns already running are on contexts detached
+	// from it (handler.handleMessage uses context.WithoutCancel), which
+	// is what lets an agent reload the relay hosting it from inside its
+	// own turn and still finish its reply.
+	//
+	// Closing the channel is idempotent via sync.Once, so a burst of
+	// reloads is one reload.
+	hupSig := make(chan os.Signal, 1)
+	signal.Notify(hupSig, syscall.SIGHUP)
+	defer signal.Stop(hupSig)
+	handoff := make(chan struct{})
+	intakeCtx, stopIntake := context.WithCancel(ctx)
+	defer stopIntake()
+	var hupOnce sync.Once
+	go func() {
+		for range hupSig {
+			hupOnce.Do(func() {
+				log.Printf("zulip-acp: SIGHUP — graceful reload: no longer polling, draining in-flight turns (up to %s), then re-exec", *reloadDrain)
+				close(handoff)
+				stopIntake()
+				// Ignore every SIGHUP from here on, and do it via
+				// signal.Ignore so the SIG_IGN disposition is INHERITED
+				// ACROSS THE EXEC. The drain can run for minutes and it
+				// is invisible from outside, so an impatient operator
+				// reloading a second time is expected — and a SIGHUP
+				// that arrives while execve(2) is running would
+				// otherwise be delivered to the new image before it has
+				// installed a handler, whose default action is to kill
+				// it. The new image's own signal.Notify resets the
+				// disposition, so at worst a redundant reload is
+				// dropped.
+				signal.Ignore(syscall.SIGHUP)
+			})
+		}
+	}()
+
+	// A graceful reload exec's this binary in place and hands the live
+	// Zulip event queue forward in the environment. Read it before
+	// anything else touches the network: registering a fresh queue when
+	// one was inherited would skip every message posted during the
+	// reload window.
+	cursor, err := reload.Inherited()
+	if err != nil {
+		log.Printf("zulip-acp: WARN %v — registering a fresh event queue; messages posted during the reload are lost", err)
+	}
 
 	zc, err := zulipproto.New(zulipproto.Config{Site: cfg.Site, Email: cfg.BotEmail, APIKey: cfg.BotAPIKey})
 	if err != nil {
@@ -217,6 +279,25 @@ func main() {
 		log.Fatalf("journal: %v", err)
 	}
 
+	// Teardown is explicit rather than purely deferred: a graceful
+	// reload ends in syscall.Exec, which replaces the process image and
+	// runs no deferred functions. Everything that owns a child process
+	// or a socket must be closed BEFORE that, or the exec'd image
+	// inherits an orphaned ACP agent. sync.Once keeps the deferred call
+	// harmless once the reload path has already run it.
+	var closeOnce sync.Once
+	var closers []func()
+	cleanup := func() {
+		closeOnce.Do(func() {
+			// Reverse order: the agent must go before the MCP host it
+			// dials, and after the session manager that drives it.
+			for i := len(closers) - 1; i >= 0; i-- {
+				closers[i]()
+			}
+		})
+	}
+	defer cleanup()
+
 	// The self-hosted MCP server must exist before the agent starts:
 	// its per-session config is minted at session/new, so the client
 	// needs the hook wired at construction.
@@ -226,7 +307,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("relay-mcp: %v", err)
 		}
-		defer func() { _ = mcpHost.Close() }()
+		closers = append(closers, func() { _ = mcpHost.Close() })
 	}
 
 	clientCfg := cfg.AgentClientConfig(os.Stderr)
@@ -242,7 +323,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("agent start: %v", err)
 	}
-	defer agent.Close()
+	closers = append(closers, func() { agent.Close() })
 	log.Printf("zulip-acp: agent up (caps=%+v)", agent.Caps())
 
 	sessions, err := state.New(state.Config{
@@ -254,7 +335,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("state: %v", err)
 	}
-	defer func() { _ = sessions.Close() }()
+	closers = append(closers, func() { _ = sessions.Close() })
 	go sessions.Run(ctx)
 
 	// The chat-command broker is shared with poe-acp (acp-kit/command).
@@ -348,15 +429,18 @@ func main() {
 		if err := mcpHost.Listen(); err != nil {
 			log.Fatalf("relay-mcp listener: %v", err)
 		}
-		go schedules.Run(ctx)
+		go schedules.Run(intakeCtx)
 		log.Printf("zulip-acp: relay MCP loopback on %s — the agent can post, schedule and read history in its own conversation", mcpHost.SocketPath())
 	}
 
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{
-		Client:     zc,
-		EventTypes: eventTypes,
-		Narrow:     narrow,
-		OnRegister: onRegister,
+		Client:            zc,
+		EventTypes:        eventTypes,
+		Narrow:            narrow,
+		OnRegister:        onRegister,
+		Handoff:           handoff,
+		ResumeQueueID:     cursor.QueueID,
+		ResumeLastEventID: cursor.LastEventID,
 		Handle: func(ctx context.Context, ev zulipproto.Event) {
 			// The served set is updated from the same goroutine that
 			// dispatches messages, so a message can never be judged
@@ -372,13 +456,45 @@ func main() {
 	}
 
 	log.Printf("zulip-acp: listening")
-	_ = runner.Run(ctx)
+	runErr := runner.Run(ctx)
+	reloading := errors.Is(runErr, zulipproto.ErrHandoff)
 
-	// Let in-flight turns finish posting before the agent is closed.
-	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_ = h.WaitIdle(shutdown)
-	log.Printf("zulip-acp: stopped")
+	// Let in-flight turns finish posting before the agent is closed. On
+	// a reload this is the step that makes an agent's own reply survive
+	// its own `systemctl --user reload`: the signal has already been
+	// delivered and the call has already returned, and we are waiting
+	// here for exactly that turn.
+	reloading = reload.Finish(ctx, reload.FinishConfig{
+		Reloading:      reloading,
+		Idle:           h,
+		ReloadDeadline: *reloadDrain,
+		StopDeadline:   *stopDrain,
+		DiscardQueue:   runner.Discard,
+		Logf:           log.Printf,
+	})
+
+	if !reloading {
+		log.Printf("zulip-acp: stopped")
+		return
+	}
+
+	// Everything holding a child process or socket must go before the
+	// exec: it runs no deferred functions.
+	cleanup()
+	qid, last := runner.Cursor()
+	c := reload.Cursor{QueueID: qid, LastEventID: last}
+	if !c.Valid() {
+		// The queue had already died (expired, or a silence
+		// re-registration was in flight) when the reload landed. The
+		// successor registers fresh, which skips everything posted
+		// since — the one case where a reload is as lossy as a restart.
+		log.Printf("zulip-acp: WARN no live event queue to hand on; the new image will register a fresh one and miss anything posted in the meantime")
+	}
+	log.Printf("zulip-acp: re-exec with %s", c)
+	// Only returns on failure. The queue is still alive server-side, so
+	// a failed exec strands it — say so, and exit non-zero so
+	// Restart=on-failure brings the relay back.
+	log.Fatalf("zulip-acp: %v (the event queue is orphaned; a fresh registration will miss messages posted since %d)", reload.Exec(c), last)
 }
 
 func splitList(s string) []string {

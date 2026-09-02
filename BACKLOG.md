@@ -19,6 +19,22 @@ Things deliberately not done in v1, with the reason.
   seal/continuation markers become the negotiated API, not an accident of
   Zulip's 10k limit.
 
+- **`internal/reload` is transport-generic — but promoting it would be
+  premature, and possibly wrong.** Nothing in it imports Zulip: it is a
+  cursor struct, an env round-trip, a bounded `WaitIdle`, and a
+  `syscall.Exec` that resolves its own binary through the `"(deleted)"`
+  trap. `slack-acp` could use it almost verbatim. What would have to change
+  first is the shape of the thing being carried: `Cursor` is
+  `(queue_id, last_event_id)` because that is what Zulip's `/register`
+  hands back, and Slack's Socket Mode has no cursor at all — it has a
+  WebSocket that simply reconnects, so a promoted package would carry an
+  opaque `map[string]string` (or a `Resumer` interface) instead, and each
+  relay would own the encode/decode. Worth doing at the second consumer,
+  not before. **`poe-acp` is explicitly NOT that consumer**: it is an HTTP
+  server whose scarce resource is a bound listen socket, so it needs a
+  master/worker supervisor and drain-then-exec cannot replace it. See
+  `docs/graceful-reload.md` for why the two relays diverge here.
+
 - **The `sink` + streaming layers are being written for the third time.**
   `poe-acp`, `slack-acp` and now `zulip-acp` each carry a near-identical
   `streamingSink` (render an `acp.SessionNotification` into surface text,
@@ -70,7 +86,24 @@ Things deliberately not done in v1, with the reason.
   anchor if it wants one: `/register` returns `max_message_id`, so a relay could
   diff it against the last id it processed and replay the gap through
   `/messages`. Not done: it needs a dedup rule and a bound on how much history
-  to replay, and neither is obvious.
+  to replay, and neither is obvious. **A planned upgrade no longer hits this**:
+  `systemctl --user reload` hands the LIVE queue to the successor image rather
+  than letting it die (`internal/reload`, `docs/graceful-reload.md`). What is
+  left here is the unplanned case — a server restart or an idle GC — which no
+  amount of cursor handoff can cover, because the queue itself is gone.
+
+- **A service STOP still cuts an in-flight turn; only a reload preserves one.**
+  The ACP agent is spawned with `exec.CommandContext(ctx, …)` (acp-kit
+  `client.Start`), so a cancelled signal context kills it immediately and
+  `-drain-deadline` can only cover flushing output the agent had already
+  produced. The reload path sidesteps this by never cancelling `ctx` — it stops
+  *intake* through a separate channel — which is exactly why a reply survives a
+  reload and not a restart (`docs/graceful-reload.md`). Making a stop drain for
+  real would mean giving the agent a context that outlives the signal and
+  closing it explicitly in teardown; that trades a guaranteed kill for a
+  best-effort one, and every `log.Fatalf` path would then be able to orphan a
+  live agent process. Not done deliberately: the answer to "I want my turn to
+  survive" is `reload`, which is now the documented default verb.
 
 - **Bot senders are snapshotted at startup.** `GET /users` is read once to
   learn which realm users are bots, so a bot created while the relay is running

@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Graceful reload: `systemctl --user reload zulip-acp` (SIGHUP) now stops
+  polling **without deleting the Zulip event queue**, drains the in-flight
+  agent turns, and re-execs the on-disk binary in place — same PID, cursor
+  carried forward in `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID`. Nothing
+  posted during the window is lost and nothing is delivered twice, and an agent
+  hosted by the relay can reload **inline, mid-turn**, and still finish its
+  reply. New `internal/reload`; see `docs/graceful-reload.md`.
+- `zulipproto.RunnerConfig.Handoff` / `ResumeQueueID` / `ResumeLastEventID` and
+  `Runner.Cursor`: stop the loop leaving the queue alive, and resume an
+  inherited queue instead of registering a fresh one. `OnRegister` still fires
+  once on resume, so a followed-channel set is resynced.
+- `-reload-drain-deadline` (30m) and `-drain-deadline` (30s) bound the reload
+  and stop drains.
+- Live test `TestEventQueueSurvivesReExec`: proves against a real server, across
+  an actual `syscall.Exec`, that a resumed queue still delivers a message posted
+  during the window while a freshly registered one never sees it.
+- `packaging/systemd/zulip-acp.service` gained `ExecReload` and
+  `TimeoutStopSec`.
+
+### Security
+
+- The reload cursor is scrubbed from the ACP agent's environment
+  (`reload.AgentEnvNames`, wired through `Config.AgentClientConfig` beside the
+  bot API key). A live `queue_id` is a relay capability, not configuration:
+  combined with any credential it lets its holder poll the relay's own event
+  queue and take delivery of messages meant for the relay — and the agent is
+  driven by text from people who are not the operator.
+
+### Fixed
+
+- A `SIGTERM` arriving during a reload drain now wins: the re-exec is abandoned,
+  the remaining turns get the short stop budget and the event queue is torn
+  down. Previously `systemctl stop` issued during a reload was ignored for up to
+  `-reload-drain-deadline` (30m) until systemd SIGKILLed the cgroup.
+- A second `SIGHUP` arriving during the (invisible, minutes-long) drain no
+  longer risks killing the new image: `signal.Ignore` is armed before the exec,
+  and `SIG_IGN` is inherited across `execve`, so a HUP delivered mid-exec is
+  dropped instead of hitting the default action before the new image has
+  installed its handler.
+- A `SIGTERM` arriving mid-reload while nothing was in flight would still
+  re-exec, so `systemctl stop` on an idle relay restarted it in place and was
+  then SIGKILLed at `TimeoutStopSec`. Pre-emption is now decided by the signal
+  context, not by whether the drain came out clean.
+- A reload that finds no live queue to hand on (it had just expired) now logs a
+  WARN saying the new image will register fresh and miss messages, instead of
+  degrading silently.
+
+### Changed
+
+- The bundled `update` skill now teaches `reload` as the default verb. The
+  `systemd-run --user --collect --on-active=N` transient-unit workaround and the
+  surrounding `setsid` discussion are **deleted**: they existed only because a
+  hard restart killed the agent that requested it, and `setsid` never escaped
+  the cgroup anyway. Hard restart is kept for a unit-file change, a stopped
+  service, and the first cutover onto a reload-capable build.
+
 ## [0.11.0] - 2026-09-02
 
 ### Added

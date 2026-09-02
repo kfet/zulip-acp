@@ -15,6 +15,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/statusline"
+	"github.com/kfet/zulip-acp/internal/reload"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -389,11 +390,17 @@ func (c *Config) AllowedUsers() map[int64]struct{} {
 // from the child's environment: the agent is driven by text from
 // people who are not the operator, and anything it can read it can
 // use to impersonate the relay.
+//
+// The graceful-reload cursor (reload.AgentEnvNames) is scrubbed for the
+// same reason. It is present only in a process that was re-exec'd, and
+// a live queue id is a relay capability: whoever holds it and a
+// credential can poll the relay's own event queue and take delivery of
+// its messages.
 func (c *Config) AgentClientConfig(stderr io.Writer) client.Config {
 	return client.Config{
 		Command:        c.GetAgentCmd(),
 		Stderr:         stderr,
-		SecretEnvNames: []string{"ZULIP_API_KEY", "ZULIP_EMAIL"},
+		SecretEnvNames: append([]string{"ZULIP_API_KEY", "ZULIP_EMAIL"}, reload.AgentEnvNames()...),
 		Secrets:        []string{c.BotAPIKey},
 		ClientMeta: map[string]any{
 			statusline.ExtensionID: map[string]any{},
