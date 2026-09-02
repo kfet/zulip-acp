@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Skills catalog injection, ported from poe-acp. The relay now merges an
+  embedded builtin bundle (`internal/skills/bundle/`) with a host directory at
+  `<config-dir>/skills/` and injects a fir-style `<available_skills>` block into
+  every session's system prompt. Host skills override same-named builtins, which
+  doubles as the disable mechanism.
+- Builtin `notes` skill: points the agent at `~/.local/state/zulip-acp/notes/`
+  as persistent cross-conversation scratch, and documents `notes/fleet/` as the
+  Syncthing-shared fleet-wide subdirectory.
+
+### Changed
+
+- The durable system prompt is now supplied via `state.SystemPromptProvider`
+  rather than a fixed string, so a skill added to the host dir after startup is
+  visible to the next session without a relay restart. Builtins are extracted
+  once per process; `disable_system_prompt` short-circuits before any skill dir
+  is read. `system_prompt` and `disable_system_prompt` behave exactly as before.
+
 ## [0.7.0] - 2026-09-01
 
 ### Added
