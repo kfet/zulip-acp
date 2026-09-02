@@ -141,6 +141,10 @@ Live-server tests live in `test/` and only run with `ZULIP_LIVE=1` plus
 `ZULIP_SITE` / `ZULIP_EMAIL` / `ZULIP_API_KEY` set. They are excluded from
 the coverage gate: they are evidence about the *server*, not about our code.
 
+They post **real messages** to `ZULIP_CHANNEL`. Always use the dedicated
+`zulip-acp-tests` channel — never `fleet` or any channel humans read. The
+test harness rejects a channel whose name does not contain `test`.
+
 ## Testing — avoid wall-clock timeouts
 
 - **Channels over polling** — use `chan struct{}` signals, `sync.WaitGroup`, or

@@ -8,8 +8,13 @@
 //	ZULIP_SITE=https://zulip.example \
 //	ZULIP_EMAIL=bot@zulip.example \
 //	ZULIP_API_KEY=… \
-//	ZULIP_CHANNEL=fleet \
+//	ZULIP_CHANNEL=zulip-acp-tests \
 //	go test ./test/
+//
+// ZULIP_CHANNEL must be a DEDICATED throwaway channel that humans can
+// mute — these tests post real messages to it on every run. Never point
+// them at a channel people actually read; the guard below rejects the
+// obvious mistakes.
 package live
 
 import (
@@ -33,6 +38,12 @@ func liveClient(t *testing.T) (*zulipproto.Client, int64) {
 	channel := os.Getenv("ZULIP_CHANNEL")
 	if site == "" || email == "" || key == "" || channel == "" {
 		t.Fatal("ZULIP_LIVE=1 requires ZULIP_SITE, ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_CHANNEL")
+	}
+	// These tests spam a channel with probe messages. Refuse to do that
+	// to a channel humans read: require an opt-in "test" in the name.
+	if !strings.Contains(strings.ToLower(channel), "test") {
+		t.Fatalf("ZULIP_CHANNEL=%q is not a test channel: live tests post real messages, "+
+			"point them at a dedicated one (e.g. zulip-acp-tests)", channel)
 	}
 	c, err := zulipproto.New(zulipproto.Config{Site: site, Email: email, APIKey: key})
 	if err != nil {
