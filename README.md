@@ -226,6 +226,25 @@ omitted only when `"dms": true` makes it a DM-only relay).
 The API key is declared as a secret and is **scrubbed from the agent's
 environment** before the child process starts.
 
+### Skills
+
+The relay injects a fir-style `<available_skills>` catalog into every session's
+system prompt, alongside `system_prompt`. Two layers are merged:
+
+- **builtin** — SKILL.md files embedded in the binary (`internal/skills/bundle/`)
+  whose frontmatter sets `builtin: true`. They are extracted to a
+  content-hashed dir under `$TMPDIR` at startup.
+- **host** — `<config-dir>/skills/<name>/SKILL.md`, i.e. next to `config.json`.
+  A host skill whose `name` matches a builtin **replaces** it; that is also how
+  you disable a builtin (shadow it with a stub).
+
+The host layer is rescanned on every session create/resume, so a skill dropped
+into the host dir is picked up **without restarting the relay**. Builtins are
+extracted once per process. A missing or malformed skill dir is logged and
+skipped — it never blocks startup.
+
+`disable_system_prompt` suppresses the catalog too.
+
 ### The agent→relay loopback (`relay_mcp`)
 
 With `"relay_mcp": true` the relay hosts a small MCP server on a private unix

@@ -30,7 +30,6 @@ import (
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
-	"github.com/kfet/zulip-acp/internal/sysprompt"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -247,10 +246,10 @@ func main() {
 	log.Printf("zulip-acp: agent up (caps=%+v)", agent.Caps())
 
 	sessions, err := state.New(state.Config{
-		Agent:        agent,
-		StateDir:     cfg.StateDir,
-		IdleTimeout:  cfg.IdleTimeout(),
-		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt, "", cfg.GetSilentSentinel()),
+		Agent:                agent,
+		StateDir:             cfg.StateDir,
+		IdleTimeout:          cfg.IdleTimeout(),
+		SystemPromptProvider: systemPromptProvider(*configPath, cfg),
 	})
 	if err != nil {
 		log.Fatalf("state: %v", err)
