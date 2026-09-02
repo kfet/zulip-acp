@@ -9,7 +9,8 @@ agent process.
 was a decision, not drift.** As of the relay-loopback work the binary hosts
 one MCP server — on a private unix socket, advertised only to its own child
 agent — so the agent can drive the relay from inside a turn: post out of band,
-and schedule a prompt back into the same conversation. ACP has no
+schedule a prompt back into the same conversation, and read that
+conversation's own earlier messages (`history`). ACP has no
 agent-initiated message and the streaming sink is bound per turn, but an MCP
 tool call runs agent→client, so this is the mechanism the protocol already
 gives us. It is **off by default** (`"relay_mcp": true`), because it widens
@@ -83,14 +84,22 @@ Zulip wire protocol it stays here.
   `internal/handler/command.go` is only what Zulip knows: the `Controller`
   implementation, the `/me` / `/poll` / `/todo` pre-filter, the `!!` escape
   and the unknown-command reply.
-- **The loopback tools live in `acp-kit/relaytool`, over the same
-  `Controller`.** A `!command` and a tool call must go through one
+- **The relay-GENERIC loopback tools live in `acp-kit/relaytool`, over the
+  same `Controller`.** A `!command` and a tool call must go through one
   implementation — the exported actions on `command.Broker` — or they drift.
-  Adding a loopback capability means adding a Broker action, not reaching past
-  the broker. `internal/zulipmcp` owns only the server's identity; it owns no
-  tools. `internal/handler/loopback.go` owns only what Zulip knows: conv-id →
-  broker token, posting through the splitter, and re-applying the relay's
-  gates when a schedule fires.
+  Adding a relay-generic loopback capability means adding a Broker action, not
+  reaching past the broker. `internal/handler/loopback.go` owns only what
+  Zulip knows: conv-id → broker token / `journal.Key`, posting through the
+  splitter, and re-applying the relay's gates when a schedule fires.
+- **A tool that needs something only Zulip knows lives in
+  `internal/zulipmcp`.** That is `history` today — a narrow over a topic or a
+  DM, resolved from `Handler.ConvKey`. It has no `!command` twin and no Broker
+  action, because it is not a relay-generic control. Do not push it to
+  acp-kit, and do not add a relay-generic tool here.
+- **A tool whose result can be large must bound it.** `history` caps each
+  message body and the whole reply, keeps the newest end, and states the
+  `before_id` to page back. One tool call must never be able to flood the
+  agent's context window.
 - **A loopback tool must never destroy the turn that is calling it.** That is
   why there is no `stop` tool and why `new_session` is deferred to
   `Handler.endTurn`. Do not "fix" either.

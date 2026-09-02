@@ -258,6 +258,11 @@ socket and advertises it to its own child agent. The agent can then:
 - `schedule` / `list_schedules` / `unschedule` a prompt to itself. On fire it
   re-enters the same conversation with its full history and the answer streams
   into the topic normally.
+- read `history` — the conversation's **own earlier messages**, oldest first,
+  as raw markdown, including the bot's own past replies. That is how an agent
+  whose session was cleared (or that started after a restart) recovers what a
+  topic was about, without shelling out to the Zulip API with the bot's
+  credentials.
 
 That is what makes *"go do X and tell me when it lands"* expressible.
 
@@ -266,7 +271,12 @@ prompt-injected agent could do. Three things bound it:
 
 - **It can only speak where it already is.** The conversation is resolved from
   the MCP connection token, server-side. No tool takes a channel, topic or
-  user as an argument, so there is no way to address anywhere else.
+  user as an argument, so there is no way to address anywhere else — and that
+  applies to reading as much as to posting: `history` can only read the topic
+  or DM the call came from.
+- **Output is bounded.** `history` caps each message body and the reply as a
+  whole, keeps the newest end, and states the `before_id` to page further
+  back — one call cannot flood the agent's context window.
 - **Scheduling is bounded in depth, breadth and rate** (the four keys above),
   so a schedule that schedules a schedule always terminates.
 - **You can see and kill what is armed**: `!schedules` lists it, `!unschedule`

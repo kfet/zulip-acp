@@ -585,7 +585,8 @@ dropped — unlike agent output, it costs nothing to ask for again, so the
 
 Off by default (`"relay_mcp": true`). It gives the agent a way to drive the
 relay from inside a turn: read its own status, switch model, **post out of
-band**, and **schedule a prompt back into this conversation**.
+band**, **schedule a prompt back into this conversation**, and **read that
+conversation's earlier messages**.
 
 ### Why MCP, and not an ACP extension
 
@@ -634,6 +635,9 @@ implemented, plus two OPTIONAL capabilities in the shape of `TurnStopper`:
 | `Poster` | `post` tool | yes | no — nothing to speak on after the response |
 | `Scheduler` | `schedule` tools, `!schedules`, `!unschedule` | yes | no — same reason |
 
+`history` sits outside that table on purpose: it has no `!command` twin and no
+Broker action, because it is not a relay-generic control at all. See below.
+
 ### What is deliberately not exposed
 
 **A loopback tool must never destroy the turn that is calling it.** Two
@@ -667,6 +671,38 @@ allowlist and a threat model, in that order.
 It posts through the **rollover splitter**, like every agent answer. Zulip
 truncates past `MAX_MESSAGE_LENGTH` silently; a `post` that called
 `SendMessage` directly would be a brand-new way to lose output.
+
+### `history`: the one Zulip-specific tool
+
+Every other loopback tool is relay-generic and lives in `acp-kit/relaytool`,
+over a `command.Broker` action, so `poe-acp` and `slack-acp` get it too.
+`history` is not: it is a query against a Zulip **narrow**, it answers in
+Zulip message shapes, and the question "which conversation may I read" is
+answered by a `journal.Key`. So it lives in `internal/zulipmcp`, which existed
+from the start precisely to keep that option open, and it resolves identity
+through `Handler.ConvKey` — the same server-side binding as `ConvToken`, one
+layer earlier, because a narrow needs the stream id and topic (or the DM
+participant set), not an opaque broker token.
+
+It exists because the alternative was observed in the wild: an agent whose
+session had been cleared shelled out to the Zulip REST API **with the bot's
+own credentials** to read back its topic. That works, and it is exactly the
+capability the relay should own rather than leak.
+
+- **Channel and DM both.** `zulipproto.TopicNarrow` for a topic,
+  `zulipproto.DMNarrow` for a direct message — the `dm` operator with the full
+  participant set. A DM is in no channel, so a channel narrow would silently
+  return nothing there.
+- **Oldest first, raw markdown, bot messages included.** Recovering its own
+  prior answers is half the point.
+- **Bounded twice.** `MaxMessageRunes` per body (a single Zulip message can be
+  10000 code points) and `MaxTotalRunes` for the whole reply. The budget is
+  spent newest-first and the result reversed, so what survives a binding cap is
+  the recent end; the reply says how many were dropped, whether bodies were
+  truncated, and the `before_id` to page further back. An unbounded read would
+  blow the agent's context window in one call.
+- **`before_id` is exclusive**, so feeding back the oldest id of a page yields
+  the page before it with neither overlap nor gap.
 
 ### The loop hazard
 
@@ -756,13 +792,14 @@ internal/command/       `!command` parse core — NO Zulip imports
 internal/config/        JSON config, DisallowUnknownFields
 internal/handler/       gating, commands, turn execution, streaming sink, outbox, poster
 internal/handler/loopback.go
-                        agent→relay loopback: conv-id → broker token, out-of-band
-                        post, scheduled-prompt firing and its gates
+                        agent→relay loopback: conv-id → broker token / journal key,
+                        out-of-band post, scheduled-prompt firing and its gates
 internal/journal/       conv key (channel topic | DM user set) → conv-id + tail ids
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header
 internal/sysprompt/     built-in Zulip formatting block
-internal/zulipmcp/      MCP server identity: socket naming, env vars, subcommand
+internal/zulipmcp/      MCP server identity (socket naming, env vars, subcommand)
+                        and the one Zulip-specific loopback tool, `history`
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
 test/                   live-server tests (ZULIP_LIVE=1), coverage-exempt
 ```

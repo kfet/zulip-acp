@@ -6,7 +6,9 @@
 //
 //  1. Turning a conv-id (the state manager's session key, which is what
 //     mcphost binds from the connection token) into the broker's KEY
-//     token, and back into a place to post.
+//     token, and back into a place to post — and, for the Zulip-specific
+//     tools in internal/zulipmcp, into the journal.Key that says which
+//     topic or DM narrow may be read.
 //  2. Posting out of band, through the same rollover splitter every
 //     agent answer goes through — because Zulip truncates at 10000 code
 //     points SILENTLY, and a `post` tool that bypassed the splitter
@@ -49,12 +51,29 @@ const scheduledSender = "scheduled"
 // such conv-id at all, which means the caller is not a conversation
 // this relay owns.
 func (h *Handler) ConvToken(sessionKey string) (string, bool) {
+	k, ok := h.ConvKey(sessionKey)
+	if !ok {
+		return "", false
+	}
+	return k.Token(), true
+}
+
+// ConvKey maps an MCP session key — the conv-id, resolved server-side
+// from the connection's token — to the Zulip conversation it names.
+//
+// It is the identity check for every Zulip-specific loopback tool
+// (today, `history`): the key is what says WHICH topic or DM the call
+// may read, and it comes from the connection, never from an argument.
+// ok=false rejects the call, which is what happens when the journal
+// has no such conv-id — i.e. the caller is not a conversation this
+// relay owns.
+func (h *Handler) ConvKey(sessionKey string) (journal.Key, bool) {
 	c, ok := h.cfg.Journal.LookupID(sessionKey)
 	if !ok {
 		h.cfg.Logf("handler: loopback call from unknown conversation %q", sessionKey)
-		return "", false
+		return journal.Key{}, false
 	}
-	return c.Key.Token(), true
+	return c.Key, true
 }
 
 // PostTo satisfies command.Poster: it sends a message into the

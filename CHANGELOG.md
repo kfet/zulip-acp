@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Loopback `history` tool: with `relay_mcp` on, the agent can read its own
+  conversation's earlier messages — oldest first, raw markdown, its own past
+  replies included — instead of shelling out to the Zulip API with the bot's
+  credentials after a session reset. Channel topics and DMs both, identity
+  resolved server-side from the connection token, output bounded per message
+  and in total with a `before_id` anchor to page further back.
+- `zulipproto.Messages` with typed narrow terms (`TopicNarrow`, `DMNarrow`)
+  and exclusive `before_id` paging; `TopicMessages` is now a wrapper over it.
+
 ## [0.9.0] - 2026-09-02
 
 ### Added

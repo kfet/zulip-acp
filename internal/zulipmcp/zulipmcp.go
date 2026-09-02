@@ -3,12 +3,14 @@
 // the loopback: the `relay` server identity, the env var names, the
 // redirector subcommand and the socket naming.
 //
-// It owns NO tools. The tool set is acp-kit/relaytool's, because every
-// one of them is a relay-generic control that poe-acp and slack-acp
-// need identically — status, model, post, schedule. If a tool ever
-// needs to know something only Zulip knows (a topic, a stream id, a
-// widget), THAT is the tool that belongs here, and the fact that this
-// package exists at all is what keeps the option open.
+// It owns exactly ONE tool, and only because that tool cannot live
+// anywhere else: `history`, which reads back the conversation's own
+// earlier messages. Everything relay-generic — status, model, post,
+// schedule — is acp-kit/relaytool's, because poe-acp and slack-acp
+// need those identically. The dividing line the package doc always
+// stated still holds: if a tool needs to know something only Zulip
+// knows (a topic, a stream id, a DM narrow, a widget), THAT is the
+// tool that belongs here. See history.go.
 //
 // The conversation a tool call acts on is resolved server-side by
 // mcphost from the connection token; nothing here or in relaytool ever
