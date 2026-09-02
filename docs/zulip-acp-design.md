@@ -572,6 +572,82 @@ existed to work around a formatting detail that turned out not to be a
 problem. Deleting it keeps the two relays' surfaces identical, which is worth
 more than one keystroke saved.
 
+### `!opts`, and why it is the one command not in acp-kit
+
+Every other `!command` lives in `acp-kit/command` so `poe-acp`, `slack-acp`
+and this relay cannot drift. `!opts` is the deliberate exception: it adds no
+capability at all, it *renders* the capabilities that already exist onto a
+surface only Zulip has.
+
+That surface is **`zform`**, Zulip's message-attached button widget: a bot
+sends `widget_content` alongside an ordinary message and the web client draws
+a heading plus buttons. Each button carries a `reply` string, and clicking it
+sends that string **as an ordinary message from the clicking user**. That is
+the entire mechanism, and it is what makes the feature safe to have: a button
+is sugar over the existing `!` parser, so a click walks the same never-answer-
+a-bot guard, the same `allowed_user_ids` check, the same engagement gate and
+the same dispatch a typed command does. There is no second code path, and
+every action still goes through the broker's exported actions in
+`acp-kit/command/actions.go` — `!model` typed, a button clicked and the
+loopback tool are one implementation.
+
+Three constraints shaped the rest of it.
+
+**The reader is on a phone.** `zform` renders in the Zulip **web app only**;
+every other client shows the message's plain markdown. So the markdown body is
+the product and the widget is decoration on top of it: the body is written
+first, lists the same commands, and must be usable with a thumb. Widgets are
+also a dev-docs *subsystem*
+(`zulip.readthedocs.io/en/stable/subsystems/widgets.html`), not a versioned
+API, which is why the coupling is one file — `internal/zulipproto/zform.go` —
+and why a server that rejects `widget_content` outright still gets the panel,
+posted without it.
+
+**A panel is state, not scrollback — and a widget message can never be
+edited.** Measured on Zulip 12.2: `PATCH /messages/<id>` on a message carrying
+`widget_content` returns 400 *"Widgets cannot be edited."* A zform is a
+submessage and Zulip forbids content edits on any message that has one. This
+kills the obvious design outright — a PATCHed self-updating panel would fail
+on the first knob change on every server where the widget actually *worked*,
+and would have shipped looking fine, because the degraded plain-markdown path
+is the one that still edits.
+
+So the panel updates by **re-post plus delete of the old one**. The net effect
+is what was wanted — exactly one live panel, no growing pile of stale controls
+— and it is better on a phone, since the panel lands where the reader is. This
+is the only place the relay deletes a message it posted; deletion is a realm
+policy (`delete_own_message_policy`) and time-limited
+(`message_content_delete_limit_seconds`), so a refusal is *expected*: the
+fallback rewrites the old panel to a pointer line (possible only for a panel
+posted without its widget) and, failing that, leaves it alone — stale but never
+wrong, since every button on it is still a valid command. A change is
+acknowledged with an emoji reaction on the command message rather than a reply:
+a settings change should leave nothing in the topic and nothing in the
+transcript the model reads. The panel's message id is persisted in the journal
+beside the streaming tail, and `!new` carries it to the fresh conversation: the
+panel belongs to the *place*, not to the session.
+
+**One place repaints.** `Handler.SetModelOverride` is the single choke point
+every model change passes through — typed, tapped, or made by the agent
+through the `select_model` loopback tool — so the repaint lives there rather
+than in the command path. A panel that could be left claiming a model the
+conversation is not on would be worse than no panel, because it is also the
+status line.
+
+**A button must never offer what the agent cannot do.** Model buttons come
+from the boot-time probe (`Agent.Models()`), capped so the panel fits one
+screen, current model first, with `!model <filter>` reaching the rest. Thinking
+level is deliberately *absent*: acp-kit exposes the model config option but no
+snapshot of an agent's other `configOptions`, so the relay cannot know a
+session has one. Inventing the knob would mean a button that silently fails.
+When acp-kit surfaces those options, the knob belongs here — and the acp-kit
+change comes first.
+
+Finally, an unknown `!command` now answers with the panel. It used to answer
+with a one-line error, which was correct and useless: the moment a user
+mistypes a command is the moment they most need the menu. It is still never
+forwarded to the agent — a typo must not burn a turn.
+
 ### What a command reply is not
 
 It is an ordinary message posted where the command arrived. No `:eyes:`
@@ -794,12 +870,17 @@ internal/handler/       gating, commands, turn execution, streaming sink, outbox
 internal/handler/loopback.go
                         agent→relay loopback: conv-id → broker token / journal key,
                         out-of-band post, scheduled-prompt firing and its gates
-internal/journal/       conv key (channel topic | DM user set) → conv-id + tail ids
+internal/handler/opts.go
+                        `!opts`: the one self-updating options panel per conversation
+internal/journal/       conv key (channel topic | DM user set) → conv-id, tail and
+                        options-panel message ids
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header
 internal/sysprompt/     built-in Zulip formatting block
 internal/zulipmcp/      MCP server identity (socket naming, env vars, subcommand)
                         and the one Zulip-specific loopback tool, `history`
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
+internal/zulipproto/zform.go
+                        the ONLY coupling to Zulip's widget subsystem
 test/                   live-server tests (ZULIP_LIVE=1), coverage-exempt
 ```

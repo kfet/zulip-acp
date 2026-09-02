@@ -94,7 +94,17 @@ type ChannelSet interface {
 type Poster interface {
 	SendMessage(ctx context.Context, streamID int64, topic, content string) (int64, error)
 	SendDirectMessage(ctx context.Context, userIDs []int64, content string) (int64, error)
+	// SendMessageWidget and SendDirectMessageWidget attach a
+	// widget_content payload. Only `!opts` uses them; every other
+	// message the relay posts is plain markdown.
+	SendMessageWidget(ctx context.Context, streamID int64, topic, content, widget string) (int64, error)
+	SendDirectMessageWidget(ctx context.Context, userIDs []int64, content, widget string) (int64, error)
 	EditMessage(ctx context.Context, id int64, content string) error
+	// DeleteMessage removes a message the bot posted. Used ONLY to
+	// retire a superseded `!opts` panel, which cannot be edited when
+	// it carries a widget. Nothing else the relay posts is ever
+	// deleted.
+	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
 	Upload(ctx context.Context, filename string, r io.Reader) (string, error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
@@ -196,6 +206,17 @@ type Config struct {
 	// nothing but signal. Anything that touches the Handler deadlocks.
 	OnWaitForConv func(convID string)
 
+	// OnTurnEnd, if set, is called once a completed turn's deferred
+	// loopback actions have been applied — i.e. at the very last
+	// instant the turn's goroutine touches anything.
+	//
+	// It exists for the same reason as OnWaitForConv: WaitIdle cannot
+	// see this work, because endTurn runs deliberately AFTER the turn
+	// has left the inflight map (see handleMessage). A test that
+	// asserted on it without this hook would be racing the harness's
+	// own TempDir cleanup. Nil in production.
+	OnTurnEnd func(convID string)
+
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
 }
@@ -230,6 +251,11 @@ type Handler struct {
 	// the id list.
 	dmMu    sync.Mutex
 	dmNames map[string][]string
+
+	// optsMu serialises `!opts` panel replacement. See showPanel: the
+	// panel's message id is a read-modify-write reachable from both
+	// the event loop and a turn goroutine.
+	optsMu sync.Mutex
 }
 
 // New constructs a Handler.
@@ -961,4 +987,14 @@ func (p *convPoster) Post(ctx context.Context, content string) (int64, error) {
 
 func (p *convPoster) Edit(ctx context.Context, id int64, content string) error {
 	return p.client.EditMessage(ctx, id, content)
+}
+
+// PostWidget is Post with a zform widget attached. Only the `!opts`
+// panel uses it; the splitter never does, because a widget on a
+// streamed answer would be re-rendered on every edit.
+func (p *convPoster) PostWidget(ctx context.Context, content, widget string) (int64, error) {
+	if p.key.IsDM() {
+		return p.client.SendDirectMessageWidget(ctx, p.key.UserIDs, content, widget)
+	}
+	return p.client.SendMessageWidget(ctx, p.key.StreamID, p.key.Topic, content, widget)
 }

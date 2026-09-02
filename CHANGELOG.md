@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!opts`: an interactive options panel. One live control message per
+  conversation — Zulip `zform` buttons in the web app, an equivalent plain
+  markdown command list everywhere else (the phone included), with graceful
+  degradation when a server refuses `widget_content`. Model buttons are drawn
+  from the agent's own probe, so a button can never offer a model the agent
+  does not have. Because Zulip refuses every content edit on a message carrying
+  a widget ("Widgets cannot be edited.", measured on 12.2), the panel updates by
+  being re-posted with the old one deleted — the only message this relay ever
+  deletes — falling back to a pointer line, and then to leaving it, when the
+  realm forbids that.
+- `!model <exact-id>` is now acknowledged with an emoji reaction instead of a
+  reply message: configuration chatter stays out of the topic, and out of the
+  transcript the model reads. Every model change — typed, tapped, or made by the
+  agent through its loopback tool — refreshes the panel from one choke point.
+- `zulipproto.DeleteMessage`, `zulipproto.RejectedByServer` (tells a 4xx
+  refusal from a transport failure, so only a refusal is retried differently)
+  and `zulipproto.IsMissing`.
+- Live test `TestWidgetMessageCannotBeEdited`, and a
+  `docs/zulip-protocol-reference.md` section on widgets — the edit refusal fails
+  in the cruel direction (the degraded, widget-less path edits fine), so it is
+  pinned as evidence rather than left as a comment.
+- The journal records each conversation's panel message id (`opts_id`), and
+  carries it across `!new` — the panel belongs to the place, not the session.
+
+### Changed
+
+- An unknown `!command` now answers with the options panel rather than a
+  one-line error. The failure mode teaches; it is still never forwarded to the
+  agent.
+- `!help` lists `!opts`, appended by the relay since the shared `acp-kit`
+  broker cannot know about a Zulip-only surface.
+- The built-in system prompt names `!opts` among the relay commands.
+
+### Fixed
+
+- A turn's deferred loopback actions (`new_session`) run after the turn leaves
+  the inflight map, so `WaitIdle` could return while the turn was still writing
+  the journal — which raced the test harness's own temp-dir cleanup. `Handler`
+  now offers an `OnTurnEnd` hook (nil in production) that makes the window
+  observable, and the loopback tests wait on it.
+
 ## [0.10.0] - 2026-09-02
 
 ### Added

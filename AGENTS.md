@@ -47,13 +47,15 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 cmd/zulip-acp/          entry point: flags + wiring
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
-internal/handler/       event → ACP prompt; streaming sink; topic poster; commands
-internal/journal/       (stream_id, topic) → conv-id alias map + tail ids
+internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
+                        opts.go = the `!opts` options panel
+internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status header renderer
 internal/sysprompt/     built-in Zulip-formatting system prompt
 internal/zulipmcp/      self-hosted MCP server identity (socket, env, subcommand)
-internal/zulipproto/    HTTP Basic client + /events long-poll runner
+internal/zulipproto/    HTTP Basic client + /events long-poll runner; zform.go is
+                        the only coupling to Zulip's widget subsystem
 test/                   live-server integration tests (ZULIP_LIVE=1)
 ```
 
@@ -100,6 +102,14 @@ Zulip wire protocol it stays here.
   message body and the whole reply, keeps the newest end, and states the
   `before_id` to page back. One tool call must never be able to flood the
   agent's context window.
+- **`!opts` is the ONE command that stays here, and it stays here for a
+  reason.** It adds no capability: it renders the broker's existing actions
+  onto `zform`, a Zulip-only button widget, and every button's `reply` is a
+  command a human could have typed. Do not move it to acp-kit (poe-acp has no
+  widgets), and do not let a button reach past `command.Broker`'s exported
+  actions — a click and a typed command must be one code path. Do not add a
+  knob the agent has not reported (see the thinking-level note in the design
+  doc): a button that silently fails is worse than no button.
 - **A loopback tool must never destroy the turn that is calling it.** That is
   why there is no `stop` tool and why `new_session` is deferred to
   `Handler.endTurn`. Do not "fix" either.
@@ -174,6 +184,10 @@ test harness rejects a channel whose name does not contain `test`.
   10000 chars with `\n[message truncated]` appended. Count code points
   (`utf8.RuneCountInString`), never bytes. This is the #1 correctness risk in
   the project; `internal/rollover` exists solely because of it.
+- **A message with `widget_content` can NEVER be content-edited.** `PATCH`
+  returns 400 "Widgets cannot be edited." (measured, Zulip 12.2) because a
+  zform is stored as a submessage. Anything self-updating built on widgets
+  must re-post and delete, never edit — see `internal/zulipproto/zform.go`.
 - **`message_content_edit_limit_seconds` defaults to 600** on a fresh install,
   which makes streaming PATCHes fail with 400 on any turn longer than ten
   minutes. The deployment must set it to unlimited. Documented in the README.

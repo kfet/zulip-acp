@@ -330,6 +330,17 @@ func (c *Client) Streams(ctx context.Context) ([]Stream, error) {
 // silently truncate it. A caller that hits this has a bug: splitting is
 // internal/rollover's job and must happen before the wire.
 func (c *Client) SendMessage(ctx context.Context, streamID int64, topic, content string) (int64, error) {
+	return c.SendMessageWidget(ctx, streamID, topic, content, "")
+}
+
+// SendMessageWidget is SendMessage with an optional widget_content
+// payload attached (see zform.go). An empty widget sends nothing extra,
+// which is why SendMessage is one line.
+//
+// The widget is NOT counted against MaxMessageLength: Zulip measures
+// that against the message content alone, and widget_content is a
+// separate submessage.
+func (c *Client) SendMessageWidget(ctx context.Context, streamID int64, topic, content, widget string) (int64, error) {
 	if err := checkLength(content); err != nil {
 		return 0, err
 	}
@@ -339,6 +350,7 @@ func (c *Client) SendMessage(ctx context.Context, streamID int64, topic, content
 		"topic":   {topic},
 		"content": {content},
 	}
+	setWidget(form, widget)
 	var resp struct {
 		ID int64 `json:"id"`
 	}
@@ -346,6 +358,20 @@ func (c *Client) SendMessage(ctx context.Context, streamID int64, topic, content
 		return 0, err
 	}
 	return resp.ID, nil
+}
+
+// setWidget adds widget_content to a send form when there is one.
+//
+// A server with widgets disabled, or one older than the parameter,
+// reports it in ignored_parameters_unsupported and posts the message
+// anyway — so the markdown body must always stand on its own. The
+// caller is responsible for retrying without the widget if a server
+// ever REJECTS it outright; that is a content decision and does not
+// belong in the HTTP layer.
+func setWidget(form url.Values, widget string) {
+	if widget != "" {
+		form.Set("widget_content", widget)
+	}
 }
 
 // SendDirectMessage posts content to a direct conversation with the
@@ -360,6 +386,12 @@ func (c *Client) SendMessage(ctx context.Context, streamID int64, topic, content
 // Length is checked exactly as for a channel message: MAX_MESSAGE_LENGTH
 // applies to DMs too, and truncation there is just as silent.
 func (c *Client) SendDirectMessage(ctx context.Context, userIDs []int64, content string) (int64, error) {
+	return c.SendDirectMessageWidget(ctx, userIDs, content, "")
+}
+
+// SendDirectMessageWidget is SendDirectMessage with an optional
+// widget_content payload. See SendMessageWidget.
+func (c *Client) SendDirectMessageWidget(ctx context.Context, userIDs []int64, content, widget string) (int64, error) {
 	if err := checkLength(content); err != nil {
 		return 0, err
 	}
@@ -371,6 +403,7 @@ func (c *Client) SendDirectMessage(ctx context.Context, userIDs []int64, content
 		"to":      {mustJSON(userIDs)},
 		"content": {content},
 	}
+	setWidget(form, widget)
 	var resp struct {
 		ID int64 `json:"id"`
 	}
@@ -392,6 +425,49 @@ func (c *Client) EditMessage(ctx context.Context, id int64, content string) erro
 	}
 	form := url.Values{"content": {content}}
 	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
+}
+
+// DeleteMessage removes a message the bot posted.
+//
+// It exists for exactly one caller: retiring a superseded `!opts`
+// panel. A panel carrying a widget CANNOT be edited (see zform.go), so
+// deleting it is the only way to keep one live panel per conversation.
+// Nothing else in the relay deletes anything — agent output and human
+// messages are never touched.
+//
+// Whether the bot may delete its own message is a REALM POLICY
+// (delete_own_message_policy) and is additionally time-limited by
+// message_content_delete_limit_seconds, so this call is expected to
+// fail on some servers. Callers must degrade rather than depend on it.
+func (c *Client) DeleteMessage(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodDelete, "/messages/"+strconv.FormatInt(id, 10), nil, nil, nil)
+}
+
+// RejectedByServer reports whether err is Zulip REFUSING a request —
+// an API error with a 4xx status — as opposed to a transport failure, a
+// cancelled context or a server fault.
+//
+// It is the difference between "this server will not accept what I
+// sent" (try a simpler request) and "I could not reach the server"
+// (retrying the same way is pointless).
+func RejectedByServer(err error) bool {
+	var ae *APIError
+	if !asAPIError(err, &ae) {
+		return false
+	}
+	return ae.Status >= 400 && ae.Status < 500
+}
+
+// IsMissing reports whether err is Zulip saying the message is not
+// there — deleted by a human, or moved out of reach. It is the one 4xx
+// that means "already in the state you wanted", so a caller retiring
+// something has nothing left to do.
+func IsMissing(err error) bool {
+	var ae *APIError
+	if !asAPIError(err, &ae) {
+		return false
+	}
+	return ae.Status == http.StatusNotFound
 }
 
 // GetMessage fetches one message as raw markdown.

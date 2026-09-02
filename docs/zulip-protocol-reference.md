@@ -127,6 +127,55 @@ server-side and again on the reader's phone.
 > with HTTP 400 mid-stream. Set message editing to **unlimited** (Organization
 > settings → Message editing) before running the relay.
 
+## Widgets (`widget_content`)
+
+A bot can attach an interactive form to a message by sending `widget_content`
+alongside `content`. The relay uses exactly one shape, `zform` / `choices`:
+
+```bash
+curl -u ... -X POST https://zulip.example/api/v1/messages \
+  -d type=stream -d to=4 --data-urlencode 'topic=opts' \
+  --data-urlencode 'content=**⚙️ opus** — `!model <id>` to switch' \
+  --data-urlencode 'widget_content={"widget_type":"zform","extra_data":{
+       "type":"choices","heading":"Options","choices":[
+       {"type":"multiple_choice","short_name":"opus","long_name":"Claude Opus 4.5",
+        "reply":"!model anthropic/claude-opus-4-5"}]}}'
+```
+
+Clicking a button sends its `reply` string **as an ordinary message from the
+clicking user**, which is what makes buttons safe to build on: they are sugar
+over whatever already parses typed text.
+
+Three facts, all measured on Zulip 12.2:
+
+- **Only the web app renders it.** Every other client, the phone app included,
+  shows the message's plain `content`. The markdown body must therefore stand
+  on its own; the widget is decoration on top of it.
+- **It is a dev-docs subsystem**
+  (`zulip.readthedocs.io/en/stable/subsystems/widgets.html`), not a versioned
+  API. Keep the coupling thin and never make correctness depend on it.
+- **A message with a widget can NEVER be content-edited** — see below.
+
+### ⚠️ Trap: `Widgets cannot be edited.`
+
+```bash
+curl -u ... -X PATCH https://zulip.example/api/v1/messages/404 \
+  --data-urlencode 'content=updated'
+# → {"result":"error","msg":"Widgets cannot be edited.","code":"BAD_REQUEST"}
+```
+
+A zform is stored as a **submessage**, and Zulip refuses a content edit on any
+message that has one. There is no opt-out. A self-updating control message
+built on widgets is therefore impossible to do by editing: it must be
+**re-posted**, with the old one deleted (`DELETE /messages/<id>`, subject to
+`delete_own_message_policy` and `message_content_delete_limit_seconds`) or left
+behind.
+
+This one fails in the cruellest possible direction — the *degraded*
+plain-markdown path, on a server with widgets disabled, edits perfectly well.
+An implementation that PATCHes will therefore look correct exactly where the
+feature is doing nothing, and break exactly where it works.
+
 ## Reading back
 
 Always fetch with `apply_markdown=false` — the relay wants the raw markdown it

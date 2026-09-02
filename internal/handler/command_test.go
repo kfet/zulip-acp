@@ -95,6 +95,7 @@ func (z *fakeZulip) reset() {
 	z.bodies = map[int64]string{}
 	z.topics = map[int64]string{}
 	z.dms = map[int64][]int64{}
+	z.widgets = map[int64]string{}
 }
 
 // cmdHarness is a harness with the shared broker wired in, which is how
@@ -612,8 +613,13 @@ func TestModelSwitchAppliesOnTheNextTurn(t *testing.T) {
 	hh.z.reset()
 
 	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
-	if !strings.Contains(hh.only(t), "b/two") {
-		t.Fatalf("reply = %q", hh.only(t))
+	// A knob change is acknowledged with a reaction, not a message:
+	// see opts.go. The topic stays quiet.
+	if got := hh.z.count(); got != 0 {
+		t.Fatalf("the switch posted %d messages: %q", got, hh.z.stored())
+	}
+	if added, _ := hh.z.reactions(); len(added) != 1 || added[0] != "1:"+optsAckEmoji {
+		t.Fatalf("reactions = %v, want one :%s: ack", added, optsAckEmoji)
 	}
 	if got := hh.a.selections(); len(got) != 0 {
 		t.Fatalf("the switch was pushed outside a turn: %v", got)

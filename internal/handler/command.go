@@ -11,8 +11,12 @@
 //  2. The surface pre-filter: Zulip's `/me`, `/poll` and `/todo` are
 //     real messages, not client-side slash commands, and must reach the
 //     agent untouched.
-//  3. The `!!` escape and the unknown-command error, which are this
+//  3. The `!!` escape and the unknown-command answer, which are this
 //     relay's policy about prose that merely starts with a sigil.
+//  4. `!opts`, the interactive options panel — a Zulip-only surface
+//     (zform button widgets), so it cannot live in the shared broker.
+//     Everything behind a button is still a broker action; see
+//     opts.go.
 //
 // Ordering is load-bearing and unchanged from a prompt's: the
 // bot-own-message and system-bot guards run first, then
@@ -113,6 +117,38 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		return command.DisplaySigil + rest, false
 	}
 
+	// `!opts` is this relay's own: it renders controls that already
+	// exist onto a surface only Zulip has (see opts.go), so the shared
+	// broker neither knows nor should know about it. Checked before
+	// the broker — which would not recognise it — and before the
+	// pending-login path, because a pasted redirect URL never carries
+	// a sigil and so cannot be mistaken for it.
+	if isOpts(text) {
+		h.showPanel(ctx, key, "")
+		return "", true
+	}
+
+	// A knob CHANGE is applied here rather than being rendered as
+	// prose: it goes through the broker's exported action exactly as
+	// `!model` does, but is acknowledged with a reaction and a
+	// repainted panel instead of a new message. Settings chatter
+	// belongs in a reaction, not in the topic.
+	//
+	// Only an exact model id qualifies; a filter or a bare `!model`
+	// is a listing and falls through to the broker below. A change
+	// that FAILS also falls through, so the user hears why.
+	//
+	// Like `!opts` this runs ahead of the pending-login path, and for
+	// the same reason: a pasted redirect URL never carries a sigil, so
+	// `!model <id>` mid-login is plainly a settings change and not a
+	// malformed paste. The login stays pending for the paste that
+	// follows.
+	if id, ok := h.modelKnob(text); ok {
+		if h.applyModelKnob(ctx, key, m.ID, id) {
+			return "", true
+		}
+	}
+
 	// A pasted redirect URL for an in-flight login is not sigil-
 	// prefixed, so it can only be recognised by asking the broker.
 	if b.HasPending(token) || b.IsCommand(text) {
@@ -122,7 +158,7 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 			h.reply(ctx, key, fmt.Sprintf("Command failed: %v", err))
 			return "", true
 		}
-		h.reply(ctx, key, mustOutcome(out).Text)
+		h.reply(ctx, key, h.decorate(text, mustOutcome(out).Text))
 		return "", true
 	}
 
@@ -133,15 +169,48 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		return rewritten, false
 	}
 
-	// Sigil-prefixed, command-shaped, and nothing recognised it. Say
-	// so rather than burning an agent turn on a typo — and name the
-	// escape, because the same rule is what makes "!!" necessary.
+	// Sigil-prefixed, command-shaped, and nothing recognised it. The
+	// panel IS the answer: an unknown command is the moment a user is
+	// most in need of the menu, and a failure that teaches is worth
+	// more than a line of apology. Nothing is forwarded to the agent —
+	// a typo must not burn a turn, and config chatter must not enter
+	// the transcript the model reads.
 	if name, ok := unknownCommand(text); ok {
-		h.reply(ctx, key, fmt.Sprintf("Unknown command `%s%s`. Send `%shelp` for the list, or `%s%s` to say it as text.",
-			command.DisplaySigil, name, command.DisplaySigil, doubleSigil, name))
+		note := fmt.Sprintf("Unknown command `%s%s` — here is what this relay can do. Send `%s%s` to say it as text.",
+			command.DisplaySigil, name, doubleSigil, name)
+		h.showPanel(ctx, key, note)
 		return "", true
 	}
 	return text, false
+}
+
+// decorate appends the relay's own commands to a broker-rendered
+// reply.
+//
+// `!help` is composed in acp-kit, which cannot know about `!opts`: the
+// panel is a Zulip-only surface and poe-acp has no widgets to render.
+// Rather than fork the shared help text, the one extra line is added
+// on the way out, here, where the Zulip-specific knowledge lives.
+func (h *Handler) decorate(text, out string) string {
+	body, ok := command.StripSigil(strings.TrimSpace(text))
+	if !ok || !strings.EqualFold(strings.TrimSpace(body), "help") || out == "" {
+		return out
+	}
+	// Inserted right after the `!help` bullet rather than appended:
+	// the broker's help ends with an optional "Agent commands:"
+	// section, and a relay command filed under that heading would be a
+	// plain lie about who runs it.
+	const anchor = "- `" + command.DisplaySigil + "help`"
+	i := strings.Index(out, anchor)
+	if i < 0 {
+		return strings.TrimRight(out, "\n") + "\n" + optsHelpLine
+	}
+	j := strings.IndexByte(out[i:], '\n')
+	if j < 0 {
+		return strings.TrimRight(out, "\n") + "\n" + optsHelpLine
+	}
+	cut := i + j + 1
+	return out[:cut] + optsHelpLine + out[cut:]
 }
 
 // doubleSigil is the escape a human types to send prose beginning with
@@ -316,7 +385,7 @@ func (h *Handler) RelayInfo(token string) command.RelayInfo {
 // per conversation and applied to the ACP session at the start of the
 // next turn — see applyModel.
 func (h *Handler) SetModelOverride(token, modelID string) error {
-	_, conv, engaged := h.convFor(token)
+	key, conv, engaged := h.convFor(token)
 	if !engaged {
 		return fmt.Errorf("there is no conversation here yet — send a message first")
 	}
@@ -332,6 +401,12 @@ func (h *Handler) SetModelOverride(token, modelID string) error {
 		return fmt.Errorf("unknown model %q", modelID)
 	}
 	h.setModelOverride(conv.ID, modelID)
+	// Every model change passes through here — typed, tapped, or made
+	// by the agent through its loopback tool — so this is the one
+	// place that keeps the options panel honest. Only a conversation
+	// that already HAS a panel gets one re-posted. context.Background
+	// because the broker's action carries none; see ResetSession.
+	h.refreshPanel(context.Background(), key)
 	return nil
 }
 

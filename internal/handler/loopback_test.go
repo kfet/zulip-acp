@@ -27,6 +27,9 @@ type loopHarness struct {
 	now   func() time.Time
 	done  chan struct{}
 	stop  context.CancelFunc
+	// ended carries the conv-id of every turn whose deferred loopback
+	// actions have been applied — see deliverTurn.
+	ended chan string
 }
 
 func newLoopHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *loopHarness {
@@ -55,11 +58,18 @@ func newLoopHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *loopHar
 	}
 	lh.tools = tools
 
+	lh.ended = make(chan string, 64)
 	lh.harness = newHarness(t, agent, func(c *Config) {
 		c.Commands = broker
 		c.Schedules = store
 		c.Loopback = tools
 		c.DMs = true
+		c.OnTurnEnd = func(convID string) {
+			select {
+			case lh.ended <- convID:
+			default:
+			}
+		}
 		if tune != nil {
 			tune(c)
 		}
@@ -87,10 +97,30 @@ func (lh *loopHarness) run(t *testing.T) {
 // token is the broker conversation token for a channel topic.
 func chanToken(topic string) string { return journal.Channel(4, topic).Token() }
 
+// deliverTurn is deliver plus a wait for the turn's deferred loopback
+// actions to be applied. WaitIdle cannot cover that window — endTurn
+// runs after the turn leaves the inflight map — and without the wait a
+// test can finish while the turn is still writing its journal, which
+// races t.TempDir's cleanup.
+func (lh *loopHarness) deliverTurn(t *testing.T, topic, content string) {
+	t.Helper()
+	lh.deliver(t, topic, content)
+	lh.awaitTurnEnd(t)
+}
+
+func (lh *loopHarness) awaitTurnEnd(t *testing.T) {
+	t.Helper()
+	select {
+	case <-lh.ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never finished unwinding")
+	}
+}
+
 // engage drives one ordinary turn so the topic has a conversation.
 func (lh *loopHarness) engage(t *testing.T, topic string) journal.Conv {
 	t.Helper()
-	lh.deliver(t, topic, mention("hello"))
+	lh.deliverTurn(t, topic, mention("hello"))
 	c, ok := lh.j.Lookup(journal.Channel(4, topic))
 	if !ok {
 		t.Fatalf("topic %q did not become a conversation", topic)
@@ -456,7 +486,7 @@ func TestDeferredNewSessionAppliesAfterTheTurn(t *testing.T) {
 	if _, ok := lh.j.Lookup(journal.Channel(4, "loopback")); !ok {
 		t.Fatal("the conversation vanished before the turn ended")
 	}
-	lh.deliver(t, "loopback", "carry on")
+	lh.deliverTurn(t, "loopback", "carry on")
 
 	fresh, ok := lh.j.Lookup(journal.Channel(4, "loopback"))
 	if !ok {

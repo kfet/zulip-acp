@@ -423,3 +423,104 @@ func TestLookupID(t *testing.T) {
 		t.Fatal("a retired conversation stopped resolving by id")
 	}
 }
+
+// TestOptsTracking is SetTail's counterpart for the `!opts` control
+// message: same shape, separate lifecycle. The panel outlives every
+// turn in the conversation, so a streaming turn must not be able to
+// clobber it.
+func TestOptsTracking(t *testing.T) {
+	j, path := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if c.OptsID != 0 {
+		t.Fatalf("fresh conversation has panel %d", c.OptsID)
+	}
+	if err := j.SetOpts(c.ID, 77); err != nil {
+		t.Fatalf("SetOpts: %v", err)
+	}
+	// Setting the same value again is a no-op (no rewrite).
+	if err := j.SetOpts(c.ID, 77); err != nil {
+		t.Fatalf("SetOpts: %v", err)
+	}
+	// A tail write must leave the panel alone, and vice versa.
+	if err := j.SetTail(c.ID, 100); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	got, ok := j.Lookup(Channel(4, "topic"))
+	if !ok || got.OptsID != 77 || got.TailID != 100 {
+		t.Fatalf("conv = %+v", got)
+	}
+	// Survives a restart: the panel is found again after a crash
+	// instead of a second one being posted.
+	j2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if reloaded, ok := j2.Lookup(Channel(4, "topic")); !ok || reloaded.OptsID != 77 {
+		t.Fatalf("conv after reload = %+v", reloaded)
+	}
+	if err := j.SetOpts(c.ID, 0); err != nil {
+		t.Fatalf("SetOpts clear: %v", err)
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 0 {
+		t.Fatalf("panel not cleared: %+v", got)
+	}
+	if err := j.SetOpts("nosuchconv", 1); err == nil {
+		t.Fatal("want error for unknown conversation")
+	}
+}
+
+// TestOptsPanelMovesToTheFreshConversation: `!new` retires a
+// conversation, but the panel is a property of the PLACE — it is still
+// in the same topic — so the replacement inherits it.
+func TestOptsPanelMovesToTheFreshConversation(t *testing.T) {
+	j, _ := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := j.SetOpts(c.ID, 42); err != nil {
+		t.Fatalf("SetOpts: %v", err)
+	}
+	prev, fresh, existed, err := j.Retire(Channel(4, "topic"))
+	if err != nil || !existed {
+		t.Fatalf("Retire: %v, existed=%v", err, existed)
+	}
+	if prev.OptsID != 0 {
+		t.Fatalf("retired conversation kept panel %d", prev.OptsID)
+	}
+	if fresh.OptsID != 42 {
+		t.Fatalf("fresh conversation panel = %d, want 42", fresh.OptsID)
+	}
+}
+
+// TestSetOptsRollsBackOnAWriteFailure: the journal must never report a
+// failure and then behave as though the write happened — a restart
+// would silently un-do it.
+func TestSetOptsRollsBackOnAWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Open(filepath.Join(dir, "journal.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := j.SetOpts(c.ID, 5); err != nil {
+		t.Fatalf("SetOpts: %v", err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := j.SetOpts(c.ID, 6); err == nil {
+		t.Fatal("want write error")
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 5 {
+		t.Fatalf("panel = %d after a failed write, want the previous 5", got.OptsID)
+	}
+}

@@ -47,6 +47,13 @@ type fakeZulip struct {
 	editErr  error
 	getErr   error
 	uploadEr error
+	// widgets records the widget_content each message was sent with,
+	// and widgetErr makes the server refuse any message carrying one.
+	widgets   map[int64]string
+	widgetErr error
+	// deleteErr models a realm that forbids a bot deleting its own
+	// message — the fallback path when a panel is retired.
+	deleteErr error
 	// reactAdd/reactDel record every reaction call, in order, as
 	// "<messageID>:<emoji>".
 	reactAdd []string
@@ -66,6 +73,7 @@ func newZulip() *fakeZulip {
 		bodies:  map[int64]string{},
 		topics:  map[int64]string{},
 		dms:     map[int64][]int64{},
+		widgets: map[int64]string{},
 		uploads: map[string][]byte{},
 		posted:  make(chan struct{}, 256),
 
@@ -110,17 +118,89 @@ func (z *fakeZulip) SendDirectMessage(_ context.Context, userIDs []int64, conten
 	return z.next, nil
 }
 
+// SendMessageWidget records the widget payload alongside the body. A
+// server that refuses widgets is modelled with widgetErr, which is how
+// the graceful-degradation path is driven.
+func (z *fakeZulip) SendMessageWidget(ctx context.Context, streamID int64, topic, content, widget string) (int64, error) {
+	if err := z.widgetGate(widget); err != nil {
+		return 0, err
+	}
+	id, err := z.SendMessage(ctx, streamID, topic, content)
+	z.recordWidget(id, err, widget)
+	return id, err
+}
+
+func (z *fakeZulip) SendDirectMessageWidget(ctx context.Context, userIDs []int64, content, widget string) (int64, error) {
+	if err := z.widgetGate(widget); err != nil {
+		return 0, err
+	}
+	id, err := z.SendDirectMessage(ctx, userIDs, content)
+	z.recordWidget(id, err, widget)
+	return id, err
+}
+
+func (z *fakeZulip) widgetGate(widget string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if widget != "" && z.widgetErr != nil {
+		return z.widgetErr
+	}
+	return nil
+}
+
+func (z *fakeZulip) recordWidget(id int64, err error, widget string) {
+	if err != nil {
+		return
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.widgets[id] = widget
+}
+
+// widget returns the widget_content sent with a message, "" if none.
+func (z *fakeZulip) widget(id int64) string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.widgets[id]
+}
+
+// EditMessage mirrors the server on the one rule that shapes the
+// `!opts` design: a message carrying a widget REFUSES every content
+// edit ("Widgets cannot be edited.", measured on Zulip 12.2). Without
+// this the fake would happily accept an edit the real server rejects,
+// and the tests would prove nothing.
 func (z *fakeZulip) EditMessage(_ context.Context, id int64, content string) error {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	if z.editErr != nil {
 		return z.editErr
 	}
+	if z.widgets[id] != "" {
+		return &zulipproto.APIError{Status: 400, Msg: "Widgets cannot be edited.", Code: "BAD_REQUEST"}
+	}
 	if _, ok := z.bodies[id]; !ok {
 		return fmt.Errorf("no such message %d", id)
 	}
 	z.bodies[id] = content
 	z.signal()
+	return nil
+}
+
+// DeleteMessage removes a message the way Zulip does when the realm
+// allows it. deleteErr models a realm that does not (or a message past
+// message_content_delete_limit_seconds).
+func (z *fakeZulip) DeleteMessage(_ context.Context, id int64) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.deleteErr != nil {
+		return z.deleteErr
+	}
+	if _, ok := z.bodies[id]; !ok {
+		return &zulipproto.APIError{Status: 404, Msg: "Invalid message(s)", Code: "BAD_REQUEST"}
+	}
+	delete(z.bodies, id)
+	delete(z.widgets, id)
+	z.order = slices.DeleteFunc(z.order, func(x int64) bool { return x == id })
 	return nil
 }
 
