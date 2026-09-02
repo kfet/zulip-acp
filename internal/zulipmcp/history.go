@@ -180,9 +180,13 @@ func (t *Tools) history(key journal.Key, limit int, beforeID int64) (string, err
 	case limit > MaxLimit:
 		limit, clamped = MaxLimit, true
 	}
-	narrow := zulipproto.TopicNarrow(key.StreamID, key.Topic)
+	var narrow []zulipproto.NarrowTerm
 	if key.IsDM() {
+		// A DM is in no channel, so a channel narrow would match
+		// nothing there — silently.
 		narrow = zulipproto.DMNarrow(key.UserIDs)
+	} else {
+		narrow = zulipproto.TopicNarrow(key.StreamID, key.Topic)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t.cfg.Timeout)
 	defer cancel()

@@ -16,7 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved server-side from the connection token, output bounded per message
   and in total with a `before_id` anchor to page further back.
 - `zulipproto.Messages` with typed narrow terms (`TopicNarrow`, `DMNarrow`)
-  and exclusive `before_id` paging; `TopicMessages` is now a wrapper over it.
+  and exclusive `before_id` paging.
+
+### Removed
+
+- `zulipproto.TopicMessages`, superseded by `Messages` + `TopicNarrow`. It had
+  no production caller.
 
 ## [0.9.0] - 2026-09-02
 

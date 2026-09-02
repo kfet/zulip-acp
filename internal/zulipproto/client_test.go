@@ -217,13 +217,13 @@ func TestGetMessage(t *testing.T) {
 	}
 }
 
-func TestTopicMessages(t *testing.T) {
+func TestMessagesTopicNarrow(t *testing.T) {
 	ts := newServer(t, func(recordedReq) (int, string) {
 		return 200, okJSON(`"messages":[{"id":1,"content":"a"},{"id":2,"content":"b"}]`)
 	})
-	got, err := newClient(t, ts).TopicMessages(context.Background(), 4, "sess", 10)
+	got, err := newClient(t, ts).Messages(context.Background(), TopicNarrow(4, "sess"), 10, 0)
 	if err != nil {
-		t.Fatalf("TopicMessages: %v", err)
+		t.Fatalf("Messages: %v", err)
 	}
 	if len(got) != 2 || got[1].Content != "b" {
 		t.Fatalf("messages = %+v", got)
@@ -231,6 +231,11 @@ func TestTopicMessages(t *testing.T) {
 	q := ts.requests()[0].query
 	if q.Get("anchor") != "newest" || q.Get("num_before") != "10" || q.Get("num_after") != "0" || q.Get("apply_markdown") != "false" {
 		t.Fatalf("query = %v", q)
+	}
+	// include_anchor must not be sent with anchor=newest: excluding a
+	// synthetic anchor risks dropping the newest real message.
+	if q.Has("include_anchor") {
+		t.Fatalf("include_anchor sent with anchor=newest: %v", q)
 	}
 	var narrow []map[string]any
 	if err := json.Unmarshal([]byte(q.Get("narrow")), &narrow); err != nil {
@@ -550,8 +555,8 @@ func TestServerErrorsPropagate(t *testing.T) {
 	if _, err := c.GetMessage(ctx, 1); err == nil {
 		t.Fatal("GetMessage: want error")
 	}
-	if _, err := c.TopicMessages(ctx, 4, "t", 5); err == nil {
-		t.Fatal("TopicMessages: want error")
+	if _, err := c.Messages(ctx, TopicNarrow(4, "t"), 5, 0); err == nil {
+		t.Fatal("Messages: want error")
 	}
 	if _, err := c.Upload(ctx, "f", strings.NewReader("x")); err == nil {
 		t.Fatal("Upload: want error")
