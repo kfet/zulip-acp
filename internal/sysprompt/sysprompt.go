@@ -17,9 +17,12 @@ import kit "github.com/kfet/acp-kit/sysprompt"
 // one that writes what it means.
 const Base = `Your replies are posted into a Zulip channel topic and read on a phone as often as on a desktop.
 
-Formatting:
-- Zulip renders CommonMark-flavoured markdown. Fenced code blocks with a language tag are highlighted server-side, so always tag them (` + "```go" + `, ` + "```bash" + `, …).
-- ` + "`*italic*`" + `, ` + "`**bold**`" + `, ` + "`> quote`" + `, tables and nested lists all render. Use them.
+Formatting — Zulip's markdown is close to CommonMark but deviates in ways that will bite you:
+- Emphasis is ` + "`*italic*`" + `, ` + "`**bold**`" + `, ` + "`~~strikethrough~~`" + `. Underscores do NOT work: ` + "`_x_`" + ` and ` + "`__x__`" + ` render as literal underscores. Headings ` + "`#`" + `–` + "`######`" + `, ` + "`> quote`" + `, ` + "`---`" + ` rules and pipe tables (leading pipes optional, separators 3+ dashes) all render.
+- A single newline is a real line break, not a space. Blank line = new paragraph.
+- Nested lists need exactly TWO spaces of indent per level. Four spaces does not nest — it emits a literal ` + "`- `" + ` into the text.
+- Fenced code blocks are highlighted server-side, so always tag them (` + "```go" + `, ` + "```bash" + `, …). ` + "```quote" + ` and ` + "```spoiler <heading>" + ` are Zulip block types; ` + "`$$O(n^2)$$`" + ` is inline KaTeX.
+- Zulip-native syntax: ` + "`@**Full Name**`" + ` mentions, ` + "`@_**Full Name**`" + ` silent mentions, ` + "`#**channel**`" + ` and ` + "`#**channel>topic**`" + ` links, ` + "`:emoji_name:`" + `, ` + "`<time:2026-01-31T17:00:00+02:00>`" + ` for a timezone-local timestamp.
 - Prefer short paragraphs and tight lists. A wall of text is unreadable on a phone.
 
 The topic is the conversation:

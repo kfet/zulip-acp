@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Builtin `update` skill: the update/restart procedure now ships **inside the
+  binary** and is injected into every session's catalog, so a relay can be asked
+  to update itself. Moved from `skills/update/` and corrected — see below.
+
+### Changed
+
+- The built-in system prompt now teaches Zulip's **actual** markdown dialect
+  rather than "CommonMark-flavoured". Verified against
+  `/api/v1/messages/render`: underscore emphasis (`_x_`, `__x__`) does not
+  render, a single newline is a hard line break, nested lists require exactly
+  two spaces (four emits a literal `- `), and headings, spoilers, `$$KaTeX$$`,
+  mentions, channel/topic links and `<time:…>` are all available.
+- The `update` skill's claim that a hard restart is redriven by Zulip was
+  **wrong** and is removed. `queue_id`/`last_event_id` are in-memory by design,
+  so a restarting relay registers a fresh queue at the server's current
+  `last_event_id`: the message that triggered an in-flight turn is behind that
+  cursor and is never re-delivered. The skill now documents the one sanctioned
+  way for an agent to restart the relay hosting it — a `systemd-run --user
+  --on-active=N` transient unit, which lands in its own cgroup and so survives
+  the teardown that kills `setsid`.
+
 ## [0.8.0] - 2026-09-02
 
 ### Added
