@@ -317,19 +317,23 @@ journalctl --user -u zulip-acp -f
   debugging time: silent truncation, the `/register` narrow operand, and system
   bots posting into your topics.
 - [BACKLOG.md](BACKLOG.md) — what is deliberately not done yet, and why.
-- [skills/deploy/SKILL.md](skills/deploy/SKILL.md) and
-  [skills/update/SKILL.md](skills/update/SKILL.md) — the deployment and
-  update procedures. They are written as **agent skills** because the operator of
-  a relay fleet is usually an agent; they are ordinary markdown, so read them
-  like any other doc. `fir` finds them with one line of **global** config —
-  relative skill paths resolve against the working directory, so this discovers
-  `./skills/` in every project that has one:
+- [internal/skills/bundle/update/SKILL.md](internal/skills/bundle/update/SKILL.md)
+  — the update/restart procedure. It is **shipped in the binary**: every session
+  the relay spawns gets it in its skills catalog, so a relay can be asked to
+  update itself. Ordinary markdown, so read it like any other doc.
+- [skills/deploy/SKILL.md](skills/deploy/SKILL.md) — first-install layout. Not
+  embedded: you need it *before* there is a relay to ask. `fir` finds it with
+  one line of **global** config — relative skill paths resolve against the
+  working directory, so this discovers `./skills/` in every project that has
+  one:
 
   ```json
   // ~/.config/fir/settings.json
   { "skills": ["skills"] }
   ```
 
+  Add `internal/skills/bundle` to that list when working in this checkout, to
+  pick up the embedded skills from source rather than from the installed binary.
   A per-checkout `.fir/skills -> ../skills` symlink works too (fir follows and
   de-duplicates symlinked roots). `.fir/` itself is deliberately untracked:
   agent configuration is per-deployment, the repository only ships the content.
@@ -379,7 +383,8 @@ The relay **dials out** (long-polls `GET /api/v1/events`) — no inbound listene
 no port to open, no Tailscale Funnel. It therefore works against a tailnet-only
 Zulip.
 
-Full procedures: `skills/deploy/SKILL.md` and `skills/update/SKILL.md`.
+Full procedures: `skills/deploy/SKILL.md` and
+`internal/skills/bundle/update/SKILL.md`.
 
 ## License
 

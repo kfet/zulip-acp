@@ -32,6 +32,11 @@ func TestBuildSkillsCatalog(t *testing.T) {
 	if !strings.Contains(cat, "notes") {
 		t.Fatalf("builtin notes skill missing: %s", cat)
 	}
+	// The moved update skill only ships if its frontmatter kept
+	// `builtin: true`.
+	if !strings.Contains(cat, "update") {
+		t.Fatalf("builtin update skill missing: %s", cat)
+	}
 
 	// A host skill is merged in.
 	writeSkill(t, dir, "extra", "host one")
