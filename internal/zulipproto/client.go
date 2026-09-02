@@ -443,19 +443,58 @@ func (c *Client) reaction(ctx context.Context, method string, messageID int64, e
 	return err
 }
 
-// TopicMessages returns up to limit of the most recent messages in
-// (streamID, topic), oldest first, as raw markdown. Used to reconstruct
-// a turn and to find the tail message the relay owned before a crash.
-func (c *Client) TopicMessages(ctx context.Context, streamID int64, topic string, limit int) ([]Message, error) {
-	narrow := mustJSON([]any{
-		map[string]any{"operator": "channel", "operand": streamID},
-		map[string]any{"operator": "topic", "operand": topic},
-	})
+// NarrowTerm is one term of a GET /messages narrow.
+//
+// This is NOT the same shape as the /register narrow, which takes
+// [operator, operand] STRING pairs and rejects a numeric channel id
+// (see docs/zulip-protocol-reference.md). Here the operand is typed:
+// a channel operand is the numeric id, a dm operand is a list of user
+// ids. Keeping the two shapes in separate types is what stops one
+// being passed where the other is meant.
+type NarrowTerm struct {
+	Operator string `json:"operator"`
+	Operand  any    `json:"operand"`
+}
+
+// TopicNarrow narrows to one topic in one channel.
+func TopicNarrow(streamID int64, topic string) []NarrowTerm {
+	return []NarrowTerm{
+		{Operator: "channel", Operand: streamID},
+		{Operator: "topic", Operand: topic},
+	}
+}
+
+// DMNarrow narrows to the direct-message conversation between exactly
+// the given users.
+//
+// The operand is the full participant set INCLUDING the bot itself,
+// which is how journal.Key stores it; Zulip normalises the sender out
+// of the operand server-side, so passing it is correct and passing a
+// set that omits a participant would select a DIFFERENT conversation.
+func DMNarrow(userIDs []int64) []NarrowTerm {
+	ids := make([]int64, len(userIDs))
+	copy(ids, userIDs)
+	return []NarrowTerm{{Operator: "dm", Operand: ids}}
+}
+
+// Messages returns up to limit messages matching narrow, oldest first,
+// as raw markdown.
+//
+// beforeID pages backwards: 0 anchors at the newest message, and a
+// non-zero value anchors at that message id EXCLUSIVE, so feeding back
+// the oldest id of one page yields the page before it with no overlap
+// and no gap.
+func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, beforeID int64) ([]Message, error) {
+	anchor := "newest"
+	if beforeID > 0 {
+		anchor = strconv.FormatInt(beforeID, 10)
+	}
 	q := url.Values{
-		"anchor":         {"newest"},
+		"anchor":         {anchor},
+		"include_anchor": {"false"},
 		"num_before":     {strconv.Itoa(limit)},
 		"num_after":      {"0"},
-		"narrow":         {narrow},
+		"narrow":         {mustJSON(narrow)},
 		"apply_markdown": {"false"},
 	}
 	var resp struct {
@@ -465,6 +504,13 @@ func (c *Client) TopicMessages(ctx context.Context, streamID int64, topic string
 		return nil, err
 	}
 	return resp.Messages, nil
+}
+
+// TopicMessages returns up to limit of the most recent messages in
+// (streamID, topic), oldest first, as raw markdown. Used to reconstruct
+// a turn and to find the tail message the relay owned before a crash.
+func (c *Client) TopicMessages(ctx context.Context, streamID int64, topic string, limit int) ([]Message, error) {
+	return c.Messages(ctx, TopicNarrow(streamID, topic), limit, 0)
 }
 
 // Upload uploads a file in a single multipart round-trip and returns

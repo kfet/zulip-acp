@@ -332,11 +332,24 @@ func main() {
 	// the broker which optional capabilities that Controller has.
 	if cfg.RelayMCP {
 		tools.Register(mcpHost)
+		// The Zulip-specific half: `history` needs a journal.Key, not
+		// a broker token, so it resolves identity through ConvKey —
+		// the same server-side binding, one layer earlier.
+		zulipTools, err := zulipmcp.NewTools(zulipmcp.Config{
+			Client:  zc,
+			ConvKey: func(k string) (journal.Key, bool) { return h.ConvKey(k) },
+			Timeout: cfg.PromptTimeout(),
+			Logf:    log.Printf,
+		})
+		if err != nil {
+			log.Fatalf("relay-mcp history: %v", err)
+		}
+		zulipTools.Register(mcpHost)
 		if err := mcpHost.Listen(); err != nil {
 			log.Fatalf("relay-mcp listener: %v", err)
 		}
 		go schedules.Run(ctx)
-		log.Printf("zulip-acp: relay MCP loopback on %s — the agent can post and schedule into its own conversation", mcpHost.SocketPath())
+		log.Printf("zulip-acp: relay MCP loopback on %s — the agent can post, schedule and read history in its own conversation", mcpHost.SocketPath())
 	}
 
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{

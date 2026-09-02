@@ -141,6 +141,39 @@ func TestConvTokenSurvivesNew(t *testing.T) {
 	}
 }
 
+// TestConvKeyResolvesTheZulipConversation: the Zulip-specific loopback
+// tools (`history`) need the journal.Key, not the broker token, and
+// must refuse a session key the journal does not know.
+func TestConvKeyResolvesTheZulipConversation(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), nil)
+	conv := lh.engage(t, "loopback")
+
+	got, ok := lh.h.ConvKey(conv.ID)
+	if !ok || got.StreamID != 4 || got.Topic != "loopback" {
+		t.Fatalf("ConvKey(%q) = %+v, %v", conv.ID, got, ok)
+	}
+	if _, ok := lh.h.ConvKey("cdeadbeef"); ok {
+		t.Fatal("an unknown conv-id must be refused, not guessed")
+	}
+	if !lh.logged("unknown conversation") {
+		t.Fatal("the refusal was not logged")
+	}
+}
+
+// TestConvKeyResolvesADM: a DM key carries the participant set, which
+// is what the `dm` narrow is built from.
+func TestConvKeyResolvesADM(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), nil)
+	conv, err := lh.j.Ensure(journal.DM([]int64{7, botID}))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	got, ok := lh.h.ConvKey(conv.ID)
+	if !ok || !got.IsDM() || len(got.UserIDs) != 2 {
+		t.Fatalf("ConvKey(%q) = %+v, %v", conv.ID, got, ok)
+	}
+}
+
 // --- post ----------------------------------------------------------------
 
 func TestPostToChannelAndDM(t *testing.T) {

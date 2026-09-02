@@ -241,6 +241,64 @@ func TestTopicMessages(t *testing.T) {
 	}
 }
 
+// TestMessagesDMNarrow: a DM conversation is not in any channel, so it
+// needs the `dm` operator with the full participant set — otherwise the
+// history tool would simply not work in a direct message.
+func TestMessagesDMNarrow(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"messages":[{"id":5,"content":"hi"}]`)
+	})
+	got, err := newClient(t, ts).Messages(context.Background(), DMNarrow([]int64{4, 9}), 7, 0)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 5 {
+		t.Fatalf("messages = %+v", got)
+	}
+	q := ts.requests()[0].query
+	if q.Get("anchor") != "newest" || q.Get("num_before") != "7" || q.Get("apply_markdown") != "false" {
+		t.Fatalf("query = %v", q)
+	}
+	var narrow []map[string]any
+	if err := json.Unmarshal([]byte(q.Get("narrow")), &narrow); err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+	if len(narrow) != 1 || narrow[0]["operator"] != "dm" {
+		t.Fatalf("narrow = %+v", narrow)
+	}
+	ids, ok := narrow[0]["operand"].([]any)
+	if !ok || len(ids) != 2 || ids[0] != float64(4) || ids[1] != float64(9) {
+		t.Fatalf("operand = %#v", narrow[0]["operand"])
+	}
+}
+
+// TestDMNarrowCopiesItsInput: the operand must not alias the caller's
+// slice — journal.Key hands out its own UserIDs.
+func TestDMNarrowCopiesItsInput(t *testing.T) {
+	ids := []int64{4, 9}
+	n := DMNarrow(ids)
+	ids[0] = 99
+	if got := n[0].Operand.([]int64); got[0] != 4 {
+		t.Fatalf("operand aliased the caller's slice: %v", got)
+	}
+}
+
+// TestMessagesPagesBackwards: before_id anchors EXCLUSIVE, so feeding
+// back the oldest id of a page yields the page before it with neither
+// overlap nor gap.
+func TestMessagesPagesBackwards(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"messages":[]`)
+	})
+	if _, err := newClient(t, ts).Messages(context.Background(), TopicNarrow(4, "sess"), 3, 42); err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	q := ts.requests()[0].query
+	if q.Get("anchor") != "42" || q.Get("include_anchor") != "false" {
+		t.Fatalf("query = %v", q)
+	}
+}
+
 func TestUpload(t *testing.T) {
 	var gotBody string
 	ts := newServer(t, func(r recordedReq) (int, string) {

@@ -383,3 +383,76 @@ func TestDirectMessageWireShape(t *testing.T) {
 		t.Fatalf("channel message decoded as a DM: %s", cm.DisplayRecipient)
 	}
 }
+
+// TestDMNarrowReadsBackTheConversation is evidence for the `history`
+// loopback tool in a DIRECT MESSAGE, where a channel narrow cannot
+// work: a DM is in no channel, so `history` would silently return
+// nothing there without the `dm` operator.
+//
+// It also pins the operand shape the relay sends: the full participant
+// set as journal.Key stores it, INCLUDING the bot itself. If Zulip ever
+// stopped normalising the sender out of that operand, this is where it
+// would surface.
+func TestDMNarrowReadsBackTheConversation(t *testing.T) {
+	c, _ := liveClient(t)
+	ctx := context.Background()
+
+	me, err := c.Me(ctx)
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	body := "zulip-acp live dm-narrow probe " + topicFor(t)
+	id, err := c.SendDirectMessage(ctx, []int64{me.UserID}, body)
+	if err != nil {
+		t.Fatalf("send DM: %v", err)
+	}
+
+	msgs, err := c.Messages(ctx, zulipproto.DMNarrow([]int64{me.UserID}), 5, 0)
+	if err != nil {
+		t.Fatalf("dm narrow: %v", err)
+	}
+	found := false
+	for _, m := range msgs {
+		if m.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the dm narrow did not return the message just sent (%d of %d)", id, len(msgs))
+	}
+}
+
+// TestBeforeIDPagesBackwardsExclusively is evidence for `history`'s
+// paging contract: feeding the oldest id of one page back as the anchor
+// yields the page BEFORE it, with neither overlap nor gap. Zulip's
+// include_anchor=false is what makes that true.
+func TestBeforeIDPagesBackwardsExclusively(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+
+	var ids []int64
+	for i := range 3 {
+		id, err := c.SendMessage(ctx, streamID, topic, fmt.Sprintf("page probe %d", i))
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		ids = append(ids, id)
+	}
+
+	page, err := c.Messages(ctx, zulipproto.TopicNarrow(streamID, topic), 1, 0)
+	if err != nil {
+		t.Fatalf("newest page: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != ids[2] {
+		t.Fatalf("newest page = %+v, want just %d", page, ids[2])
+	}
+
+	prev, err := c.Messages(ctx, zulipproto.TopicNarrow(streamID, topic), 2, page[0].ID)
+	if err != nil {
+		t.Fatalf("previous page: %v", err)
+	}
+	if len(prev) != 2 || prev[0].ID != ids[0] || prev[1].ID != ids[1] {
+		t.Fatalf("previous page = %+v, want %v oldest first and no overlap", prev, ids[:2])
+	}
+}
