@@ -860,6 +860,19 @@ message cancels the turn in flight, `FireSchedule` waits for the conversation
 to go idle (`awaitConvIdle`, on the existing inflight condition variable) and
 then runs as an ordinary addressed turn.
 
+## Upgrading without dropping a turn
+
+`systemctl --user reload zulip-acp` (SIGHUP) stops intake, drains the in-flight
+turns, and `syscall.Exec`s the on-disk binary in place, handing the live Zulip
+event queue forward in the environment. The PID never moves and no message is
+lost, because the queue buffers server-side while we are not polling.
+
+**This is deliberately NOT poe-acp's master/worker supervisor.** That exists to
+hold a bound listen socket across worker generations; a long-poll client has no
+socket, so the supervisor would hold nothing. The full argument, the wire
+contract and the live evidence are in
+[graceful-reload.md](graceful-reload.md).
+
 ## Layout
 
 ```
@@ -874,6 +887,9 @@ internal/handler/opts.go
                         `!opts`: the one self-updating options panel per conversation
 internal/journal/       conv key (channel topic | DM user set) → conv-id, tail and
                         options-panel message ids
+internal/reload/        graceful reload: drain in-flight turns, then re-exec in
+                        place with the event-queue cursor in the environment
+                        (see docs/graceful-reload.md)
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown mood/plan header
 internal/sysprompt/     built-in Zulip formatting block

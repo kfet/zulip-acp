@@ -27,9 +27,18 @@ It is the third relay in a family: `poe-acp` (Poe server bot, HTTP + SSE),
 `slack-acp` (Slack, Socket Mode), `zulip-acp` (here). All ACP-side machinery
 is shared in `github.com/kfet/acp-kit`.
 
-See [docs/zulip-acp-design.md](docs/zulip-acp-design.md) for the design and
+See [docs/zulip-acp-design.md](docs/zulip-acp-design.md) for the design,
 [docs/zulip-protocol-reference.md](docs/zulip-protocol-reference.md) for the
-wire details.
+wire details, and [docs/graceful-reload.md](docs/graceful-reload.md) for how
+`systemctl --user reload` upgrades the relay without dropping a turn.
+
+**Do not port poe-acp's master/worker supervisor here.** It exists to hold a
+bound listen socket across worker generations; zulip-acp has no socket, and
+the Zulip event queue already buffers server-side while we are not polling.
+The right shape here is drain-then-`syscall.Exec` in place, which is what
+`internal/reload` is. Reaching for control pipes, parent-death pipes, ready
+signalling or drain ordering means the model has been copied without its
+reason.
 
 ## How to work here
 
@@ -50,6 +59,7 @@ internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
                         opts.go = the `!opts` options panel
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
+internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status header renderer
 internal/sysprompt/     built-in Zulip-formatting system prompt

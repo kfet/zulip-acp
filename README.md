@@ -338,30 +338,53 @@ Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 
 ## Running as a service
 
-```ini
-# ~/.config/systemd/user/zulip-acp.service
-[Unit]
-Description=zulip-acp
-After=network-online.target
-
-[Service]
-EnvironmentFile=%h/.config/zulip-acp/env
-ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
 ```bash
+cp packaging/systemd/zulip-acp.service ~/.config/systemd/user/
 chmod 600 ~/.config/zulip-acp/env      # holds ZULIP_API_KEY=…
+systemctl --user daemon-reload
 systemctl --user enable --now zulip-acp
+loginctl enable-linger $USER           # survive logout
 journalctl --user -u zulip-acp -f
 ```
 
+### Graceful reload
+
+```bash
+systemctl --user reload zulip-acp      # binary or config change
+```
+
+SIGHUP makes the relay stop polling the Zulip event queue **without deleting
+it**, wait for every in-flight agent turn to finish posting, and then re-exec
+the on-disk binary **in place, same PID**. The queue buffers server-side across
+the window and the new image resumes it at the same `last_event_id`, so nothing
+posted during the reload is lost and nothing is delivered twice.
+
+That matters because a hard restart is silently lossy: the event-queue cursor is
+in-memory by design, so a cold start registers a fresh queue at the server's
+*current* `last_event_id` and never sees anything posted before that instant —
+including the message that triggered the turn the restart just killed.
+
+It also means an agent hosted by this relay can run
+`systemctl --user reload zulip-acp` **inline, mid-turn**, and still finish its
+reply: `ExecReload` is a bare `kill -HUP` that returns immediately, and the
+relay waits for that very turn to drain before it execs.
+
+A hard `restart` is still required for three things: a change to the unit file,
+a service that is stopped or dead, and the **first cutover** onto a build that
+has reload support (the older binary has no SIGHUP handler and would just die).
+
+Two knobs bound the drains: `-reload-drain-deadline` (30m, a leak backstop —
+nothing external is waiting, and `prompt_timeout` is what bounds a turn as
+work) and `-drain-deadline` (30s, a service stop — keep it under
+`TimeoutStopSec`). Details in
+[docs/graceful-reload.md](docs/graceful-reload.md).
+
 ## Documentation
 
+- [docs/graceful-reload.md](docs/graceful-reload.md) — how
+  `systemctl --user reload` drains and re-execs in place, why the Zulip event
+  queue makes a master/worker supervisor unnecessary here (unlike `poe-acp`),
+  and the failure modes.
 - [docs/zulip-acp-design.md](docs/zulip-acp-design.md) — architecture, the three
   decisions that matter, and what was deliberately *not* ported from `slack-acp`.
 - [docs/zulip-protocol-reference.md](docs/zulip-protocol-reference.md) — the
@@ -370,7 +393,7 @@ journalctl --user -u zulip-acp -f
   bots posting into your topics.
 - [BACKLOG.md](BACKLOG.md) — what is deliberately not done yet, and why.
 - [internal/skills/bundle/update/SKILL.md](internal/skills/bundle/update/SKILL.md)
-  — the update/restart procedure. It is **shipped in the binary**: every session
+  — the update/reload procedure. It is **shipped in the binary**: every session
   the relay spawns gets it in its skills catalog, so a relay can be asked to
   update itself. Ordinary markdown, so read it like any other doc.
 - [skills/deploy/SKILL.md](skills/deploy/SKILL.md) — first-install layout. Not
