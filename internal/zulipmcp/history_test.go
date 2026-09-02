@@ -233,7 +233,7 @@ func TestRenderEmptyPage(t *testing.T) {
 	}
 }
 
-// TestRenderIsOldestFirstAndNamesThePagingAnchor: the agent reads a
+// TestRenderIsOldestFirst: the agent reads a
 // conversation in the order it happened, and is told how to go further
 // back without having to guess an id.
 func TestRenderIsOldestFirst(t *testing.T) {

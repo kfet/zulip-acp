@@ -484,18 +484,22 @@ func DMNarrow(userIDs []int64) []NarrowTerm {
 // non-zero value anchors at that message id EXCLUSIVE, so feeding back
 // the oldest id of one page yields the page before it with no overlap
 // and no gap.
+//
+// include_anchor is sent ONLY when paging. With anchor=newest the
+// anchor is a synthetic id above every real message, and asking the
+// server to exclude it is at best a no-op and at worst drops the newest
+// message — which is the one message a history read must never lose.
 func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, beforeID int64) ([]Message, error) {
-	anchor := "newest"
-	if beforeID > 0 {
-		anchor = strconv.FormatInt(beforeID, 10)
-	}
 	q := url.Values{
-		"anchor":         {anchor},
-		"include_anchor": {"false"},
+		"anchor":         {"newest"},
 		"num_before":     {strconv.Itoa(limit)},
 		"num_after":      {"0"},
 		"narrow":         {mustJSON(narrow)},
 		"apply_markdown": {"false"},
+	}
+	if beforeID > 0 {
+		q.Set("anchor", strconv.FormatInt(beforeID, 10))
+		q.Set("include_anchor", "false")
 	}
 	var resp struct {
 		Messages []Message `json:"messages"`
@@ -504,13 +508,6 @@ func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, b
 		return nil, err
 	}
 	return resp.Messages, nil
-}
-
-// TopicMessages returns up to limit of the most recent messages in
-// (streamID, topic), oldest first, as raw markdown. Used to reconstruct
-// a turn and to find the tail message the relay owned before a crash.
-func (c *Client) TopicMessages(ctx context.Context, streamID int64, topic string, limit int) ([]Message, error) {
-	return c.Messages(ctx, TopicNarrow(streamID, topic), limit, 0)
 }
 
 // Upload uploads a file in a single multipart round-trip and returns
