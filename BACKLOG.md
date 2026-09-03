@@ -183,8 +183,19 @@ Things deliberately not done in v1, with the reason.
   Not decided here: repository visibility is not a change to make on someone's
   behalf.
 
-- **`poe-acp` and `slack-acp` should migrate to this repo's deploy-key scheme
-  for their Homebrew tap push.** Both still authenticate to `kfet/homebrew-ai`
+- > **Done.** Both migrated on 2026-08-31. Verified against the *remotes* on
+  > 2026-09-03: `poe-acp` and `slack-acp` both carry
+  > `brews[].repository.git.private_key` reading `HOMEBREW_TAP_SSH_KEY`, no
+  > repo still holds a `HOMEBREW_TAP_TOKEN` secret, and `kfet/homebrew-ai` has
+  > five separate write deploy keys — `zulip-acp`, `poe-acp`, `slack-acp`,
+  > `fir`, `airan` — so the own-key-per-repo rule held.
+  >
+  > **Check the remote, not a local clone.** This entry was first re-read from
+  > a stale `~/src/slack-acp` (HEAD at v0.4.1, repo shipping v0.4.3) and
+  > wrongly reported as still open.
+
+  **~~`poe-acp` and `slack-acp` should migrate to this repo's deploy-key scheme
+  for their Homebrew tap push.~~** Both authenticated to `kfet/homebrew-ai`
   with a `HOMEBREW_TAP_TOKEN` personal access token. That is worse on three
   counts, and the third one is a scheduled outage:
   - **Unreadable.** A GitHub secret is write-only, so nobody can inspect what
