@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `BACKLOG.md`: recorded why `poe-acp`'s master/worker supervisor is **not**
+  being promoted to `acp-kit` to give this relay a zero-latency upgrade. The
+  blocker is not the supervisor (though `Config.Addr` and the inherited
+  listener fd, which doubles as the worker discriminant, are less generic than
+  its package doc claims) — it is that two workers cannot share a conversation
+  without breaking the follow-up-supersedes guarantee in `cancelInflight`.
+  Promotion needs a measured drain tail, not symmetry with poe-acp.
+
 ## [0.12.0] - 2026-09-02
 
 ### Added

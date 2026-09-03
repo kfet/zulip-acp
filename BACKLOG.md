@@ -35,6 +35,42 @@ Things deliberately not done in v1, with the reason.
   master/worker supervisor and drain-then-exec cannot replace it. See
   `docs/graceful-reload.md` for why the two relays diverge here.
 
+- **The reverse promotion — `poe-acp/internal/supervisor` → `acp-kit`, to give
+  this relay a zero-latency upgrade — is blocked on conversation concurrency,
+  not on the supervisor.** `reload` drains before it execs, so a reload issued
+  while some *other* topic is mid-turn stops polling until that turn ends
+  (bounded by `-reload-drain-deadline`, default 30m). A master/worker swap
+  would remove that wait entirely: W2 takes the cursor and polls immediately
+  while W1 finishes its tails. Two things stand in the way, and the second is
+  the real one.
+
+  First, the supervisor is less generic than its package doc claims. It says it
+  is "transport-generic and knows only about a `net.Listener`", but
+  `Config.Addr` is required, `supervisorListen` calls `net.Listen("tcp", addr)`
+  unconditionally, and the inherited listener fd **is** the worker discriminant
+  (`POE_ACP_WORKER_FD` present ⇒ I am a worker). A relay with no listener at all
+  needs that contract re-cut — in a package currently running poe-acp in
+  production.
+
+  Second, and decisively: **two workers cannot share a conversation.** This
+  relay guarantees that a follow-up supersedes whatever is still running in the
+  same topic (`cancelInflight`, `internal/handler/handler.go`). Under a swap W1
+  must stop polling — one queue, one poller — so every new message *including a
+  follow-up in a topic W1 is still draining* lands on W2, which can neither see
+  nor cancel W1's in-flight turn. Two agent processes would then own one conv
+  directory and stream edits into one Zulip topic. poe-acp is immune because its
+  unit of work is an HTTP stream that its client redrives; a chat topic is
+  stateful, shared, and visibly wrong when two workers write it. Closing that
+  gap needs cross-process cancellation plus per-conversation locking, which is
+  the expensive part — the fork/signal choreography is the part that already
+  exists.
+
+  Do not promote on symmetry with poe-acp. The trigger is a *measured* drain
+  tail that hurts; until then the cheap mitigation is a shorter
+  `-reload-drain-deadline`, and the common case — the agent reloading the relay
+  that hosts it — drains in seconds because the only in-flight turn is the one
+  that just finished replying.
+
 - **The `sink` + streaming layers are being written for the third time.**
   `poe-acp`, `slack-acp` and now `zulip-acp` each carry a near-identical
   `streamingSink` (render an `acp.SessionNotification` into surface text,
