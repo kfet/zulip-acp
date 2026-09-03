@@ -57,6 +57,18 @@ type Config struct {
 	// never answers anywhere else.
 	Channels []string `json:"channels,omitempty"`
 
+	// AmbientChannels lists channels the relay engages WITHOUT an
+	// @-mention: in these, every message opens or continues the
+	// topic's conversation, exactly as a DM does. Elsewhere a new
+	// topic must @-mention the bot to summon it (the mention is the
+	// membership record). Entries are names or ids, resolved like
+	// Channels, and must also be served (via `channels` or "*").
+	//
+	// Same exposure as DMs: anyone who can post in an ambient channel
+	// can summon an agent with a shell, no mention required.
+	// allowed_user_ids still gates it.
+	AmbientChannels []string `json:"ambient_channels,omitempty"`
+
 	// DMs enables direct-message conversations: 1:1 and group DMs with
 	// the bot. Default FALSE — serving DMs is an explicit decision.
 	//
@@ -211,6 +223,11 @@ func (c *Config) Validate() error {
 	for _, ch := range c.Channels {
 		if strings.TrimSpace(ch) == "" {
 			return fmt.Errorf("channels must not contain empty entries")
+		}
+	}
+	for _, ch := range c.AmbientChannels {
+		if strings.TrimSpace(ch) == "" {
+			return fmt.Errorf("ambient_channels must not contain empty entries")
 		}
 	}
 	// A splitter built from these markers must still be constructible;
@@ -371,6 +388,40 @@ func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]strin
 		s, ok := byName[want]
 		if !ok {
 			return nil, fmt.Errorf("channel %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", want)
+		}
+		out[s.StreamID] = s.Name
+	}
+	return out, nil
+}
+
+// ResolveAmbient maps the configured ambient_channels names/ids onto
+// Zulip channel ids, using the same rules as ResolveChannels. Unlike
+// ResolveChannels an empty list is fine — it simply yields an empty
+// set, meaning "no ambient channels, mention-gate everywhere".
+func (c *Config) ResolveAmbient(available []zulipproto.Stream) (map[int64]string, error) {
+	if len(c.AmbientChannels) == 0 {
+		return map[int64]string{}, nil
+	}
+	byName := make(map[string]zulipproto.Stream, len(available))
+	byID := make(map[int64]zulipproto.Stream, len(available))
+	for _, s := range available {
+		byName[s.Name] = s
+		byID[s.StreamID] = s
+	}
+	out := make(map[int64]string, len(c.AmbientChannels))
+	for _, want := range c.AmbientChannels {
+		want = strings.TrimSpace(want)
+		if id, err := strconv.ParseInt(want, 10, 64); err == nil {
+			s, ok := byID[id]
+			if !ok {
+				return nil, fmt.Errorf("ambient_channels id %d not visible to the bot — subscribe it to the channel", id)
+			}
+			out[s.StreamID] = s.Name
+			continue
+		}
+		s, ok := byName[want]
+		if !ok {
+			return nil, fmt.Errorf("ambient_channels %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", want)
 		}
 		out[s.StreamID] = s.Name
 	}

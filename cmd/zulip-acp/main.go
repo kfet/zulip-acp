@@ -216,8 +216,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	ambient, err := cfg.ResolveAmbient(streams)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	follow := cfg.FollowsSubscriptions()
-	served := channels.New(channels.Config{Explicit: explicit, Follow: follow, Logf: log.Printf})
+	served := channels.New(channels.Config{Explicit: explicit, Ambient: ambient, Follow: follow, Logf: log.Printf})
 	if follow {
 		// The set itself is seeded by the OnRegister hook below, which
 		// fires on the first registration too — one code path for the
@@ -234,6 +238,14 @@ func main() {
 	}
 	if cfg.DMs {
 		log.Printf("zulip-acp: serving direct messages (every DM is addressed to the bot, so mention-gating is off)")
+	}
+	if len(ambient) > 0 {
+		albls := make([]string, 0, len(ambient))
+		for id, name := range ambient {
+			albls = append(albls, fmt.Sprintf("#%s (%d)", name, id))
+		}
+		sort.Strings(albls)
+		log.Printf("zulip-acp: ambient channels (engage with no @-mention, like a DM): %s", strings.Join(albls, ", "))
 	}
 	// Narrowing the event queue is an optimisation, not the allowlist:
 	// a /register narrow cannot express a union of channels, so with

@@ -951,6 +951,35 @@ func TestFollowedChannelSetGatesAtRuntime(t *testing.T) {
 	}
 }
 
+// TestAmbientChannelEngagesWithoutMention: in an ambient channel the
+// opening message of a fresh topic summons the relay with no
+// @-mention, exactly like a DM. The control case (same message, a
+// non-ambient channel) stays silent.
+func TestAmbientChannelEngagesWithoutMention(t *testing.T) {
+	// Ambient: channel 4 engages on a bare message.
+	amb := newHarness(t, newAgent("ok"), func(c *Config) {
+		c.Channels = channels.New(channels.Config{
+			Explicit: map[int64]string{4: "ask-fir"},
+			Ambient:  map[int64]string{4: "ask-fir"},
+		})
+	})
+	amb.deliver(t, "fresh topic", "hey") // no mention, never-seen topic
+	if amb.z.count() == 0 {
+		t.Fatal("ambient channel stayed silent on a bare opening message")
+	}
+
+	// Control: default harness (channel 4 not ambient) drops the same
+	// bare opening message.
+	ctrl := newHarness(t, newAgent("ok"), nil)
+	ctrl.h.Handle(context.Background(), channelEvent(humanID, "fresh topic", "hey"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = ctrl.h.WaitIdle(ctx)
+	if ctrl.z.count() != 0 {
+		t.Fatal("non-ambient channel answered a bare message with no mention")
+	}
+}
+
 func TestSystemPromptIsInlinedOnce(t *testing.T) {
 	hh := newHarness(t, newAgent("ok"), nil)
 	hh.s.pending = "SYSTEM RULES"
