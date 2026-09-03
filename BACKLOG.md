@@ -155,7 +155,14 @@ Things deliberately not done in v1, with the reason.
 
 ## Operational
 
-- **`brew install kfet/ai/zulip-acp` will 404 while this repo is private.** The
+- > **Resolved.** `kfet/zulip-acp` is now **public**, so the first option below
+  > was taken and `brew install kfet/ai/zulip-acp` works. Re-verified on
+  > 2026-09-03: an unauthenticated fetch of
+  > `…/download/v0.12.1/zulip-acp-darwin-arm64` returns **HTTP 200**, and the
+  > tap formula on `kfet/homebrew-ai` is at `0.12.1` with sha256s for all five
+  > targets. The entry is kept for the reasoning, not as an open question.
+
+  **~~`brew install kfet/ai/zulip-acp` will 404 while this repo is private.~~** The
   tap push now works (v0.1.1's formula is live on `kfet/homebrew-ai`, which is
   public, with sha256s matching the published assets), but the `url` lines it
   contains point at release assets in `kfet/zulip-acp`, and **release-asset
