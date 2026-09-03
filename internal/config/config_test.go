@@ -286,6 +286,36 @@ func TestPathDefaults(t *testing.T) {
 	}
 }
 
+// TestRepostOnClose pins the default-true knob: unset means on, and
+// an explicit false is honoured — the escape hatch for a realm where
+// the bot may not delete its own messages.
+func TestRepostOnClose(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"unset defaults on", `{}`, true},
+		{"explicit true", `{"repost_on_close":true}`, true},
+		{"explicit false", `{"repost_on_close":false}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetRepostOnClose(); got != c.want {
+				t.Fatalf("GetRepostOnClose() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestAckEmoji pins the three-state field: unset means the default,
 // an explicit value is honoured, and an explicit "" disables the
 // acknowledgement entirely.

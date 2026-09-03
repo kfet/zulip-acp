@@ -193,6 +193,41 @@ Thought chunks are **force-hidden** on the ambient path regardless of
 `hide_thinking`: a thought that reached the surface before the verdict could not
 be retracted.
 
+### The end-of-turn repost (`repost_on_close`)
+
+Zulip generates a mobile push notification when a message is **created**, and
+never when one is edited. Streaming is edits, so every push carried the eager
+`Thinking...` placeholder and no phone ever saw an answer.
+
+So when the turn finishes — after `split.Close`, which is what folds in the
+outbox attachment links and any `(stopped: …)` note — `rollover.Splitter.Repost`
+re-posts the chain as **new** messages and deletes the originals. The web
+experience is untouched: the placeholder and its in-place edits are exactly as
+before, right up to the swap.
+
+Three decisions worth keeping:
+
+- **The whole chain is recreated, not just the first message.** Deleting only
+  the first would move it below its own continuations. The cost, stated
+  plainly: an N-message turn fires N notifications instead of one. N is 1 for
+  almost every turn.
+- **Post before delete, always.** A failure anywhere leaves the fully-edited
+  original chain in place, so output can never be lost; the worst case is a
+  visible duplicate. `Repost` is a no-op unless `Start` actually seeded a
+  placeholder — a chain whose first message was created carrying real text
+  already notified correctly.
+- **A refused delete trips a process-wide circuit breaker.** Delete and post
+  ride the same permission surface: if the realm forbids the bot deleting its
+  own messages (`delete_own_message_policy`) or the delete window has closed,
+  every turn would post a copy and fail to retract the original — permanently
+  doubled output in every topic, which is worse than the bug being fixed. The
+  first `rollover.ErrRetract` sets `Handler.repostBroken`, logs once, and the
+  relay degrades to the pre-repost behaviour for the life of the process. The
+  breaker lives on the Handler, not the Splitter, because a Splitter is
+  per-turn and would relearn the lesson forever.
+
+`"repost_on_close": false` turns the whole thing off without a rollback.
+
 Gating, in order:
 
 1. Never act on our own message. First, before any allowlist, so a widened

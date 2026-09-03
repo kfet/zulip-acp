@@ -40,10 +40,14 @@ type fakeZulip struct {
 	topics map[int64]string
 	// dms records the recipient set of every message sent as a DM,
 	// keyed by message id. A channel message never appears here.
-	dms      map[int64][]int64
-	order    []int64
-	uploads  map[string][]byte
-	sendErr  error
+	dms     map[int64][]int64
+	order   []int64
+	uploads map[string][]byte
+	sendErr error
+	// sendHook, when set, runs before every send and can fail it. It
+	// exists to fail exactly ONE post — e.g. the end-of-turn re-post,
+	// which happens after the placeholder has already gone up.
+	sendHook func(content string) error
 	editErr  error
 	getErr   error
 	uploadEr error
@@ -81,6 +85,17 @@ func newZulip() *fakeZulip {
 	}
 }
 
+// gate decides whether a send succeeds. Caller holds z.mu.
+func (z *fakeZulip) gate(content string) error {
+	if z.sendErr != nil {
+		return z.sendErr
+	}
+	if z.sendHook != nil {
+		return z.sendHook(content)
+	}
+	return nil
+}
+
 func (z *fakeZulip) signal() {
 	select {
 	case z.posted <- struct{}{}:
@@ -91,8 +106,8 @@ func (z *fakeZulip) signal() {
 func (z *fakeZulip) SendMessage(_ context.Context, _ int64, topic, content string) (int64, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	if z.sendErr != nil {
-		return 0, z.sendErr
+	if err := z.gate(content); err != nil {
+		return 0, err
 	}
 	z.next++
 	z.bodies[z.next] = content
@@ -107,8 +122,8 @@ func (z *fakeZulip) SendMessage(_ context.Context, _ int64, topic, content strin
 func (z *fakeZulip) SendDirectMessage(_ context.Context, userIDs []int64, content string) (int64, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	if z.sendErr != nil {
-		return 0, z.sendErr
+	if err := z.gate(content); err != nil {
+		return 0, err
 	}
 	z.next++
 	z.bodies[z.next] = content
@@ -270,6 +285,23 @@ func (z *fakeZulip) body(id int64) string {
 	defer z.mu.Unlock()
 	return z.bodies[id]
 }
+
+// lastID and lastBody address the NEWEST surviving message.
+//
+// Tests must use them rather than a hard-coded id wherever they look at
+// a finished turn: the relay re-posts a finished streamed chain as new
+// messages and deletes the originals (see Handler.repostForNotify), so
+// the id an answer streamed into is not the id it ends up in.
+func (z *fakeZulip) lastID() int64 {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if len(z.order) == 0 {
+		return 0
+	}
+	return z.order[len(z.order)-1]
+}
+
+func (z *fakeZulip) lastBody() string { return z.body(z.lastID()) }
 
 func (z *fakeZulip) count() int {
 	z.mu.Lock()
@@ -516,6 +548,7 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 		Channels:       channels.New(channels.Config{Explicit: map[int64]string{4: "fleet"}}),
 		EditInterval:   time.Millisecond,
 		SilentSentinel: "<<SILENT>>",
+		RepostOnClose:  true,
 		Logf: func(format string, args ...any) {
 			hh.logMu.Lock()
 			hh.logs = append(hh.logs, fmt.Sprintf(format, args...))
@@ -547,6 +580,20 @@ func (hh *harness) deliverAs(t *testing.T, sender int64, topic, content string) 
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("turn did not finish: %v", err)
 	}
+}
+
+// loggedCount counts the log lines containing sub. Used where "logged
+// exactly once" is the property under test.
+func (hh *harness) loggedCount(sub string) int {
+	hh.logMu.Lock()
+	defer hh.logMu.Unlock()
+	n := 0
+	for _, l := range hh.logs {
+		if strings.Contains(l, sub) {
+			n++
+		}
+	}
+	return n
 }
 
 func (hh *harness) logged(sub string) bool {
@@ -706,7 +753,7 @@ func TestAddressedTurnStreamsAndAnswers(t *testing.T) {
 	if hh.z.count() != 1 {
 		t.Fatalf("expected exactly one message, got %d", hh.z.count())
 	}
-	body := hh.z.body(1)
+	body := hh.z.lastBody()
 	if !strings.HasSuffix(body, "Hello, world.") {
 		t.Fatalf("body = %q", body)
 	}
@@ -895,7 +942,7 @@ func TestAmbientAnswerIsPostedInOneMessage(t *testing.T) {
 	if hh.z.count() != 2 {
 		t.Fatalf("expected a second message, got %d", hh.z.count())
 	}
-	body := hh.z.body(2)
+	body := hh.z.lastBody()
 	if !strings.Contains(body, "a real answer") {
 		t.Fatalf("body = %q", body)
 	}
@@ -1032,7 +1079,7 @@ func TestStopReasonIsSurfaced(t *testing.T) {
 	agent.stop = acp.StopReasonMaxTokens
 	hh := newHarness(t, agent, nil)
 	hh.deliver(t, "t", mention("hi"))
-	if got := hh.z.body(1); !strings.Contains(got, "stopped: max_tokens") {
+	if got := hh.z.lastBody(); !strings.Contains(got, "stopped: max_tokens") {
 		t.Fatalf("body = %q", got)
 	}
 }
@@ -1302,7 +1349,7 @@ func TestOutboxUploads(t *testing.T) {
 
 	hh.deliver(t, "files", "and send it over")
 
-	body := hh.z.body(2)
+	body := hh.z.lastBody()
 	if !strings.Contains(body, "**Attachments:**") ||
 		!strings.Contains(body, "[report.log](/user_uploads/2/ab/report.log)") ||
 		!strings.Contains(body, "[patch.diff](/user_uploads/2/ab/patch.diff)") {
@@ -2014,10 +2061,10 @@ func TestAmbientPlaceholderGoesUpBeforeTheTurnEnds(t *testing.T) {
 			t.Fatal("no placeholder posted while the ambient turn was still running")
 		}
 	}
-	if body := hh.z.body(2); !strings.Contains(body, "Thinking") {
+	if body := hh.z.lastBody(); !strings.Contains(body, "Thinking") {
 		t.Fatalf("placeholder body = %q", body)
 	}
-	if tails := hh.j.OpenTails(); len(tails) != 1 || tails[0].TailID != 2 {
+	if tails := hh.j.OpenTails(); len(tails) != 1 || tails[0].TailID != hh.z.lastID() {
 		t.Fatalf("tail not recorded for the early placeholder: %+v", tails)
 	}
 
@@ -2027,11 +2074,14 @@ func TestAmbientPlaceholderGoesUpBeforeTheTurnEnds(t *testing.T) {
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("WaitIdle: %v", err)
 	}
-	if body := hh.z.body(2); !strings.Contains(body, "working on it") {
-		t.Fatalf("answer not delivered into the placeholder: %q", body)
+	if body := hh.z.lastBody(); !strings.Contains(body, "working on it") {
+		t.Fatalf("answer not delivered: %q", body)
 	}
+	// Two messages survive — one per turn. The placeholder was edited
+	// in place all the way to the end and then swapped for a fresh
+	// copy of itself; it never grew a sibling.
 	if hh.z.count() != 2 {
-		t.Fatalf("answer landed in a new message instead of the placeholder: %v", hh.z.stored())
+		t.Fatalf("answer landed in an extra message: %v", hh.z.stored())
 	}
 }
 
@@ -2214,5 +2264,120 @@ func TestReactionEventsAreIgnored(t *testing.T) {
 	}
 	if hh.z.count() != before {
 		t.Fatalf("a reaction event started a turn: %v", hh.z.stored())
+	}
+}
+
+// --- end-of-turn repost --------------------------------------------------
+
+// TestFinishedTurnIsRepostedSoTheNotificationCarriesTheAnswer is the
+// whole point: Zulip notifies on message CREATION only, so the eager
+// "Thinking..." placeholder is what every phone would show. The
+// finished answer therefore goes up as a NEW message and the
+// placeholder-seeded original is deleted.
+func TestFinishedTurnIsRepostedSoTheNotificationCarriesTheAnswer(t *testing.T) {
+	hh := newHarness(t, newAgent("Hello, ", "world."), nil)
+	hh.deliver(t, "t", mention("say hello"))
+
+	if hh.z.count() != 1 {
+		t.Fatalf("expected exactly one surviving message: %v", hh.z.stored())
+	}
+	if body := hh.z.body(1); body != "" {
+		t.Fatalf("the streamed original was not deleted: %q", body)
+	}
+	final := hh.z.lastID()
+	if final == 1 {
+		t.Fatal("the answer is still in the message the placeholder created")
+	}
+	if body := hh.z.lastBody(); !strings.HasSuffix(body, "Hello, world.") {
+		t.Fatalf("re-posted body = %q", body)
+	}
+	// The tail was re-pointed at the new id before being cleared, so a
+	// crash inside that window annotates a message that still exists.
+	if tails := hh.j.OpenTails(); len(tails) != 0 {
+		t.Fatalf("tail not cleared: %+v", tails)
+	}
+}
+
+// TestRepostCanBeTurnedOff: with repost_on_close false the relay
+// behaves exactly as it did before — one message, edited in place.
+func TestRepostCanBeTurnedOff(t *testing.T) {
+	hh := newHarness(t, newAgent("answer"), func(c *Config) { c.RepostOnClose = false })
+	hh.deliver(t, "t", mention("hi"))
+	if hh.z.count() != 1 || hh.z.lastID() != 1 {
+		t.Fatalf("message was re-posted anyway: %v", hh.z.stored())
+	}
+	if !strings.Contains(hh.z.body(1), "answer") {
+		t.Fatalf("body = %q", hh.z.body(1))
+	}
+}
+
+// TestARefusedDeleteDisablesRepostingForTheProcess is the circuit
+// breaker. A realm that forbids the bot deleting its own messages
+// would otherwise get a doubled copy of EVERY turn, forever — worse
+// than the notification bug being fixed. The first refusal disables
+// reposting, logs once, and the relay degrades to editing in place.
+func TestARefusedDeleteDisablesRepostingForTheProcess(t *testing.T) {
+	agent := newAgent("first answer")
+	hh := newHarness(t, agent, nil)
+	hh.z.mu.Lock()
+	hh.z.deleteErr = errors.New("delete_own_message_policy")
+	hh.z.mu.Unlock()
+
+	hh.deliver(t, "t", mention("hi"))
+	// This one turn is duplicated: the copy went up before the delete
+	// was refused, which is the price of never losing content.
+	if hh.z.count() != 2 {
+		t.Fatalf("expected the original plus its copy: %v", hh.z.stored())
+	}
+	if hh.loggedCount("DISABLING end-of-turn repost") != 1 {
+		t.Fatalf("breaker not logged exactly once: %v", hh.logs)
+	}
+
+	agent.mu.Lock()
+	agent.chunks = []string{"second answer"}
+	agent.mu.Unlock()
+	before := hh.z.count()
+	hh.deliver(t, "t2", mention("again"))
+	if hh.z.count() != before+1 {
+		t.Fatalf("a later turn was still re-posted: %v", hh.z.stored())
+	}
+	if !strings.Contains(hh.z.lastBody(), "second answer") {
+		t.Fatalf("second turn body = %q", hh.z.lastBody())
+	}
+	if hh.loggedCount("DISABLING end-of-turn repost") != 1 {
+		t.Fatalf("breaker logged more than once: %v", hh.logs)
+	}
+}
+
+// TestAFailedRepostLeavesTheAnswerInPlace: the re-post itself fails.
+// The answer must stay exactly where it was streamed — the failure is
+// logged and nothing else happens. It does NOT trip the breaker, which
+// is about deletion only.
+func TestAFailedRepostLeavesTheAnswerInPlace(t *testing.T) {
+	hh := newHarness(t, newAgent("precious output"), nil)
+	hh.z.mu.Lock()
+	// The placeholder is post #1; the end-of-turn re-post is post #2.
+	n := 0
+	hh.z.sendHook = func(string) error {
+		n++
+		if n >= 2 {
+			return errors.New("zulip down")
+		}
+		return nil
+	}
+	hh.z.mu.Unlock()
+
+	hh.deliver(t, "t", mention("hi"))
+	if hh.z.count() != 1 || hh.z.lastID() != 1 {
+		t.Fatalf("surface = %v", hh.z.stored())
+	}
+	if !strings.Contains(hh.z.body(1), "precious output") {
+		t.Fatalf("answer lost: %q", hh.z.body(1))
+	}
+	if !hh.logged("re-posting the answer") {
+		t.Fatalf("failure not logged: %v", hh.logs)
+	}
+	if hh.logged("DISABLING end-of-turn repost") {
+		t.Fatal("a failed post must not trip the delete breaker")
 	}
 }

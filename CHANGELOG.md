@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Push notifications carry the answer, not `Thinking...`.** Zulip generates a
+  mobile notification when a message is CREATED and never when one is edited,
+  so every push showed the eager streaming placeholder. A finished streamed
+  turn now re-posts its whole message chain as new messages and deletes the
+  originals (`rollover.Splitter.Repost`). New copies go up *before* any old one
+  comes down, so output can never be lost; a refused delete trips a
+  process-wide circuit breaker that disables reposting (logged once) rather
+  than doubling every future turn. New `repost_on_close` config key, default
+  `true`.
+
 ## [0.12.1] - 2026-09-03
 
 ### Changed

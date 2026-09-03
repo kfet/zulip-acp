@@ -397,6 +397,7 @@ func main() {
 		ContinuationMarker: cfg.ContinuationMarker,
 		SilentSentinel:     cfg.GetSilentSentinel(),
 		HideThinking:       cfg.HideThinking,
+		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Logf:               log.Printf,
 	})

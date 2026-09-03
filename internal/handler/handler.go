@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -100,10 +101,11 @@ type Poster interface {
 	SendMessageWidget(ctx context.Context, streamID int64, topic, content, widget string) (int64, error)
 	SendDirectMessageWidget(ctx context.Context, userIDs []int64, content, widget string) (int64, error)
 	EditMessage(ctx context.Context, id int64, content string) error
-	// DeleteMessage removes a message the bot posted. Used ONLY to
-	// retire a superseded `!opts` panel, which cannot be edited when
-	// it carries a widget. Nothing else the relay posts is ever
-	// deleted.
+	// DeleteMessage removes a message the bot posted. Used to retire a
+	// superseded `!opts` panel, which cannot be edited when it carries
+	// a widget, and to retract the placeholder-seeded streaming chain
+	// once the final answer has been re-posted (see
+	// Handler.repostForNotify).
 	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
 	Upload(ctx context.Context, filename string, r io.Reader) (string, error)
@@ -162,6 +164,12 @@ type Config struct {
 	SilentSentinel string
 	// HideThinking suppresses thought chunks on the streamed path.
 	HideThinking bool
+
+	// RepostOnClose re-posts a finished streamed answer as NEW
+	// messages and deletes the placeholder-seeded originals, so the
+	// mobile push notification carries the answer instead of
+	// "Thinking…" — Zulip notifies on message CREATION only.
+	RepostOnClose bool
 
 	// AckEmoji is the emoji reaction placed on the triggering message
 	// for the duration of a turn. Empty disables the acknowledgement.
@@ -256,6 +264,11 @@ type Handler struct {
 	// panel's message id is a read-modify-write reachable from both
 	// the event loop and a turn goroutine.
 	optsMu sync.Mutex
+
+	// repostBroken is the end-of-turn repost circuit breaker. It is on
+	// the Handler, not the Splitter, precisely because it must outlive
+	// a turn: see repostForNotify.
+	repostBroken atomic.Bool
 }
 
 // New constructs a Handler.
@@ -588,6 +601,8 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	cerr := split.Close(fctx, suffix)
 	if cerr != nil {
 		h.rescue(fctx, post, split.Transcript(), cerr)
+	} else {
+		h.repostForNotify(fctx, conv, split)
 	}
 	h.clearTail(conv.ID)
 	return cerr
@@ -660,6 +675,55 @@ func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollov
 	}
 	h.clearTail(conv.ID)
 	return cause
+}
+
+// repostForNotify recreates the finished message chain as new messages
+// so Zulip fires a push notification carrying the real answer.
+//
+// Zulip generates a mobile notification when a message is CREATED and
+// never when one is edited, so the eager "Thinking…" placeholder that
+// makes the web experience good is exactly what every phone shows.
+// Re-posting after the answer is complete fixes the phone without
+// changing the desktop stream at all.
+//
+// It runs AFTER split.Close, so what gets re-posted is the final
+// content — outbox attachment links and any "(stopped: …)" note
+// included — and never a half-streamed body.
+//
+// The cost, stated out loud so nobody reads it as a bug: an N-message
+// chain now fires N notifications instead of one, because the whole
+// chain is recreated to keep it in order. N is 1 for almost every turn.
+//
+// The circuit breaker is the important part. Delete and post ride the
+// same permission surface: if the realm forbids the bot deleting its
+// own messages (delete_own_message_policy) or the delete window has
+// closed, every turn would post a fresh copy and fail to retract the
+// old one — permanently doubled output in every topic. So the FIRST
+// refused delete disables reposting for the lifetime of the process,
+// loudly and exactly once, degrading to the pre-repost behaviour. The
+// turn that trips it is the only one the user sees twice.
+//
+// The error path deliberately does NOT repost. The commonest failTurn
+// is a superseded turn, and moving "(superseded by your next message)"
+// to the bottom of the topic to ping a phone with it is pure noise.
+func (h *Handler) repostForNotify(ctx context.Context, conv journal.Conv, split *rollover.Splitter) {
+	if !h.cfg.RepostOnClose || h.repostBroken.Load() {
+		return
+	}
+	err := split.Repost(ctx)
+	// The ids moved even when a delete failed: the new messages are
+	// live and they are what any later edit must address.
+	h.trackTail(conv.ID, split)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, rollover.ErrRetract) && !h.repostBroken.Swap(true) {
+		h.cfg.Logf("handler: DISABLING end-of-turn repost for the rest of this process: the bot could not delete its own message (%v). "+
+			`Push notifications will read "Thinking..." again; grant the bot permission to delete its own messages, `+
+			`or set "repost_on_close": false to silence this.`, err)
+		return
+	}
+	h.cfg.Logf("handler: re-posting the answer in %s: %v", conv.ID, err)
 }
 
 // trackTail records the message the relay is currently streaming into,
@@ -987,6 +1051,13 @@ func (p *convPoster) Post(ctx context.Context, content string) (int64, error) {
 
 func (p *convPoster) Edit(ctx context.Context, id int64, content string) error {
 	return p.client.EditMessage(ctx, id, content)
+}
+
+// Delete implements rollover.Deleter, which the splitter uses to
+// retract the placeholder-seeded chain at the end of a turn once the
+// final content has been re-posted as new messages.
+func (p *convPoster) Delete(ctx context.Context, id int64) error {
+	return p.client.DeleteMessage(ctx, id)
 }
 
 // PostWidget is Post with a zform widget attached. Only the `!opts`
