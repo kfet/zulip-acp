@@ -259,6 +259,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
+| `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
 | `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
@@ -286,6 +287,28 @@ extracted once per process. A missing or malformed skill dir is logged and
 skipped — it never blocks startup.
 
 `disable_system_prompt` suppresses the catalog too.
+
+### Notifications and `repost_on_close`
+
+Zulip generates a mobile push notification when a message is **created**, never
+when it is edited. The relay streams by posting an eager `Thinking...`
+placeholder and editing the answer into it, so every push on your phone used to
+read `Thinking...` and never showed the reply.
+
+With `"repost_on_close": true` (the default) the streaming experience on
+web/desktop is unchanged, but when the turn finishes the relay re-posts the
+finished chain as **new** messages and deletes the originals, so a fresh push
+carries the real answer. Notes:
+
+- The **whole** chain is recreated, not just the first message — deleting only
+  the first would move it below its own continuations. The cost is that a turn
+  split across N messages fires N notifications; N is 1 for almost every turn.
+- New messages are posted before any old one is deleted, so a failure can never
+  lose output; the worst case is a duplicate.
+- If the bot may not delete its own messages (`delete_own_message_policy`, or a
+  closed delete window), the **first** refused delete disables reposting for the
+  rest of the process and logs loudly, instead of doubling every topic forever.
+  Set `"repost_on_close": false` to turn the feature off outright.
 
 ### The agent→relay loopback (`relay_mcp`)
 

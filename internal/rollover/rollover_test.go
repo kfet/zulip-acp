@@ -814,3 +814,279 @@ func TestNoZulipImports(t *testing.T) {
 		}
 	}
 }
+
+// --- Repost --------------------------------------------------------------
+
+// deletingPoster is a fakePoster that can also retract. It is a
+// separate type on purpose: fakePoster itself must stay a Poster that
+// is NOT a Deleter, so the capability-absent branch has a driver.
+type deletingPoster struct {
+	*fakePoster
+	deleteErr error
+	deleted   []int64
+}
+
+func newDeleting() *deletingPoster { return &deletingPoster{fakePoster: newFake()} }
+
+func (d *deletingPoster) Delete(_ context.Context, id int64) error {
+	if d.deleteErr != nil {
+		return d.deleteErr
+	}
+	if _, ok := d.bodies[id]; !ok {
+		return fmt.Errorf("delete of unknown message %d", id)
+	}
+	delete(d.bodies, id)
+	for i, x := range d.order {
+		if x == id {
+			d.order = append(d.order[:i], d.order[i+1:]...)
+			break
+		}
+	}
+	d.deleted = append(d.deleted, id)
+	return nil
+}
+
+// TestRepostRecreatesASeededChain is the point of the whole feature:
+// the message the user was watching is replaced by a brand-new one
+// carrying identical content, so the surface fires a creation
+// notification for the real answer.
+func TestRepostRecreatesASeededChain(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	old := s.TailID()
+	s.Append("the answer")
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := s.IDs()
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("Repost: %v", err)
+	}
+	if got := d.stored(); len(got) != 1 || got[0] != "the answer" {
+		t.Fatalf("stored = %q", got)
+	}
+	if d.deleted[0] != old || len(d.deleted) != 1 {
+		t.Fatalf("deleted = %v, want just the original %d", d.deleted, old)
+	}
+	after := s.IDs()
+	if len(after) != 1 || after[0] == before[0] || s.TailID() != after[0] {
+		t.Fatalf("ids not re-pointed: before %v after %v tail %d", before, after, s.TailID())
+	}
+	// Reposting is idempotent: the chain is no longer placeholder-born,
+	// so a second call cannot duplicate it.
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("second Repost: %v", err)
+	}
+	if len(d.stored()) != 1 || s.IDs()[0] != after[0] {
+		t.Fatalf("second Repost duplicated the chain: %q", d.stored())
+	}
+}
+
+// TestRepostRecreatesTheWholeChainInOrder: only re-posting the first
+// message would move it BELOW its own continuations. The whole chain
+// goes up again, oldest first, and every original comes down.
+func TestRepostRecreatesTheWholeChainInOrder(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d, Budget: 200})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append(strings.Repeat("a", 150) + strings.Repeat("b", 150))
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := s.IDs()
+	if len(before) < 2 {
+		t.Fatalf("wanted a multi-message chain, got %v", before)
+	}
+	wantBodies := d.stored()
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("Repost: %v", err)
+	}
+	if got := d.stored(); len(got) != len(wantBodies) {
+		t.Fatalf("stored %d messages, want %d", len(got), len(wantBodies))
+	} else {
+		for i := range got {
+			if got[i] != wantBodies[i] {
+				t.Fatalf("message %d = %q, want %q", i, got[i], wantBodies[i])
+			}
+		}
+	}
+	if len(d.deleted) != len(before) {
+		t.Fatalf("deleted %v, want every original %v", d.deleted, before)
+	}
+	for i, id := range s.IDs() {
+		if id <= before[len(before)-1] {
+			t.Fatalf("id %d (%d) is not a fresh message: %v", i, id, s.IDs())
+		}
+	}
+}
+
+// TestRepostIsANoOpWhenNothingWasSeeded: a chain whose first message
+// was CREATED carrying real text already notified correctly. Touching
+// it would cost a delete and a post for nothing.
+func TestRepostIsANoOpWhenNothingWasSeeded(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d})
+	ctx := context.Background()
+	s.Append("straight to the answer")
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ids := s.IDs()
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("Repost: %v", err)
+	}
+	if d.posts != 1 || len(d.deleted) != 0 {
+		t.Fatalf("posts = %d, deleted = %v; want the chain left alone", d.posts, d.deleted)
+	}
+	if got := s.IDs(); len(got) != 1 || got[0] != ids[0] {
+		t.Fatalf("ids moved: %v -> %v", ids, got)
+	}
+}
+
+// TestRepostNeedsADeleter: a surface that cannot retract must not be
+// made to post a second copy of everything.
+func TestRepostNeedsADeleter(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append("answer")
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("Repost: %v", err)
+	}
+	if f.posts != 1 {
+		t.Fatalf("posts = %d; a Poster that cannot delete must not be re-posted to", f.posts)
+	}
+}
+
+// TestRepostOnAnEmptyChain: Start failed (or was never called) and
+// nothing is on the surface, so there is nothing to recreate.
+func TestRepostOnAnEmptyChain(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d})
+	ctx := context.Background()
+	d.postErr = errors.New("down")
+	if err := s.Start(ctx, "Thinking..."); err == nil {
+		t.Fatal("want Start to fail")
+	}
+	d.postErr = nil
+	if err := s.Repost(ctx); err != nil {
+		t.Fatalf("Repost: %v", err)
+	}
+	if d.posts != 0 {
+		t.Fatalf("posts = %d, want 0", d.posts)
+	}
+}
+
+// TestRepostKeepsTheContentWhenAPostFails is the content-safety rule:
+// new copies go up BEFORE any original comes down, so a failure leaves
+// the fully-edited original chain exactly where it was.
+func TestRepostKeepsTheContentWhenAPostFails(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d, Budget: 200})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append(strings.Repeat("a", 150) + strings.Repeat("b", 150))
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := s.IDs()
+	want := d.stored()
+	// Fail the SECOND re-post: the first copy is already up and must
+	// be retracted again, leaving the surface as it was.
+	n := 0
+	d.postHook = func(string) error {
+		n++
+		if n == 2 {
+			return errors.New("server said no")
+		}
+		return nil
+	}
+	err := s.Repost(ctx)
+	if err == nil || !strings.Contains(err.Error(), "server said no") {
+		t.Fatalf("Repost error = %v", err)
+	}
+	if errors.Is(err, ErrRetract) {
+		t.Fatal("a failed POST must not trip the delete circuit breaker")
+	}
+	d.postHook = nil
+	if got := d.stored(); len(got) != len(want) {
+		t.Fatalf("stored = %q, want the original chain %q", got, want)
+	}
+	if got := s.IDs(); len(got) != len(before) || got[0] != before[0] {
+		t.Fatalf("ids moved despite a failed re-post: %v -> %v", before, got)
+	}
+}
+
+// TestRepostReportsAFailedPartialRetraction: the re-post failed AND
+// the partial copy could not be taken back down. Both are reported;
+// the original chain still stands, so nothing is lost.
+func TestRepostReportsAFailedPartialRetraction(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d, Budget: 200})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append(strings.Repeat("a", 150) + strings.Repeat("b", 150))
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	n := 0
+	d.postHook = func(string) error {
+		n++
+		if n == 2 {
+			return errors.New("server said no")
+		}
+		return nil
+	}
+	d.deleteErr = errors.New("no delete for you")
+	err := s.Repost(ctx)
+	if err == nil || !strings.Contains(err.Error(), "no delete for you") || !errors.Is(err, ErrRetract) {
+		t.Fatalf("Repost error = %v", err)
+	}
+}
+
+// TestRepostReportsARefusedDelete: the copies are up but the originals
+// will not come down — a duplicated turn. It must be reported as
+// ErrRetract so the caller can stop doing this to every future turn.
+func TestRepostReportsARefusedDelete(t *testing.T) {
+	d := newDeleting()
+	s := mustNew(t, Config{Poster: d})
+	ctx := context.Background()
+	if err := s.Start(ctx, "Thinking..."); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Append("answer")
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	old := s.TailID()
+	d.deleteErr = errors.New("delete_own_message_policy")
+	err := s.Repost(ctx)
+	if !errors.Is(err, ErrRetract) {
+		t.Fatalf("Repost error = %v, want ErrRetract", err)
+	}
+	// The fresh copy is live and the ids follow it, even though the
+	// original is still sitting there.
+	if s.TailID() == old {
+		t.Fatal("tail still points at the original")
+	}
+	if len(d.stored()) != 2 {
+		t.Fatalf("stored = %q, want the duplicate", d.stored())
+	}
+}

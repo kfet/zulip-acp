@@ -123,6 +123,18 @@ type Config struct {
 	// cases stay distinguishable.
 	AckEmoji *string `json:"ack_emoji,omitempty"`
 
+	// RepostOnClose re-posts the finished answer as NEW messages at the
+	// end of a streamed turn, deleting the placeholder-seeded originals.
+	//
+	// Zulip generates a mobile push notification when a message is
+	// CREATED and never when it is edited, so without this every push
+	// reads "Thinking…". Unset = true; set it to false to keep the
+	// streamed messages exactly where they are (older clients, or a
+	// realm where the bot may not delete its own messages — though the
+	// relay also disables reposting by itself the first time a delete
+	// is refused).
+	RepostOnClose *bool `json:"repost_on_close,omitempty"`
+
 	// RelayMCP enables the agent→relay loopback: the relay hosts an
 	// MCP server on a private unix socket and advertises it to the
 	// agent, so the agent can read its own status, switch model, post
@@ -295,6 +307,13 @@ func (c *Config) GetAckEmoji() string {
 		return DefaultAckEmoji
 	}
 	return *c.AckEmoji
+}
+
+// GetRepostOnClose reports whether a finished streamed turn is
+// re-posted as new messages so the push notification carries the real
+// answer. Unset means true.
+func (c *Config) GetRepostOnClose() bool {
+	return c.RepostOnClose == nil || *c.RepostOnClose
 }
 
 // GetAgentCmd returns the configured agent argv or the default.

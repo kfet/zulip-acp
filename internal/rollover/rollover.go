@@ -43,6 +43,7 @@ package rollover
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -87,6 +88,22 @@ type Poster interface {
 	Post(ctx context.Context, content string) (int64, error)
 	// Edit replaces the content of an existing message.
 	Edit(ctx context.Context, id int64, content string) error
+}
+
+// ErrRetract marks a Repost error whose cause was a failed DELETE
+// rather than a failed post: the fresh copies went up, the originals
+// would not come down. Callers match it with errors.Is to trip a
+// circuit breaker — a surface that refuses deletion would otherwise
+// duplicate the output of every future turn.
+var ErrRetract = errors.New("retracting a superseded message failed")
+
+// Deleter is an optional Poster capability: a surface that can retract
+// a message the same account posted. Repost needs it; a Poster that
+// does not implement it makes Repost a documented no-op rather than an
+// error, because retraction is a nicety and never a correctness
+// requirement.
+type Deleter interface {
+	Delete(ctx context.Context, id int64) error
 }
 
 // Config configures a Splitter.
@@ -137,6 +154,11 @@ type Splitter struct {
 	// sealedEnd — i.e. the state the current tail starts in.
 	sealedFence fence
 	msgs        []*message
+	// seeded records that the first message was CREATED as a
+	// placeholder by Start, i.e. that it was born carrying no answer.
+	// Repost keys off it: a chain whose first message was created with
+	// real text has nothing to fix.
+	seeded bool
 }
 
 // fence is the fenced-code-block state of a point in the raw
@@ -206,6 +228,7 @@ func (s *Splitter) Start(ctx context.Context, placeholder string) error {
 	defer s.mu.Unlock()
 	s.msgs[0].id = id
 	s.msgs[0].written = placeholder
+	s.seeded = true
 	return nil
 }
 
@@ -297,6 +320,92 @@ func (s *Splitter) Close(ctx context.Context, suffix string) error {
 	}
 	s.mu.Unlock()
 	return s.flushLocked(ctx)
+}
+
+// Repost recreates the whole chain as brand-new messages and retracts
+// the originals, so a surface that only notifies on message CREATION
+// (Zulip: a push notification is generated when a message is posted,
+// never when it is edited) delivers the real answer instead of the
+// "Thinking…" placeholder the chain was seeded with.
+//
+// Call it after Close. It is a no-op when
+//
+//   - Start never seeded a placeholder (the first message was created
+//     carrying real text, so the notification was already right), or
+//   - the Poster cannot delete, or
+//   - nothing was ever posted.
+//
+// The whole chain is recreated, not just the first message: deleting
+// only the first and re-posting it would move it below its own
+// continuations, and a chain that reads out of order is worse than an
+// extra notification on messages the user already got one for.
+//
+// Content safety is the one hard rule. New messages are posted BEFORE
+// any old one is deleted, so a failure anywhere leaves the original,
+// fully-edited chain in place and the answer is never lost. If a
+// re-post fails midway the partial copies are retracted (best effort)
+// and the error is returned; the caller may simply log it. Deleting the
+// originals is best effort too: a delete that fails leaves a duplicate,
+// which is noise, not loss.
+func (s *Splitter) Repost(ctx context.Context) error {
+	del, ok := s.cfg.Poster.(Deleter)
+	if !ok {
+		return nil
+	}
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
+
+	s.mu.Lock()
+	live := make([]*message, 0, len(s.msgs))
+	if s.seeded {
+		for _, m := range s.msgs {
+			if m.id != 0 && m.written != "" {
+				live = append(live, m)
+			}
+		}
+	}
+	bodies := make([]string, len(live))
+	old := make([]int64, len(live))
+	for i, m := range live {
+		bodies[i], old[i] = m.written, m.id
+	}
+	s.mu.Unlock()
+	if len(live) == 0 {
+		return nil
+	}
+
+	fresh := make([]int64, 0, len(bodies))
+	for _, body := range bodies {
+		id, err := s.cfg.Poster.Post(ctx, body)
+		if err != nil {
+			var errs []error
+			errs = append(errs, fmt.Errorf("rollover: re-posting for notification: %w", err))
+			for _, id := range fresh {
+				if derr := del.Delete(ctx, id); derr != nil {
+					errs = append(errs, fmt.Errorf("rollover: retracting partial re-post %d: %w: %w", id, ErrRetract, derr))
+				}
+			}
+			return errors.Join(errs...)
+		}
+		fresh = append(fresh, id)
+	}
+
+	s.mu.Lock()
+	for i, m := range live {
+		m.id = fresh[i]
+	}
+	// The chain no longer carries a placeholder-born message, so a
+	// second Repost is a no-op rather than another full duplication.
+	s.seeded = false
+	s.mu.Unlock()
+
+	var errs []error
+	for _, id := range old {
+		if err := del.Delete(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("rollover: retracting superseded message %d: %w: %w", id, ErrRetract, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // UpdatePlaceholder rewrites the eager placeholder posted by Start
