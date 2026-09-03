@@ -89,6 +89,8 @@ type Sessions interface {
 // the bot's subscriptions); see internal/channels.
 type ChannelSet interface {
 	Name(streamID int64) (string, bool)
+	// Ambient reports whether a channel engages without an @-mention.
+	Ambient(streamID int64) bool
 }
 
 // Poster is the Zulip surface the handler writes to.
@@ -422,7 +424,12 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		if _, ok := h.cfg.Channels.Name(m.StreamID); !ok {
 			return
 		}
-		key, addressed = journal.Channel(m.StreamID, m.Topic), h.mentioned(text)
+		// An ambient channel engages like a DM: every message is
+		// addressed, so the opening message of a fresh topic summons
+		// the relay with no @-mention. Elsewhere the mention is the
+		// membership record.
+		key = journal.Channel(m.StreamID, m.Topic)
+		addressed = h.cfg.Channels.Ambient(m.StreamID) || h.mentioned(text)
 	}
 
 	if h.cfg.AllowedUsers != nil {

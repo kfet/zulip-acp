@@ -29,6 +29,10 @@ type Config struct {
 	Explicit map[int64]string
 	// Follow enables the subscription-following half of the set.
 	Follow bool
+	// Ambient is the set of stream ids that engage without an
+	// @-mention (resolved from config ambient_channels). Static for
+	// the process lifetime; ids are stable across renames.
+	Ambient map[int64]string
 	// Logf receives join/leave messages. Optional.
 	Logf func(format string, args ...any)
 }
@@ -41,6 +45,7 @@ type Set struct {
 	mu       sync.RWMutex
 	explicit map[int64]string
 	followed map[int64]string
+	ambient  map[int64]struct{}
 }
 
 // New builds a Set. The explicit map is copied, so the caller may keep
@@ -51,6 +56,7 @@ func New(cfg Config) *Set {
 		logf:     cfg.Logf,
 		explicit: make(map[int64]string, len(cfg.Explicit)),
 		followed: map[int64]string{},
+		ambient:  make(map[int64]struct{}, len(cfg.Ambient)),
 	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
@@ -58,7 +64,20 @@ func New(cfg Config) *Set {
 	for id, name := range cfg.Explicit {
 		s.explicit[id] = name
 	}
+	for id := range cfg.Ambient {
+		s.ambient[id] = struct{}{}
+	}
 	return s
+}
+
+// Ambient reports whether a channel engages without an @-mention. In
+// an ambient channel every message opens or continues the topic's
+// conversation, exactly as a DM does.
+func (s *Set) Ambient(id int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.ambient[id]
+	return ok
 }
 
 // Name returns the channel's name and whether it is served. It is the

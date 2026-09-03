@@ -167,6 +167,7 @@ func TestDMIgnoresChannelAllowlist(t *testing.T) {
 type emptyChannels struct{}
 
 func (emptyChannels) Name(int64) (string, bool) { return "", false }
+func (emptyChannels) Ambient(int64) bool        { return false }
 
 // TestDMWithoutRecipients: display_recipient is polymorphic, so a
 // message that does not carry a usable participant list has no conv key
