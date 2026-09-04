@@ -83,6 +83,7 @@ func TestValidate(t *testing.T) {
 		{"budget negative", Config{MaxMessageChars: -1}},
 		{"budget over Zulip's limit", Config{MaxMessageChars: zulipproto.MaxMessageLength + 1}},
 		{"empty channel", Config{Channels: []string{"fleet", "  "}}},
+		{"empty ambient channel", Config{AmbientChannels: []string{"fleet", "  "}}},
 		{"markers exceed budget", Config{MaxMessageChars: 100, SealMarker: strings.Repeat("s", 90)}},
 	}
 	for _, c := range bad {
@@ -166,6 +167,43 @@ func TestResolveChannels(t *testing.T) {
 		t.Fatal("want error for unknown name")
 	}
 	if _, err := (&Config{Channels: []string{"404"}}).ResolveChannels(available); err == nil {
+		t.Fatal("want error for unknown id")
+	}
+}
+
+// TestResolveAmbient covers ambient_channels resolution. It shares
+// ResolveChannels' name/id rules but differs on the empty list: no
+// ambient channels is a legitimate configuration (mention-gate
+// everywhere), not the footgun an empty `channels` would be.
+func TestResolveAmbient(t *testing.T) {
+	available := []zulipproto.Stream{
+		{StreamID: 4, Name: "fleet"},
+		{StreamID: 7, Name: "general"},
+		{StreamID: 9, Name: "Fleet"}, // Zulip channel names are case-sensitive
+	}
+
+	// Empty list is fine and yields an empty, non-nil set.
+	got, err := (&Config{}).ResolveAmbient(available)
+	if err != nil {
+		t.Fatalf("ResolveAmbient(empty): %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("empty ambient list resolved = %v, want empty set", got)
+	}
+
+	c := &Config{AmbientChannels: []string{"fleet", " 7 ", "Fleet"}}
+	got, err = c.ResolveAmbient(available)
+	if err != nil {
+		t.Fatalf("ResolveAmbient: %v", err)
+	}
+	if len(got) != 3 || got[4] != "fleet" || got[7] != "general" || got[9] != "Fleet" {
+		t.Fatalf("resolved = %v", got)
+	}
+
+	if _, err := (&Config{AmbientChannels: []string{"nope"}}).ResolveAmbient(available); err == nil {
+		t.Fatal("want error for unknown name")
+	}
+	if _, err := (&Config{AmbientChannels: []string{"404"}}).ResolveAmbient(available); err == nil {
 		t.Fatal("want error for unknown id")
 	}
 }

@@ -89,6 +89,7 @@ Write `~/.config/zulip-acp/config.json`:
   "site": "https://zulip.example.ts.net",
   "bot_email": "fir-relay-bot@zulip.example.ts.net",
   "channels": ["fleet"],
+  "ambient_channels": [],
   "agent_cmd": ["fir", "--mode", "acp"],
   "state_dir": "/home/<you>/.config/zulip-acp/state",
   "hide_thinking": false
@@ -99,6 +100,12 @@ Write `~/.config/zulip-acp/config.json`:
 subscribed to, and follows subscription changes at runtime — adding the bot to
 a channel starts serving it with no config edit and no restart. An empty list
 is still a fatal error.
+
+`ambient_channels` (names or ids, a subset of the served set — an empty list or
+an absent key is fine) lists channels that behave like DMs: **every** message
+is addressed, so the first message of a fresh topic summons the relay with no
+@-mention. Everywhere else the mention gate below still applies. Use it for a
+dedicated single-purpose channel; do not use it for a busy general channel.
 
 Write `~/.config/zulip-acp/env` (mode **0600**):
 
@@ -118,11 +125,19 @@ ssh <host> '~/.local/bin/zulip-acp --config ~/.config/zulip-acp/config.json --pr
 
 ### 4. Install the service (Linux: systemd user unit)
 
-`zulip-acp` is a plain long-poll client — **no sd_notify, no master/worker
-supervisor, no graceful worker swap** (that shim is poe-acp-only). It is a
-`Type=simple` service; restart is a hard restart. An in-flight turn is dropped
-on restart but the conversation state is on disk and Zulip re-delivers, so the
-next event redrives it. Keep restarts for quiet moments where you can.
+`zulip-acp` is a plain long-poll client — **no sd_notify and no master/worker
+supervisor** (that shim is poe-acp-only). It is a `Type=simple` service.
+
+Since v0.12.0 it does support a **graceful reload**: `systemctl --user reload`
+sends SIGHUP, and the process stops polling, drains in-flight turns (up to
+30m), then re-execs in place handing its Zulip event queue to the new binary —
+so nothing posted during the swap is lost, and the MainPID does not change.
+Prefer `reload` over `restart` for a version cutover. Two caveats: the
+**running** process must already be ≥ v0.12.0 for SIGHUP to mean this (a binary
+older than that has no such handler, so the first cutover onto v0.12.0+ must be
+a plain `restart`), and `restart` is still a hard restart — an in-flight turn is
+dropped, though conversation state is on disk and Zulip re-delivers, so the next
+event redrives it. Keep hard restarts for quiet moments where you can.
 
 Write `~/.config/systemd/user/zulip-acp.service`:
 
@@ -141,6 +156,8 @@ Wants=network-online.target
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/zulip-acp/env
 ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
+# Graceful version swap: drain in-flight turns, then re-exec in place.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 

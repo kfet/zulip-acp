@@ -247,3 +247,33 @@ func TestConcurrentReadWrite(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestAmbient: the ambient half is a static id set, independent of the
+// explicit/followed halves. Membership means "every message in this
+// channel is addressed to the bot", so the handler skips the mention
+// gate; a channel can be served without being ambient, and the set is
+// keyed by id so a rename cannot drop it.
+func TestAmbient(t *testing.T) {
+	s := New(Config{
+		Explicit: map[int64]string{4: "fleet", 7: "general"},
+		Ambient:  map[int64]string{4: "fleet"},
+	})
+	if !s.Ambient(4) {
+		t.Fatal("fleet (4) must be ambient")
+	}
+	if s.Ambient(7) {
+		t.Fatal("general (7) is served but not ambient")
+	}
+	if s.Ambient(999) {
+		t.Fatal("unknown channel must not be ambient")
+	}
+	// A rename leaves ambient membership intact: it is keyed by id.
+	s.Apply(subEvent("add", zulipproto.Stream{StreamID: 4, Name: "fleet-renamed"}))
+	if !s.Ambient(4) {
+		t.Fatal("rename must not drop ambient membership")
+	}
+	// No ambient config at all: nothing is ambient.
+	if New(Config{Explicit: map[int64]string{4: "fleet"}}).Ambient(4) {
+		t.Fatal("no ambient_channels means nothing is ambient")
+	}
+}
