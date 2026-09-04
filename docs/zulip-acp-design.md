@@ -926,7 +926,7 @@ internal/reload/        graceful reload: drain in-flight turns, then re-exec in
                         place with the event-queue cursor in the environment
                         (see docs/graceful-reload.md)
 internal/rollover/      pure code-point splitter — NO Zulip imports
-internal/statusline/    Zulip-markdown mood/plan header
+internal/statusline/    Zulip-markdown model/mood/plan line (spinner + footer)
 internal/sysprompt/     built-in Zulip formatting block
 internal/zulipmcp/      MCP server identity (socket naming, env vars, subcommand)
                         and the one Zulip-specific loopback tool, `history`

@@ -98,6 +98,12 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   relay counts for itself.
 - **Files.** Anything the agent writes into `outbox/` in its working directory
   is uploaded and linked at the end of the turn.
+- **Every answer is signed** with a one-line italic footer naming the model and
+  the agent's own mood/plan labels — `*🏛️ opus-4.5 • steady • 2/5*` — from the
+  `dev.acp-kit.status-line/v1` extension. It is a footer, not a header: mood and
+  plan arrive mid-turn, so only the end of the answer can carry the final
+  snapshot. The same line animates the live `Thinking…` placeholder. Turns that
+  produce no output, and turns that fail, are not signed.
 - **Restarts** are safe. An interrupted turn is marked
   `*(relay restarted — turn interrupted)*`, and the next message in the topic
   picks the session back up.

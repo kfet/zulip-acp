@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/coder/acp-go-sdk v0.13.5
-	github.com/kfet/acp-kit v0.9.1
+	github.com/kfet/acp-kit v0.10.0
 )
 
 require github.com/kfet/covgate v0.1.2 // indirect

@@ -5,18 +5,30 @@ import (
 	"testing"
 )
 
-func TestHeader(t *testing.T) {
-	if got := Header(Status{}); got != "" {
+func TestFooter(t *testing.T) {
+	if got := Footer(Status{}); got != "" {
 		t.Fatalf("empty status must render nothing, got %q", got)
 	}
-	got := Header(Status{ProviderEmoji: "🤖", Mood: "steady", Plan: "3/7"})
-	if !strings.HasPrefix(got, "> *") || !strings.HasSuffix(got, "*") {
-		t.Fatalf("header is not a Zulip italic blockquote: %q", got)
+	// The whole line, exactly: blank line, italics, emoji and model as
+	// ONE segment, then mood and plan.
+	got := Footer(Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"})
+	if want := "\n\n*🏛️ opus-4.5 • steady • 2/5*"; got != want {
+		t.Fatalf("Footer = %q, want %q", got, want)
 	}
-	for _, want := range []string{"🤖", "steady", "3/7", " • "} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("header %q missing %q", got, want)
-		}
+	// It is a footer, not the blockquoted spinner.
+	if strings.Contains(got, ">") {
+		t.Fatalf("footer must not be a blockquote: %q", got)
+	}
+	// Half an identity still renders, without a stray separator.
+	if got := Footer(Status{Model: "gpt-5-codex"}); got != "\n\n*gpt-5-codex*" {
+		t.Fatalf("model-only footer = %q", got)
+	}
+	if got := Footer(Status{ProviderEmoji: "🌐"}); got != "\n\n*🌐*" {
+		t.Fatalf("emoji-only footer = %q", got)
+	}
+	// Mood alone is enough to be worth signing.
+	if got := Footer(Status{Mood: "curious"}); got != "\n\n*curious*" {
+		t.Fatalf("mood-only footer = %q", got)
 	}
 }
 
@@ -31,6 +43,12 @@ func TestThinkingAndSpinner(t *testing.T) {
 	got := Spinner(Status{Mood: "curious"}, "..")
 	if !strings.Contains(got, "curious") || !strings.Contains(got, "Thinking..") {
 		t.Fatalf("Spinner = %q", got)
+	}
+	// The live line names the model too, in the same one-segment form
+	// the footer uses.
+	got = Spinner(Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"}, "...")
+	if want := "> *🏛️ opus-4.5 • steady • 2/5 • Thinking...*"; got != want {
+		t.Fatalf("Spinner = %q, want %q", got, want)
 	}
 }
 
@@ -52,5 +70,8 @@ func TestWireContractReExports(t *testing.T) {
 	}
 	if ProviderEmojiForModel("anthropic/claude-sonnet-4") == "" {
 		t.Fatal("known provider must render an emoji")
+	}
+	if got := ShortModelName("anthropic/claude-opus-4-5-20251001"); got != "opus-4.5" {
+		t.Fatalf("ShortModelName = %q", got)
 	}
 }
