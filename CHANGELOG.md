@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-04
+
+First release carrying **both** lines of work that were briefly cut as two
+different `v0.14.0`s. The published `v0.14.0` (italic status footer + model
+short name, acp-kit v0.10.0) is unchanged and is included below it in this
+file; `ambient_channels`, which had only ever existed in an unpushed local
+`v0.14.0`, is released here for the first time.
+
+### Added
+
+- **`ambient_channels`: engage a channel without an @-mention.** In a channel
+  the relay only wakes when @-mentioned or when the topic is already engaged,
+  so the opening bare message of a fresh topic was dropped before any session
+  existed and a reply-to-everything `system_prompt` never applied. Channels
+  listed in the new `ambient_channels` config key behave like DMs: every
+  message is addressed, so the first message of a new topic summons the relay
+  with no mention. Names or ids, resolved with the same rules as `channels`;
+  an empty list is fine and means "mention-gate everywhere" (`config`:
+  `AmbientChannels` + `ResolveAmbient`; `channels.Set`: static ambient id set
+  + `Ambient(id)` predicate, keyed by id so a rename cannot drop it;
+  `handler`: `addressed = Channels.Ambient(stream) || mentioned(text)`).
+
+### Changed
+
+- The status line is an italic footer naming the model — see [0.14.0] below.
+  It reached this host's line of history only in this release.
+
 ## [0.14.0] - 2026-09-04
 
 ### Changed
@@ -554,7 +581,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/kfet/zulip-acp/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/kfet/zulip-acp/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/kfet/zulip-acp/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/kfet/zulip-acp/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/kfet/zulip-acp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kfet/zulip-acp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kfet/zulip-acp/compare/v0.9.0...v0.10.0
