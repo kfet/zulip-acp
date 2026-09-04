@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-04
+
 ### Changed
 
 - **The status line moved from a header to an italic footer, and now names the
