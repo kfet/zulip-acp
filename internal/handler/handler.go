@@ -555,14 +555,17 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		h.clearTail(conv.ID)
 		return err
 	}
-	if _, currentID := h.cfg.Agent.Models(); currentID != "" {
-		sink.SetProviderEmoji(statusline.ProviderEmojiForModel(currentID))
-	}
+	// Pre-seed the model identity so the spinner's first frame already
+	// names the model. It is resolved again below, once applyModel has
+	// settled a sticky `!model` choice, so the footer tracks the model
+	// that actually served the turn.
+	h.resolveModelInfo(sink)
 
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Sessions.Touch(sess)
 	h.applyModel(ctx, conv.ID, sess.SessionID)
+	h.resolveModelInfo(sink)
 
 	text := prompt
 	if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
@@ -598,7 +601,13 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix += fmt.Sprintf("\n\n*(stopped: %s)*", stop)
 	}
-	cerr := split.Close(fctx, suffix)
+	// The status footer is the very last thing in the answer — after
+	// the attachment links and any "(stopped: …)" note — and it goes on
+	// BEFORE Close flushes, so the body the end-of-turn repost copies
+	// already carries it. Close then has nothing of its own to append.
+	split.Append(suffix)
+	sink.maybeAppendFooter()
+	cerr := split.Close(fctx, "")
 	if cerr != nil {
 		h.rescue(fctx, post, split.Transcript(), cerr)
 	} else {
@@ -606,6 +615,24 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	}
 	h.clearTail(conv.ID)
 	return cerr
+}
+
+// resolveModelInfo pushes the relay-resolved model identity — provider
+// emoji plus short display name — into the sink's status snapshot.
+//
+// The model id is relay-owned: the agent never supplies it. It is
+// resolved twice per turn, before and after applyModel, because a
+// sticky `!model` choice is pushed to the session mid-run and the
+// status line should name the model that actually served the turn. An
+// agent that reports no current model leaves the previous snapshot
+// alone rather than blanking a known one.
+func (h *Handler) resolveModelInfo(sink *streamingSink) {
+	if _, currentID := h.cfg.Agent.Models(); currentID != "" {
+		sink.SetModelInfo(
+			statusline.ProviderEmojiForModel(currentID),
+			statusline.ShortModelName(currentID),
+		)
+	}
 }
 
 // ack adds the in-flight reaction to the triggering message and

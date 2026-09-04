@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The status line moved from a header to an italic footer, and now names the
+  model.** It is appended once at the END of the answer
+  (`\n\n*🏛️ opus-4.5 • steady • 2/5*`) instead of being prepended to the first
+  user-visible chunk. `mood` and `plan` are agent-supplied and normally arrive
+  mid-turn, so a header rendered on the first chunk showed a status the agent
+  had not published yet — usually the emoji alone; the footer is rendered from
+  the final snapshot. It is suppressed on turns that produced no user-visible
+  content and on error turns, it goes on before `split.Close` flushes so the
+  end-of-turn repost carries it exactly once, and the live `Thinking…`
+  placeholder gains the model too.
+- `streamingSink.SetProviderEmoji(emoji)` widened to
+  `SetModelInfo(emoji, model)`; the model identity is resolved a second time
+  after `applyModel`, so the line names the model that actually served the turn.
+- acp-kit bumped to v0.10.0 for `statusline.ShortModelName` /
+  `statusline.Status.Model`.
+
 ## [0.13.0] - 2026-09-03
 
 ### Added

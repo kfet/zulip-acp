@@ -754,13 +754,10 @@ func TestAddressedTurnStreamsAndAnswers(t *testing.T) {
 		t.Fatalf("expected exactly one message, got %d", hh.z.count())
 	}
 	body := hh.z.lastBody()
-	if !strings.HasSuffix(body, "Hello, world.") {
+	// The answer body comes first; the status line signs it at the very
+	// end, in italics after a blank line.
+	if body != "Hello, world.\n\n*🏛️ sonnet-4*" {
 		t.Fatalf("body = %q", body)
-	}
-	// The provider emoji resolved from the agent's current model shows
-	// up in the status header.
-	if !strings.HasPrefix(body, "> *") {
-		t.Fatalf("status header missing: %q", body)
 	}
 	// A conversation was recorded, and its tail was cleared when the
 	// turn completed.
@@ -770,6 +767,70 @@ func TestAddressedTurnStreamsAndAnswers(t *testing.T) {
 	}
 	if len(hh.j.OpenTails()) != 0 {
 		t.Fatal("tail not cleared after a completed turn")
+	}
+}
+
+// TestStatusFooterSurvivesTheRepost pins the Zulip-specific hazard.
+//
+// This surface does not stream: it posts a "Thinking…" placeholder and
+// EDITS it, and then — with repost_on_close — deletes the whole chain
+// and re-posts it as new messages so the push notification carries the
+// answer. The footer therefore has to be part of the message BODY
+// before the final flush: appended after Close it would never be
+// written, and appended by the repost path it would be doubled.
+func TestStatusFooterSurvivesTheRepost(t *testing.T) {
+	agent := newAgent("Hello, ", "world.")
+	agent.model = "anthropic/claude-opus-4-5-20251001"
+	agent.meta = map[string]any{
+		statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
+	}
+	hh := newHarness(t, agent, nil) // RepostOnClose is on by default here
+	hh.deliver(t, "t", mention("hi"))
+
+	const footer = "\n\n*🏛️ opus-4.5 • steady • 2/5*"
+	// Exactly once across everything the surface ever saw — the
+	// re-posted copy carries it, the retracted original is gone.
+	if n := strings.Count(strings.Join(hh.z.stored(), "\x00"), footer); n != 1 {
+		t.Fatalf("footer count = %d, want 1, in %q", n, hh.z.stored())
+	}
+	if got := hh.z.lastBody(); got != "Hello, world."+footer {
+		t.Fatalf("re-posted body = %q", got)
+	}
+	// The placeholder it was edited over left nothing behind.
+	if strings.Contains(hh.z.lastBody(), "Thinking") {
+		t.Fatalf("placeholder survived into the answer: %q", hh.z.lastBody())
+	}
+}
+
+// TestStatusFooterNotOnErrorTurns: a failed turn is reported, not
+// signed. failTurn closes the splitter on its own path, which is what
+// keeps the footer off it.
+func TestStatusFooterNotOnErrorTurns(t *testing.T) {
+	agent := newAgent("partial")
+	agent.model = "anthropic/claude-opus-4-5-20251001"
+	agent.err = errors.New("model exploded")
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	all := strings.Join(hh.z.stored(), "\n")
+	if !strings.Contains(all, "model exploded") {
+		t.Fatalf("error not reported: %q", all)
+	}
+	if strings.Contains(all, "opus-4.5") {
+		t.Fatalf("error turn must not carry a status footer: %q", all)
+	}
+}
+
+// TestStatusFooterFollowsTheStoppedNote keeps the footer LAST: the
+// outbox links and the "(stopped: …)" note are part of the answer, so
+// the signature goes below them.
+func TestStatusFooterFollowsTheStoppedNote(t *testing.T) {
+	agent := newAgent("truncated")
+	agent.model = "openai/gpt-5-codex"
+	agent.stop = acp.StopReasonMaxTokens
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("hi"))
+	if got := hh.z.lastBody(); got != "truncated\n\n*(stopped: max_tokens)*\n\n*🌐 gpt-5-codex*" {
+		t.Fatalf("body = %q", got)
 	}
 }
 
@@ -1555,7 +1616,7 @@ func TestSpinnerAnimatesThenDisarms(t *testing.T) {
 	}
 	<-z.posted
 	sink := newStreamingSink(split, false)
-	sink.SetProviderEmoji("🤖")
+	sink.SetModelInfo("🤖", "opus-4.5")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tick := make(chan time.Time)
@@ -1565,6 +1626,10 @@ func TestSpinnerAnimatesThenDisarms(t *testing.T) {
 	<-z.posted // an animated frame landed
 	if got := z.body(1); !strings.Contains(got, "Thinking.") {
 		t.Fatalf("frame = %q", got)
+	}
+	// The live frame names the model, as one segment.
+	if got := z.body(1); !strings.Contains(got, "🤖 opus-4.5") {
+		t.Fatalf("frame missing model identity: %q", got)
 	}
 	// The first real text closes the placeholder window, and the
 	// spinner disarms itself without being cancelled.
@@ -1617,7 +1682,7 @@ func TestSinkRendering(t *testing.T) {
 	sink := newStreamingSink(split, false)
 	ctx := context.Background()
 
-	// Status _meta arrives first and lands in the header.
+	// Status _meta arrives first and is cached for the final footer.
 	if err := sink.OnUpdate(ctx, acp.SessionNotification{
 		Meta: map[string]any{statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "1/3"}},
 	}); err != nil {
@@ -1633,8 +1698,16 @@ func TestSinkRendering(t *testing.T) {
 		t.Fatalf("OnUpdate: %v", err)
 	}
 	got := split.Transcript()
-	if !strings.HasPrefix(got, "> *steady • 1/3*\n") {
-		t.Fatalf("header not prepended once: %q", got)
+	// The body is NOT decorated on the way in: no header, ever.
+	if strings.HasPrefix(got, ">") || strings.Contains(got, "steady") {
+		t.Fatalf("status must not be prepended to the body: %q", got)
+	}
+	// A multi-line thought becomes one italic line.
+	if !strings.Contains(got, "*thinking about it*\n") {
+		t.Fatalf("thought = %q", got)
+	}
+	if !strings.HasSuffix(got, "body text") {
+		t.Fatalf("body = %q", got)
 	}
 	// A multi-line thought becomes one italic line.
 	if !strings.Contains(got, "*thinking about it*\n") {
@@ -1683,18 +1756,139 @@ func TestSinkHidesThinking(t *testing.T) {
 	}
 }
 
-func TestSinkHeaderOmittedWhenEmpty(t *testing.T) {
+// --- status footer -------------------------------------------------------
+
+// newFooterSink builds a sink over a fresh splitter for the footer
+// tests, which are all about what the TRANSCRIPT ends up carrying.
+func newFooterSink(t *testing.T) (*rollover.Splitter, *streamingSink) {
+	t.Helper()
 	z := newZulip()
 	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
 	if err != nil {
 		t.Fatalf("rollover.New: %v", err)
 	}
-	sink := newStreamingSink(split, false)
+	return split, newStreamingSink(split, false)
+}
+
+// TestSinkFooterAppendedOnceAtTheEnd pins the shape: the status line is
+// the LAST thing in the answer, in italics, after a blank line — and it
+// is appended exactly once.
+func TestSinkFooterAppendedOnceAtTheEnd(t *testing.T) {
+	split, sink := newFooterSink(t)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	if err := sink.OnUpdate(context.Background(), chunkNotification("the answer", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	sink.maybeAppendFooter()
+	sink.maybeAppendFooter() // a second call must be a no-op
+	if got := split.Transcript(); got != "the answer\n\n*🏛️ opus-4.5*" {
+		t.Fatalf("transcript = %q", got)
+	}
+}
+
+// TestSinkFooterUsesLatestSnapshot is the whole point of moving the
+// line to the bottom: mood and plan that arrive AFTER the first chunk
+// still make it into the rendered line.
+func TestSinkFooterUsesLatestSnapshot(t *testing.T) {
+	split, sink := newFooterSink(t)
+	ctx := context.Background()
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	if err := sink.OnUpdate(ctx, chunkNotification("the answer", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	// The agent publishes its status only once it is under way.
+	if err := sink.OnUpdate(ctx, acp.SessionNotification{
+		Meta: map[string]any{statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"}},
+	}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	sink.maybeAppendFooter()
+	if got := split.Transcript(); got != "the answer\n\n*🏛️ opus-4.5 • steady • 2/5*" {
+		t.Fatalf("footer must carry the LATEST status: %q", got)
+	}
+}
+
+// TestSinkFooterOmittedWhenEmpty: with no model info and no agent
+// _meta there is nothing to sign, so not even the blank line is added.
+func TestSinkFooterOmittedWhenEmpty(t *testing.T) {
+	split, sink := newFooterSink(t)
 	if err := sink.OnUpdate(context.Background(), chunkNotification("plain", nil)); err != nil {
 		t.Fatalf("OnUpdate: %v", err)
 	}
-	if split.Transcript() != "plain" {
-		t.Fatalf("an empty status must add no header: %q", split.Transcript())
+	sink.maybeAppendFooter()
+	if got := split.Transcript(); got != "plain" {
+		t.Fatalf("an empty status must add nothing: %q", got)
+	}
+}
+
+// TestSinkFooterOmittedWithoutContent: a turn that produced no
+// user-visible output has nothing to sign. Signing it would also defeat
+// Close's EmptyBody substitution, which only fires on a blank
+// transcript — the placeholder would be resolved to a lone status line.
+func TestSinkFooterOmittedWithoutContent(t *testing.T) {
+	split, sink := newFooterSink(t)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	sink.maybeAppendFooter()
+	if got := split.Transcript(); got != "" {
+		t.Fatalf("contentless turn must not be signed: %q", got)
+	}
+	if err := split.Close(context.Background(), ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := split.Transcript(); got != rollover.DefaultEmptyBody {
+		t.Fatalf("EmptyBody substitution lost: %q", got)
+	}
+}
+
+// TestSinkFooterSignsUnflushedContent covers the coalescing hazard: the
+// sink performs no I/O, so on a fast turn the whole answer can still be
+// sitting unposted in the splitter when the turn ends. An answer that
+// is about to be written is an answer, and it gets its footer.
+func TestSinkFooterSignsUnflushedContent(t *testing.T) {
+	split, sink := newFooterSink(t)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	if err := sink.OnUpdate(context.Background(), chunkNotification("never flushed", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if len(split.IDs()) != 0 {
+		t.Fatal("precondition: nothing should have been posted yet")
+	}
+	sink.maybeAppendFooter()
+	if got := split.Transcript(); !strings.HasSuffix(got, "\n\n*🏛️ opus-4.5*") {
+		t.Fatalf("unflushed answer went unsigned: %q", got)
+	}
+}
+
+// TestSinkFooterIsNotEatenByThePlaceholder is the other half of the
+// surface hazard. Zulip has no stream: the first message is a
+// "Thinking…" placeholder that the spinner EDITS in place. The footer
+// must not be overwritten by a late spinner frame — and it is not,
+// because UpdatePlaceholder self-disarms as soon as any text exists.
+func TestSinkFooterIsNotEatenByThePlaceholder(t *testing.T) {
+	z := newZulip()
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	ctx := context.Background()
+	if err := split.Start(ctx, statusline.Thinking(statusline.Status{})); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	sink := newStreamingSink(split, false)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	if err := sink.OnUpdate(ctx, chunkNotification("the answer", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	sink.maybeAppendFooter()
+	// A spinner frame racing the end of the turn writes nothing.
+	if alive, err := split.UpdatePlaceholder(ctx, statusline.Spinner(sink.Status(), "...")); alive || err != nil {
+		t.Fatalf("UpdatePlaceholder alive=%v err=%v — a frame could still land on the answer", alive, err)
+	}
+	if err := split.Close(ctx, ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := z.lastBody(); got != "the answer\n\n*🏛️ opus-4.5*" {
+		t.Fatalf("published body = %q", got)
 	}
 }
 

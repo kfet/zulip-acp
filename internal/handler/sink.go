@@ -24,7 +24,8 @@ import (
 //   - Plan and ToolCall updates → suppressed. fir emits them
 //     constantly on multi-step work and they read as noise on a phone.
 //   - dev.acp-kit.status-line/v1 _meta → mood/plan captured and
-//     prepended once, on the first user-visible chunk, as a header.
+//     appended once, at the very end of the answer, as an italic
+//     footer (see maybeAppendFooter).
 //
 // The sink performs NO I/O: it only appends to the splitter, which is
 // pure. Publishing happens on the coalescing tick. That separation is
@@ -36,7 +37,7 @@ type streamingSink struct {
 	// concurrently with the chunk path.
 	statusMu      sync.Mutex
 	status        statusline.Status
-	headerEmitted bool
+	footerEmitted bool
 
 	// hideThinking suppresses thought chunks. Read-only after
 	// construction.
@@ -47,11 +48,15 @@ func newStreamingSink(split *rollover.Splitter, hideThinking bool) *streamingSin
 	return &streamingSink{split: split, hideThinking: hideThinking}
 }
 
-// SetProviderEmoji records the relay-resolved provider emoji for this
-// turn. Empty means unknown, and the renderer drops the segment.
-func (s *streamingSink) SetProviderEmoji(emoji string) {
+// SetModelInfo records the relay-resolved identity of the model
+// servicing this turn: the provider emoji and the short model name,
+// which the renderer joins into one segment ("🏛️ opus-4.5"). Either
+// half may be empty — an unknown provider or an unnamed model degrades
+// to the other half, and both empty drops the segment.
+func (s *streamingSink) SetModelInfo(emoji, model string) {
 	s.statusMu.Lock()
 	s.status.ProviderEmoji = emoji
+	s.status.Model = model
 	s.statusMu.Unlock()
 }
 
@@ -71,12 +76,13 @@ func (s *streamingSink) OnUpdate(_ context.Context, n acp.SessionNotification) e
 	if chunk == "" {
 		return nil
 	}
-	s.split.Append(s.maybePrependHeader(chunk))
+	s.split.Append(chunk)
 	return nil
 }
 
-// cacheMeta keeps the latest mood/plan warm. Header rendering is lazy,
-// on the first user-visible chunk.
+// cacheMeta keeps the latest mood/plan warm. The status line is
+// rendered from this snapshot twice: live, by every spinner frame, and
+// finally by maybeAppendFooter at the end of the turn.
 func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
 		s.statusMu.Lock()
@@ -86,20 +92,57 @@ func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 	}
 }
 
-// maybePrependHeader injects the status header in front of the first
-// user-visible write, exactly once.
-func (s *streamingSink) maybePrependHeader(t string) string {
+// maybeAppendFooter appends the status line to the transcript as the
+// LAST thing in the answer — a blank line, then the line in italics:
+//
+//	\n\n*🏛️ opus-4.5 • steady • 2/5*
+//
+// Called once, by handler.run, after the outbox links and any
+// "(stopped: …)" note have been appended and BEFORE split.Close
+// flushes. It is a footer rather than a header because mood and plan
+// are agent-supplied and normally arrive mid-turn: a line rendered on
+// the first chunk showed a status the agent had not published yet.
+// Here the snapshot is final, which is the whole point of the move.
+//
+// It is suppressed when:
+//
+//   - the turn produced no user-visible content. The check is on the
+//     TRANSCRIPT, not on what has been posted: the sink performs no
+//     I/O, so on a fast turn the entire answer can still be sitting
+//     unflushed in the splitter when the turn ends — an answer that is
+//     about to be written is an answer. Conversely, signing an empty
+//     turn would defeat Close's EmptyBody substitution, which only
+//     triggers on a blank transcript;
+//   - the rendered line is empty (unknown provider, no model, no agent
+//     _meta) — nothing is appended, not even the blank line.
+//
+// Error turns never reach here: handler.failTurn closes the splitter
+// on its own path and does not sign a failure.
+//
+// Zulip-specific hazards it is safe against, both pinned by tests:
+//
+//   - the animated placeholder. spinner/UpdatePlaceholder edits the
+//     first message only while the transcript is empty and
+//     self-disarms as soon as any text is appended, so no spinner
+//     frame can overwrite the footer.
+//   - the end-of-turn repost. RepostOnClose deletes the streamed chain
+//     and re-posts it as NEW messages, copying each message's last
+//     WRITTEN body. Appending the footer before Close's flush is what
+//     puts it in that body: appended after, it would be lost by the
+//     repost; appended by the repost, it would be doubled.
+func (s *streamingSink) maybeAppendFooter() {
 	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	if s.headerEmitted {
-		return t
+	if s.footerEmitted {
+		s.statusMu.Unlock()
+		return
 	}
-	s.headerEmitted = true
-	h := statusline.Header(s.status)
-	if h == "" {
-		return t
+	s.footerEmitted = true
+	footer := statusline.Footer(s.status)
+	s.statusMu.Unlock()
+	if footer == "" || strings.TrimSpace(s.split.Transcript()) == "" {
+		return
 	}
-	return h + "\n" + t
+	s.split.Append(footer)
 }
 
 // --- sentinel watch ------------------------------------------------------

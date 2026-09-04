@@ -74,8 +74,8 @@ Things deliberately not done in v1, with the reason.
 - **The `sink` + streaming layers are being written for the third time.**
   `poe-acp`, `slack-acp` and now `zulip-acp` each carry a near-identical
   `streamingSink` (render an `acp.SessionNotification` into surface text,
-  suppress thoughts on `hide_thinking`, cache `statusline` `_meta`, prepend a
-  header once on the first user-visible chunk). Three copies is the signal:
+  suppress thoughts on `hide_thinking`, cache `statusline` `_meta`, append a
+  status footer once at the end of the answer). Three copies is the signal:
   this belongs in acp-kit as a renderer with a per-surface markup strategy.
   Recorded, not done — the v1 design is explicit that the third copy is
   the *evidence*, and the extraction is its own change with its own tests.
