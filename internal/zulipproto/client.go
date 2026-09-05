@@ -50,6 +50,11 @@ import (
 // truncation — so the client checks it itself.
 const MaxMessageLength = 10000
 
+// MaxTopicLength is Zulip's MAX_TOPIC_LENGTH, in Unicode code points.
+// Like a message body, an over-long topic is truncated rather than
+// refused, so the client checks it itself.
+const MaxTopicLength = 60
+
 // DefaultLongPollTimeout bounds a single GET /events. The server holds
 // the request open until an event arrives or roughly 90s elapse, so the
 // client budget must be comfortably above that.
@@ -424,6 +429,26 @@ func (c *Client) EditMessage(ctx context.Context, id int64, content string) erro
 		return err
 	}
 	form := url.Values{"content": {content}}
+	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
+}
+
+// MoveMessage moves a message to another topic in the same channel.
+//
+// Zulip models a topic move as a message edit: PATCH /messages/{id}
+// with `topic` and no `content`. propagateMode selects how much of the
+// old topic travels with it — "change_one" (this message only),
+// "change_later", or "change_all".
+//
+// Whether the bot may move a message is a REALM POLICY
+// (can_move_messages_between_topics_group, itself bounded by
+// move_messages_within_stream_limit_seconds) and older servers reject
+// some propagate modes outright, so callers must degrade rather than
+// depend on it.
+func (c *Client) MoveMessage(ctx context.Context, id int64, topic, propagateMode string) error {
+	if n := utf8.RuneCountInString(topic); n > MaxTopicLength {
+		return fmt.Errorf("zulip: topic is %d code points, over MAX_TOPIC_LENGTH %d — Zulip would truncate it silently", n, MaxTopicLength)
+	}
+	form := url.Values{"topic": {topic}, "propagate_mode": {propagateMode}}
 	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
 }
 

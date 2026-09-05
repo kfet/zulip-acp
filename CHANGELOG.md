@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`autotopic_channels`: general chat gets a topic of its own.** Zulip 11's
+  "general chat" is literally the empty topic, so a conversation held there
+  buries itself in the channel's one shared feed. In a channel listed in the
+  new `autotopic_channels` key, an accepted general-chat message is MOVED to a
+  topic generated from its text (`PATCH /messages/{id}` with
+  `propagate_mode=change_one`) and the conversation is opened there. The move
+  happens before the conversation is allocated, so no journal migration is
+  involved, and any failure — realm
+  `can_move_messages_between_topics_group`, an older server — is logged and
+  answered in place, never dropped. A generated name that would collide with
+  an existing conversation gets the message id appended, so two people opening
+  general chat with the same words never share one session (`config`:
+  `AutotopicChannels` + `ResolveAutotopic`; `channels.Set`: static autotopic id
+  set + `Autotopic(id)`; `zulipproto`: `MoveMessage` + `MaxTopicLength`, which
+  Zulip enforces by silent truncation exactly as it does `MAX_MESSAGE_LENGTH`;
+  new `internal/autotopic`: pure heuristic namer, first usable line, mentions
+  and markdown stripped, word-boundary truncation to 60 code points,
+  `chat <timestamp>` fallback).
+
 ## [0.15.0] - 2026-09-04
 
 First release carrying **both** lines of work that were briefly cut as two

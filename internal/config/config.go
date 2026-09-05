@@ -69,6 +69,16 @@ type Config struct {
 	// allowed_user_ids still gates it.
 	AmbientChannels []string `json:"ambient_channels,omitempty"`
 
+	// AutotopicChannels lists channels where a "general chat" message
+	// — Zulip 11's empty topic ("") — is MOVED to a freshly named
+	// topic before the relay answers, so the conversation happens
+	// there instead of in the channel's undifferentiated feed.
+	//
+	// Entries are names or ids, resolved like Channels, and must also
+	// be served (via `channels` or "*"). Everywhere else general chat
+	// behaves exactly as any other topic.
+	AutotopicChannels []string `json:"autotopic_channels,omitempty"`
+
 	// DMs enables direct-message conversations: 1:1 and group DMs with
 	// the bot. Default FALSE — serving DMs is an explicit decision.
 	//
@@ -228,6 +238,11 @@ func (c *Config) Validate() error {
 	for _, ch := range c.AmbientChannels {
 		if strings.TrimSpace(ch) == "" {
 			return fmt.Errorf("ambient_channels must not contain empty entries")
+		}
+	}
+	for _, ch := range c.AutotopicChannels {
+		if strings.TrimSpace(ch) == "" {
+			return fmt.Errorf("autotopic_channels must not contain empty entries")
 		}
 	}
 	// A splitter built from these markers must still be constructible;
@@ -399,7 +414,22 @@ func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]strin
 // ResolveChannels an empty list is fine — it simply yields an empty
 // set, meaning "no ambient channels, mention-gate everywhere".
 func (c *Config) ResolveAmbient(available []zulipproto.Stream) (map[int64]string, error) {
-	if len(c.AmbientChannels) == 0 {
+	return resolveNamed("ambient_channels", c.AmbientChannels, available)
+}
+
+// ResolveAutotopic maps the configured autotopic_channels names/ids
+// onto Zulip channel ids. An empty list yields an empty set, meaning
+// "general chat is an ordinary topic everywhere".
+func (c *Config) ResolveAutotopic(available []zulipproto.Stream) (map[int64]string, error) {
+	return resolveNamed("autotopic_channels", c.AutotopicChannels, available)
+}
+
+// resolveNamed resolves a secondary channel list — one that modifies
+// behaviour in channels the relay already serves — onto stream ids.
+// key names the config field, so the operator is told which list is
+// wrong.
+func resolveNamed(key string, wants []string, available []zulipproto.Stream) (map[int64]string, error) {
+	if len(wants) == 0 {
 		return map[int64]string{}, nil
 	}
 	byName := make(map[string]zulipproto.Stream, len(available))
@@ -408,20 +438,20 @@ func (c *Config) ResolveAmbient(available []zulipproto.Stream) (map[int64]string
 		byName[s.Name] = s
 		byID[s.StreamID] = s
 	}
-	out := make(map[int64]string, len(c.AmbientChannels))
-	for _, want := range c.AmbientChannels {
+	out := make(map[int64]string, len(wants))
+	for _, want := range wants {
 		want = strings.TrimSpace(want)
 		if id, err := strconv.ParseInt(want, 10, 64); err == nil {
 			s, ok := byID[id]
 			if !ok {
-				return nil, fmt.Errorf("ambient_channels id %d not visible to the bot — subscribe it to the channel", id)
+				return nil, fmt.Errorf("%s id %d not visible to the bot — subscribe it to the channel", key, id)
 			}
 			out[s.StreamID] = s.Name
 			continue
 		}
 		s, ok := byName[want]
 		if !ok {
-			return nil, fmt.Errorf("ambient_channels %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", want)
+			return nil, fmt.Errorf("%s %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", key, want)
 		}
 		out[s.StreamID] = s.Name
 	}

@@ -84,6 +84,7 @@ func TestValidate(t *testing.T) {
 		{"budget over Zulip's limit", Config{MaxMessageChars: zulipproto.MaxMessageLength + 1}},
 		{"empty channel", Config{Channels: []string{"fleet", "  "}}},
 		{"empty ambient channel", Config{AmbientChannels: []string{"fleet", "  "}}},
+		{"empty autotopic channel", Config{AutotopicChannels: []string{"fleet", "  "}}},
 		{"markers exceed budget", Config{MaxMessageChars: 100, SealMarker: strings.Repeat("s", 90)}},
 	}
 	for _, c := range bad {
@@ -205,6 +206,42 @@ func TestResolveAmbient(t *testing.T) {
 	}
 	if _, err := (&Config{AmbientChannels: []string{"404"}}).ResolveAmbient(available); err == nil {
 		t.Fatal("want error for unknown id")
+	}
+}
+
+// TestResolveAutotopic covers autotopic_channels resolution: same
+// name/id rules as ambient_channels, and an empty list is likewise
+// legitimate — general chat is then an ordinary topic everywhere.
+func TestResolveAutotopic(t *testing.T) {
+	available := []zulipproto.Stream{
+		{StreamID: 4, Name: "fleet"},
+		{StreamID: 7, Name: "general"},
+	}
+
+	got, err := (&Config{}).ResolveAutotopic(available)
+	if err != nil {
+		t.Fatalf("ResolveAutotopic(empty): %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("empty autotopic list resolved = %v, want empty set", got)
+	}
+
+	got, err = (&Config{AutotopicChannels: []string{"fleet", " 7 "}}).ResolveAutotopic(available)
+	if err != nil {
+		t.Fatalf("ResolveAutotopic: %v", err)
+	}
+	if len(got) != 2 || got[4] != "fleet" || got[7] != "general" {
+		t.Fatalf("resolved = %v", got)
+	}
+
+	// The operator must be told WHICH list is wrong.
+	_, err = (&Config{AutotopicChannels: []string{"nope"}}).ResolveAutotopic(available)
+	if err == nil || !strings.Contains(err.Error(), "autotopic_channels") {
+		t.Fatalf("err = %v, want an autotopic_channels error for an unknown name", err)
+	}
+	_, err = (&Config{AutotopicChannels: []string{"404"}}).ResolveAutotopic(available)
+	if err == nil || !strings.Contains(err.Error(), "autotopic_channels id 404") {
+		t.Fatalf("err = %v, want an autotopic_channels error for an unknown id", err)
 	}
 }
 
