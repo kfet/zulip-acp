@@ -252,3 +252,126 @@ func TestAutotopicOnlyOnTheOpeningMessage(t *testing.T) {
 		t.Fatalf("moves = %v, want exactly one", got)
 	}
 }
+
+// TestAutotopicMovesDespiteEngagedLobby is the production bug from
+// v0.16.2: in #ask-fir the general-chat key had been engaged long
+// before the feature shipped, so every general-chat message continued
+// that legacy conversation and was never moved — the feature was inert
+// in that channel, permanently. General chat is a LOBBY: what the
+// journal holds for it is not engagement.
+//
+// The legacy conversation itself must be left strictly alone: not
+// deleted, not retired, not migrated. It simply stops receiving new
+// messages.
+func TestAutotopicMovesDespiteEngagedLobby(t *testing.T) {
+	// Both spellings of the lobby key: the display name production
+	// sees, and the empty string a journal written by a client with
+	// the empty_topic_name capability would hold.
+	for _, lobbyTopic := range []string{"general chat", ""} {
+		hh := autotopicHarness(t, true)
+		lobbyKey := journal.Channel(4, lobbyTopic)
+		before, err := hh.j.Ensure(lobbyKey)
+		if err != nil {
+			t.Fatalf("seed lobby conversation: %v", err)
+		}
+		hh.deliver(t, lobbyTopic, mention("Deploy the relay tonight"))
+
+		want := "Deploy the relay tonight"
+		if got := hh.z.moved(); len(got) != 1 || got[0] != "1:"+want+":change_one" {
+			t.Fatalf("lobby %q: moves = %v, want one change_one move to %q", lobbyTopic, got, want)
+		}
+		if got := hh.z.topicOf(hh.z.lastID()); got != want {
+			t.Fatalf("lobby %q: answered in topic %q, want %q", lobbyTopic, got, want)
+		}
+		if _, ok := hh.j.Lookup(journal.Channel(4, want)); !ok {
+			t.Fatalf("lobby %q: no conversation allocated in topic %q", lobbyTopic, want)
+		}
+		after, ok := hh.j.Lookup(lobbyKey)
+		if !ok || after.ID != before.ID {
+			t.Fatalf("lobby %q: conversation changed: %+v → %+v (ok=%v)", lobbyTopic, before, after, ok)
+		}
+	}
+}
+
+// TestAutotopicFallbackDoesNotLatchOff: a failed move answers in
+// general chat, which allocates a conversation under the lobby key.
+// That conversation must not disable the feature for the channel — the
+// NEXT general-chat message is still named and moved. Before the lobby
+// framing a single transient API error switched autotopic off until
+// somebody edited the journal by hand.
+func TestAutotopicFallbackDoesNotLatchOff(t *testing.T) {
+	hh := autotopicHarness(t, true)
+	hh.z.moveErr = errors.New("you don't have permission to edit this message")
+	hh.deliver(t, "general chat", mention("first question"))
+	if got := hh.z.moved(); len(got) != 0 {
+		t.Fatalf("moves = %v, want none after a failed move", got)
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "general chat")); !ok {
+		t.Fatal("the fallback answer allocated no conversation in general chat")
+	}
+
+	hh.z.moveErr = nil
+	hh.deliver(t, "general chat", mention("second question"))
+	if got := hh.z.moved(); len(got) != 1 || got[0] != "1:second question:change_one" {
+		t.Fatalf("moves = %v, want the next message to be moved", got)
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "second question")); !ok {
+		t.Fatal("no conversation allocated in the moved topic")
+	}
+}
+
+// TestAutotopicUnaddressedIsNotMoved: the move now runs before the
+// addressed/engaged decision, so that decision has to be re-derived
+// correctly. In a channel that is not ambient a general-chat message
+// still needs the @-mention to summon the relay — an unaddressed one
+// moves nothing and allocates nothing.
+func TestAutotopicUnaddressedIsNotMoved(t *testing.T) {
+	hh := autotopicHarness(t, true)
+	hh.deliver(t, "general chat", "just people talking amongst themselves")
+
+	if got := hh.z.moved(); len(got) != 0 {
+		t.Fatalf("moves = %v, want none for an unaddressed message", got)
+	}
+	if hh.z.count() != 0 {
+		t.Fatal("relay answered an unaddressed general-chat message")
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "general chat")); ok {
+		t.Fatal("an unaddressed message allocated a conversation")
+	}
+}
+
+// TestAutotopicGatesRunBeforeTheMove: the gates that precede the move
+// must keep preceding it. A sender outside AllowedUsers, and a
+// `!command`, both consume the message with no topic move — a rejected
+// sender must never be able to retopic anything, and `!help` in
+// general chat must leave the channel exactly as it found it.
+func TestAutotopicGatesRunBeforeTheMove(t *testing.T) {
+	hh := cmdHarness(t, newAgent("ok"), func(c *Config) {
+		c.Channels = channels.New(channels.Config{
+			Explicit:  map[int64]string{4: "fleet"},
+			Autotopic: map[int64]string{4: "fleet"},
+		})
+		c.AllowedUsers = map[int64]struct{}{42: {}}
+	})
+	hh.deliverAs(t, humanID, "general chat", mention("Deploy the relay tonight"))
+	if got := hh.z.moved(); len(got) != 0 {
+		t.Fatalf("moves = %v, want none from a sender outside the allowlist", got)
+	}
+	if hh.z.count() != 0 {
+		t.Fatal("relay answered a user outside the allowlist")
+	}
+
+	hh.deliverAs(t, 42, "general chat", mention("!help"))
+	if got := hh.z.moved(); len(got) != 0 {
+		t.Fatalf("moves = %v, want none for a command", got)
+	}
+	if hh.z.count() == 0 {
+		t.Fatal("!help was not answered")
+	}
+	if got := hh.z.topicOf(hh.z.lastID()); got != "general chat" {
+		t.Fatalf("!help answered in topic %q, want general chat", got)
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "general chat")); ok {
+		t.Fatal("a command allocated a conversation")
+	}
+}

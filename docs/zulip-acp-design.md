@@ -340,7 +340,7 @@ live agent sessions — a migration not worth a cosmetic gain. Instead the
 knowledge is confined to one predicate, `autotopic.IsGeneralChat`, which
 accepts both spellings (whitespace-trimmed, case-insensitive, exact — `general`
 and `general chat notes` are ordinary topics). It is called from exactly one
-place, `Handler.autotopic`. Everywhere else the topic string stays exactly what
+place, `Handler.isLobby`. Everywhere else the topic string stays exactly what
 the server sent, and that string remains the journal key.
 
 A channel listed in `autotopic_channels` (a third static id set on
@@ -349,22 +349,39 @@ therefore **moves** an accepted general-chat message to a topic of its own —
 `PATCH /messages/{id}` with `topic` and `propagate_mode=change_one` — and
 answers there.
 
-Three constraints shape it:
+Four constraints shape it:
 
-- **The move happens before the conversation is allocated.** `Handler.autotopic`
-  runs after every gate and after command dispatch, but *before*
-  `journal.Ensure`, so the conversation is created under its final key. Doing it
-  later would need a key migration, and the rename path
-  (`handleUpdate` → `journal.Rename`) exists for humans retitling a topic, not
-  for the relay tidying up after itself.
+- **General chat is a LOBBY, not a conversation.** In an autotopic channel the
+  relay never holds a conversation in general chat, so whatever the journal
+  happens to hold under the lobby key — a conv from before the feature shipped,
+  or one a failed move left behind — is **not** engagement. `Handler.isLobby`
+  decides this, and `handleMessage` zeroes the lookup for a lobby message so the
+  move runs on *every* general-chat message. Treating that entry as engagement
+  is what made the feature inert in `#ask-fir` on v0.16.2, and it made a single
+  transient API error latch the feature off for the channel permanently. The
+  pre-existing conv is left strictly alone: not deleted, not retired, not
+  migrated — it simply stops receiving new messages.
+- **The move happens before the lookup, and after every gate.**
+  `Handler.autotopic` runs after the channel allowlist, `AllowedUsers` and
+  command dispatch — a rejected sender or a `!help` must never retopic
+  anything — but *before* `journal.Lookup`/`Ensure`, so the conversation is
+  found and created under its final key. Doing it later would need a key
+  migration, and the rename path (`handleUpdate` → `journal.Rename`) exists for
+  humans retitling a topic, not for the relay tidying up after itself. Because
+  the move precedes the addressed/engaged decision, `addressed` is re-derived
+  on its own merits: ambient channel, or an @-mention. An unaddressed
+  general-chat message in a non-ambient channel is **not** moved.
 - **`change_one`, never `change_all`.** The other messages in general chat
   belong to other people's conversations; moving them would be vandalism.
-- **A failed move must never cost the turn.** Whether a bot may retopic a
-  message is realm policy (`can_move_messages_between_topics_group`, plus the
+- **A failed move must never cost the turn — or the feature.** Whether a bot
+  may retopic a message is realm policy
+  (`can_move_messages_between_topics_group`, plus the
   `move_messages_within_stream_limit_seconds` time limit), and older servers
   have no
   general chat at all. Any error is logged and the original key is used — the
   relay answers in general chat, exactly as it did before the feature existed.
+  That fallback is per-message: the next general-chat message is named and
+  moved as usual.
 
 The name itself comes from `internal/autotopic`, a pure `func(text, now)
 string` over the raw markdown: first usable line, mentions and markdown

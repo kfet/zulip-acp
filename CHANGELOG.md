@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Autotopic never fired in a channel whose general chat was already
+  engaged.** The move ran inside `if !engaged`, so a conversation the journal
+  already held for the `(stream, "general chat")` key — a legacy one from
+  before the feature shipped, as in `#ask-fir`, or one a failed move had just
+  left behind — routed every later general-chat message straight past the move,
+  disabling the feature in that channel permanently. A single transient API
+  error was enough. General chat in an autotopic channel is now a **lobby**,
+  never a conversation: the journal entry under the lobby key is not
+  engagement, the move runs on every general-chat message, and the lookup is
+  done against the FINAL key. The pre-existing lobby conversation is left
+  untouched — it simply stops receiving new messages. The gates that must
+  precede a move (channel allowlist, `AllowedUsers`, command dispatch) still
+  do, and an unaddressed general-chat message in a non-ambient channel is still
+  not moved.
+
 ## [0.16.2] - 2026-09-06
 
 ### Fixed

@@ -448,28 +448,52 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		}
 	}
 
-	existing, engaged := h.cfg.Journal.Lookup(key)
+	// In an autotopic channel general chat is a LOBBY, not a
+	// conversation: every message there is named and moved out. What
+	// the journal already holds under the lobby key — a conv from
+	// before the feature shipped, or one a failed move left behind —
+	// must therefore NOT count as engagement, or that single entry
+	// would route every future general-chat message straight past the
+	// move and disable the feature in that channel forever.
+	lobby := h.isLobby(m)
+
+	var (
+		existing journal.Conv
+		engaged  bool
+	)
+	if !lobby {
+		existing, engaged = h.cfg.Journal.Lookup(key)
+	}
 	if !addressed && !engaged {
+		// A lobby message is gated on being addressed alone: in a
+		// non-ambient channel the mention still summons the relay, and
+		// an unaddressed one is not moved.
 		return
 	}
 
 	// Commands are parsed AFTER every guard above and BEFORE any
-	// conversation is allocated, so `!help` in a topic the relay has
-	// never answered in leaves no state behind. A command consumes the
+	// conversation is allocated — and before any topic move — so
+	// `!help` in a topic the relay has never answered in leaves no
+	// state behind and retopics nothing. A command consumes the
 	// message; nothing here reaches the agent.
 	prompt, handled := h.dispatch(ctx, m, key, h.promptText(text))
 	if handled {
 		return
 	}
 
+	if lobby {
+		// The move happens BEFORE the lookup below, so the
+		// conversation is looked up and allocated under the FINAL key
+		// and no journal migration is ever needed. A failed move
+		// yields the lobby key back and the relay answers in general
+		// chat — for this message only; the next one is attempted
+		// afresh.
+		key = h.autotopic(ctx, m, key, text)
+		existing, engaged = h.cfg.Journal.Lookup(key)
+	}
+
 	conv := existing
 	if !engaged {
-		// General chat reaches us as "" or, without the
-		// empty_topic_name capability, as the display name. In an
-		// autotopic channel the opening message is moved to a topic of
-		// its own FIRST, so the conversation is allocated under its
-		// final key and no journal migration is ever needed.
-		key = h.autotopic(ctx, m, key, text)
 		var err error
 		conv, err = h.cfg.Journal.Ensure(key)
 		if err != nil {
@@ -907,19 +931,25 @@ func (h *Handler) uploadOne(ctx context.Context, dir, name string) (string, erro
 // general chat belong to other people's conversations.
 const propagateOne = "change_one"
 
-// autotopic moves a general-chat message into a topic named after it,
-// returning the key the conversation should be allocated under.
+// isLobby reports whether m arrived in an autotopic channel's general
+// chat — which the relay treats as a LOBBY, never a conversation.
 //
-// It applies only in a channel configured for it, and only to general
-// chat — which reaches us as "" or as the display name "general chat",
-// see autotopic.IsGeneralChat. ANY failure (realm policy,
-// an older server, a transport error) is logged and yields the
-// original key: the relay then answers in general chat exactly as it
-// did before, and the turn is never dropped for a cosmetic reason.
+// General chat reaches us as "" or, without the empty_topic_name
+// capability, as the display name; see autotopic.IsGeneralChat.
+func (h *Handler) isLobby(m *zulipproto.Message) bool {
+	return !m.IsDM() && autotopic.IsGeneralChat(m.Topic) && h.cfg.Channels.Autotopic(m.StreamID)
+}
+
+// autotopic moves a general-chat message into a topic named after it,
+// returning the key the conversation should be allocated under. It is
+// called only for a lobby message (see isLobby).
+//
+// ANY failure (realm policy, an older server, a transport error) is
+// logged and yields the original key: the relay then answers in
+// general chat exactly as it did before, and the turn is never dropped
+// for a cosmetic reason. That fallback is per-message — it must never
+// latch the feature off for the channel.
 func (h *Handler) autotopic(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) journal.Key {
-	if m.IsDM() || !autotopic.IsGeneralChat(m.Topic) || !h.cfg.Channels.Autotopic(m.StreamID) {
-		return key
-	}
 	topic := autotopic.NameAt(h.promptText(text), h.now())
 	// A generated name is a heuristic, so two people opening general
 	// chat with "hi" would land in ONE conversation — sharing a
