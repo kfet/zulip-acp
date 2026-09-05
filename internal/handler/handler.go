@@ -8,6 +8,7 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -118,7 +119,7 @@ type Poster interface {
 	// Handler.repostForNotify).
 	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
-	Upload(ctx context.Context, filename string, r io.Reader) (string, error)
+	Upload(ctx context.Context, filename, contentType string, r io.Reader) (string, error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
 	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
 }
@@ -692,7 +693,7 @@ func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript strin
 	if strings.TrimSpace(transcript) == "" {
 		return
 	}
-	url, err := h.cfg.Client.Upload(ctx, "answer.md", strings.NewReader(transcript))
+	url, err := h.cfg.Client.Upload(ctx, "answer.md", zulipproto.ContentType("answer.md", nil), strings.NewReader(transcript))
 	if err != nil {
 		h.cfg.Logf("handler: could not rescue %d chars of output: %v (original failure: %v)", len(transcript), err, cause)
 		return
@@ -877,7 +878,14 @@ func (h *Handler) uploadOne(ctx context.Context, dir, name string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	url, err := h.cfg.Client.Upload(ctx, name, f)
+	// Peek the head for sniffing and then upload the *bufio.Reader, so
+	// the peeked bytes are not lost. Peek's error is dropped on purpose:
+	// a short or empty file yields fewer bytes and io.EOF, which sniffs
+	// fine, and a genuine I/O error resurfaces on the next fill during
+	// the upload copy, where it is reported as the upload failing.
+	br := bufio.NewReaderSize(f, 512)
+	head, _ := br.Peek(512)
+	url, err := h.cfg.Client.Upload(ctx, name, zulipproto.ContentType(name, head), br)
 	// Close on a file opened for reading has nothing to flush, so its
 	// error carries no information the upload result does not.
 	_ = f.Close()

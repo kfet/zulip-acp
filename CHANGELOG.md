@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every attachment was served as `application/octet-stream`.**
+  `Client.Upload` built its multipart part with `CreateFormFile`, which
+  hardcodes that type; Zulip stores the declared type verbatim and serves the
+  file back with it, so nothing the relay uploaded ever previewed inline — a
+  `.log` or `.png` was a forced download, which is worst on mobile. `Upload`
+  now takes an explicit `contentType`, and new `zulipproto.ContentType`
+  resolves it: an explicit text-extension table first (determinism — otherwise
+  the answer comes from the host's `/etc/mime.types`), then
+  `mime.TypeByExtension`, then `http.DetectContentType` over the first 512
+  bytes, with every `text/*` flattened to `text/plain; charset=utf-8` because
+  that is what Zulip's inline allowlist renders. Declared types are normalised
+  through `mime.ParseMediaType` + `FormatMediaType` before reaching the
+  header, so a caller cannot inject one.
+
+### Changed
+
+- The built-in system prompt now tells the agent that an outbox file's
+  extension decides how Zulip serves it. It is the only lever the agent has
+  over the attachment's content type.
+
 ## [0.16.1] - 2026-09-06
 
 ### Fixed

@@ -368,6 +368,14 @@ You interpolate the returned relative URL into message markdown yourself:
 auth. Round trips are byte-identical, with **no extension allowlist and no MIME
 sniffing** — `.zzq` full of `/dev/urandom` is accepted.
 
+The server stores the multipart part's **declared `Content-Type` verbatim** and
+serves the file back with it. `multipart.CreateFormFile` hardcodes
+`application/octet-stream`, so an upload built with it is download-only
+forever; Zulip previews inline only for images, `application/pdf`, `text/plain`
+and audio/video, which is why `zulipproto.ContentType` flattens text-ish
+extensions to `text/plain` rather than answering `text/markdown` or
+`text/x-diff`.
+
 ## Markdown
 
 Zulip renders CommonMark-flavoured markdown **server-side at post time**,
