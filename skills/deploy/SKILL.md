@@ -197,15 +197,19 @@ ssh <host> 'journalctl --user -u zulip-acp -n 30 --no-pager'  # event queue regi
 `handler.handleMessage` gates every message:
 
 ```go
-mentioned := h.mentioned(text)
-existing, engaged := h.cfg.Journal.Lookup(m.StreamID, m.Topic)
-if !mentioned && !engaged { return }   // silent: no log line, no reply
+addressed := h.cfg.Channels.Ambient(m.StreamID) || h.mentioned(text)
+existing, engaged := h.cfg.Journal.Lookup(key)   // skipped for a lobby message
+if !addressed && !engaged { return }   // silent: no log line, no reply
 ```
 
 - In a **new** topic the bot must be **@-mentioned** (`@**<bot-full-name>**`)
-  to be summoned.
+  to be summoned — unless the channel is in `ambient_channels`, where every
+  message is addressed.
 - In a topic it is **already engaged in** (present in `state/journal.json`) it
   answers plain messages with no mention.
+- In an `autotopic_channels` channel, **general chat is a lobby**: whatever the
+  journal holds for it is not engagement, so every addressed general-chat
+  message is named and moved to its own topic, every time.
 - A non-mention in a fresh topic is dropped **silently** - no journal line at
   all. Do not read that as a broken relay: it is the designed behaviour, and it
   is the single easiest way to waste an hour "debugging" a healthy deploy.
