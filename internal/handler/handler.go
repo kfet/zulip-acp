@@ -463,10 +463,11 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 
 	conv := existing
 	if !engaged {
-		// General chat is Zulip 11's empty topic. In an autotopic
-		// channel the opening message is moved to a topic of its own
-		// FIRST, so the conversation is allocated under its final key
-		// and no journal migration is ever needed.
+		// General chat reaches us as "" or, without the
+		// empty_topic_name capability, as the display name. In an
+		// autotopic channel the opening message is moved to a topic of
+		// its own FIRST, so the conversation is allocated under its
+		// final key and no journal migration is ever needed.
 		key = h.autotopic(ctx, m, key, text)
 		var err error
 		conv, err = h.cfg.Journal.Ensure(key)
@@ -901,13 +902,14 @@ const propagateOne = "change_one"
 // autotopic moves a general-chat message into a topic named after it,
 // returning the key the conversation should be allocated under.
 //
-// It applies only in a channel configured for it, and only to the
-// empty topic — Zulip 11's "general chat". ANY failure (realm policy,
+// It applies only in a channel configured for it, and only to general
+// chat — which reaches us as "" or as the display name "general chat",
+// see autotopic.IsGeneralChat. ANY failure (realm policy,
 // an older server, a transport error) is logged and yields the
 // original key: the relay then answers in general chat exactly as it
 // did before, and the turn is never dropped for a cosmetic reason.
 func (h *Handler) autotopic(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) journal.Key {
-	if m.IsDM() || m.Topic != "" || !h.cfg.Channels.Autotopic(m.StreamID) {
+	if m.IsDM() || !autotopic.IsGeneralChat(m.Topic) || !h.cfg.Channels.Autotopic(m.StreamID) {
 		return key
 	}
 	topic := autotopic.NameAt(h.promptText(text), h.now())

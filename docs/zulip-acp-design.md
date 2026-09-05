@@ -323,11 +323,25 @@ stored.
 
 ### Naming general chat (`autotopic_channels`)
 
-Zulip 11 added "general chat": the empty topic (`""`). It is a real topic as
+Zulip 11 added "general chat": the empty topic. It is a real topic as
 far as the API is concerned, so the relay would happily hold a conversation
 there — and that is the problem. General chat is one shared feed per channel,
 so every conversation the relay ever has in it lands in the same place,
 interleaved, with no subject anyone can search for or mute.
+
+**It is only literally `""` on the wire for a client that asks for it.** Zulip
+sends the empty string for the empty topic only to clients that declare the
+`empty_topic_name` client capability in `POST /register`; everyone else gets
+the translated display name, e.g. `"subject": "general chat"` (measured, Zulip
+12.2, feature level 500). The relay does **not** declare the capability: doing
+so would change the topic string it sees for every empty-topic conversation at
+once, remapping their journal keys from `general chat` to `""` and orphaning
+live agent sessions — a migration not worth a cosmetic gain. Instead the
+knowledge is confined to one predicate, `autotopic.IsGeneralChat`, which
+accepts both spellings (whitespace-trimmed, case-insensitive, exact — `general`
+and `general chat notes` are ordinary topics). It is called from exactly one
+place, `Handler.autotopic`. Everywhere else the topic string stays exactly what
+the server sent, and that string remains the journal key.
 
 A channel listed in `autotopic_channels` (a third static id set on
 `channels.Set`, alongside `ambient`, keyed by id so a rename cannot drop it)
@@ -355,9 +369,9 @@ Three constraints shape it:
 The name itself comes from `internal/autotopic`, a pure `func(text, now)
 string` over the raw markdown: first usable line, mentions and markdown
 decoration stripped, whitespace collapsed, truncated on a word boundary to 60
-code points, with a `chat <timestamp>` fallback so the result is never empty —
-an empty topic *is* general chat, so a falsy name would silently mean "did not
-move". Keeping it pure and Zulip-free is what makes it exhaustively
+code points, with a `chat <timestamp>` fallback so the result is never general
+chat itself — that would silently mean "did not move". Keeping it pure and
+Zulip-free is what makes it exhaustively
 table-testable, and what makes swapping in an agent-generated title later a
 one-call change.
 
