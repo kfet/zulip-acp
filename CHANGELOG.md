@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`autotopic_channels` was dead code against a real server.** The general-chat
+  test was `topic == ""`, but Zulip only sends the empty string for the empty
+  topic to clients that declare the `empty_topic_name` client capability in
+  `POST /register`; to everyone else it substitutes the translated display
+  name. Measured on Zulip 12.2 (feature level 500), `GET /messages` returns
+  `"subject": "general chat"`, so the check never fired. New
+  `autotopic.IsGeneralChat` recognises both spellings (trimmed,
+  case-insensitive) and is used ONLY in `Handler.autotopic` — the capability is
+  deliberately not declared, because it would flip every empty-topic
+  conversation's journal key at once and orphan live sessions. Every other
+  topic comparison, and the journal key itself, is unchanged. `autotopic.NameAt`
+  also refuses to generate the name `general chat` for the same reason it never
+  generated `""`: it would mean "did not move". Note the display name is
+  translated and only the English one is matched, so a non-English realm still
+  needs the capability route.
+
 ## [0.16.0] - 2026-09-05
 
 ### Added

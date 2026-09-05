@@ -124,7 +124,10 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   who are not on the list. `"dms": true` with no
   `channels` at all is a valid DM-only relay.
 - **`autotopic_channels` names general chat.** Zulip 11's "general chat" is
-  literally the empty topic, and a relay answering there buries every
+  the channel's empty topic (which a server reports as the literal string
+  `general chat` unless the client declares the `empty_topic_name` capability —
+  the relay does not, so existing conversation keys stay put; both spellings
+  are recognised). A relay answering there buries every
   conversation in one undifferentiated feed. In a channel listed here — names
   or ids, a subset of the served set — a general-chat message that the relay
   accepts is **moved** to a topic generated from its own text

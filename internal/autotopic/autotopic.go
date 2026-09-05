@@ -1,7 +1,8 @@
 // Package autotopic names a Zulip topic after the message that opens
 // it.
 //
-// Zulip 11's "general chat" is literally the empty topic (""). A relay
+// Zulip 11's "general chat" is the empty topic — but see IsGeneralChat
+// for what a client actually sees on the wire. A relay
 // that answers there buries every conversation in one undifferentiated
 // stream, so in configured channels the opening message is MOVED to a
 // topic of its own — and this package decides what that topic is
@@ -29,14 +30,48 @@ import (
 // the wire-side guard.
 const MaxLen = 60
 
+// generalChat is the display name Zulip substitutes for the empty
+// topic when a client has not declared that it understands "".
+const generalChat = "general chat"
+
+// IsGeneralChat reports whether topic is Zulip's general chat.
+//
+// It matches BOTH forms, and that is the whole point. Zulip only sends
+// the empty string for the empty topic to clients that declare the
+// `empty_topic_name` client capability in POST /register; to everyone
+// else the server substitutes the translated display name. Measured
+// against Zulip 12.2 (feature level 500): GET /api/v1/messages returns
+// "subject": "general chat" for a message in general chat, so a bare
+// `topic == ""` test never fires in production.
+//
+// We deliberately DO NOT declare `empty_topic_name`. Declaring it
+// would flip the topic string the relay sees for every empty-topic
+// conversation at once, remapping their journal keys from "general
+// chat" to "" and orphaning live agent sessions. That migration is not
+// worth a cosmetic gain — so the topic string stays exactly what the
+// server sent everywhere, and only this predicate knows both spellings.
+//
+// The compare is whitespace-trimmed and case-insensitive, but exact:
+// an ordinary topic such as "general" or "general chat notes" is a
+// human's topic and must not be moved.
+//
+// The display name is TRANSLATED, and only the English one is matched.
+// In a realm whose default language is not English the server sends
+// e.g. "Allgemeiner Chat" and autotopic is inert there — the relay
+// answers in general chat, exactly as it did before the feature.
+func IsGeneralChat(topic string) bool {
+	t := strings.TrimSpace(topic)
+	return t == "" || strings.EqualFold(t, generalChat)
+}
+
 // Name returns the topic to move a general-chat message to. It never
-// returns the empty string — an empty topic IS general chat, so a
-// falsy result would silently mean "did not move".
+// returns a name that IS general chat — neither "" nor the display
+// name — because such a result would silently mean "did not move".
 func Name(text string) string { return NameAt(text, time.Now()) }
 
 // NameAt is Name with the clock injected, so the fallback is testable.
 func NameAt(text string, now time.Time) string {
-	if s := fromText(text); s != "" {
+	if s := fromText(text); !IsGeneralChat(s) {
 		return s
 	}
 	// Nothing usable in the message: fall back to something stable,

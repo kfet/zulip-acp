@@ -65,6 +65,30 @@ func TestAutotopicMovesGeneralChat(t *testing.T) {
 	}
 }
 
+// TestAutotopicMovesGeneralChatDisplayName: the case v0.16.0 missed. A
+// real Zulip 12.2 server (feature level 500) sends the empty topic as
+// its translated DISPLAY NAME unless the client declares the
+// empty_topic_name capability — which we deliberately do not. A
+// `subject == ""` test therefore never fires in production.
+func TestAutotopicMovesGeneralChatDisplayName(t *testing.T) {
+	hh := autotopicHarness(t, true)
+	hh.deliver(t, "general chat", mention("Deploy the relay tonight"))
+
+	want := "Deploy the relay tonight"
+	if got := hh.z.moved(); len(got) != 1 || got[0] != "1:"+want+":change_one" {
+		t.Fatalf("moves = %v, want one change_one move to %q", got, want)
+	}
+	if got := hh.z.topicOf(hh.z.lastID()); got != want {
+		t.Fatalf("answered in topic %q, want %q", got, want)
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "general chat")); ok {
+		t.Fatal("a conversation was allocated under the general-chat display name")
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, want)); !ok {
+		t.Fatalf("no conversation allocated in topic %q", want)
+	}
+}
+
 // TestAutotopicLeavesOtherChannelsAlone: general chat is an ordinary
 // topic in a channel that is not configured for naming.
 func TestAutotopicLeavesOtherChannelsAlone(t *testing.T) {
@@ -114,6 +138,27 @@ func TestAutotopicFallsBackWhenMoveFails(t *testing.T) {
 	}
 	if _, ok := hh.j.Lookup(journal.Channel(4, "")); !ok {
 		t.Fatal("general chat conversation was not allocated after a failed move")
+	}
+}
+
+// TestAutotopicDisplayNameFallsBackWhenMoveFails: when the move fails
+// on the form production actually sees, the key stays exactly the
+// topic string the server sent — the display name — and that string
+// remains the journal key. Nothing is normalised behind the relay's
+// back.
+func TestAutotopicDisplayNameFallsBackWhenMoveFails(t *testing.T) {
+	hh := autotopicHarness(t, true)
+	hh.z.moveErr = errors.New("you don't have permission to edit this message")
+	hh.deliver(t, "general chat", mention("Deploy the relay tonight"))
+
+	if got := hh.z.topicOf(hh.z.lastID()); got != "general chat" {
+		t.Fatalf("answered in topic %q, want %q", got, "general chat")
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "general chat")); !ok {
+		t.Fatal("no conversation allocated under the topic the server sent")
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "")); ok {
+		t.Fatal("the display name was normalised to the empty topic")
 	}
 }
 

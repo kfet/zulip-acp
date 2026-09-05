@@ -35,6 +35,12 @@ func TestNameAt(t *testing.T) {
 		{"underscore identifier kept", "why does make_test fail", "why does make_test fail"},
 		{"whitespace collapsed", "too    many\tspaces", "too many spaces"},
 		{"empty", "", "chat 2026-09-05 14:30:15"},
+		// A message whose whole text is "general chat" would name the
+		// topic after general chat itself — at best colliding with the
+		// display name, and quite possibly a no-op move back to the
+		// empty topic. Either way it means "did not move".
+		{"names general chat", "general chat", "chat 2026-09-05 14:30:15"},
+		{"general chat prefix kept", "general chat notes", "general chat notes"},
 		{"punctuation only", "!!! ... ???", "chat 2026-09-05 14:30:15"},
 		{"emoji only", "🙂🙂", "chat 2026-09-05 14:30:15"},
 		{
@@ -64,13 +70,42 @@ func TestNameAt(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("NameAt(%q) = %q, want %q", tc.in, got, tc.want)
 			}
-			if got == "" {
-				t.Fatal("a topic name must never be empty — that IS general chat")
+			if IsGeneralChat(got) {
+				t.Fatal("a topic name must never be general chat — that means 'did not move'")
 			}
 			if n := utf8.RuneCountInString(got); n > MaxLen {
 				t.Fatalf("topic is %d code points, want <= %d", n, MaxLen)
 			}
 		})
+	}
+}
+
+// TestIsGeneralChat: the relay must recognise general chat in BOTH
+// wire spellings — "" (only sent to clients declaring the
+// empty_topic_name capability, which we deliberately do not) and the
+// translated display name a real server actually sends. An ordinary
+// topic that merely starts with the words is a human's topic.
+func TestIsGeneralChat(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", true},
+		{"   ", true},
+		{"general chat", true},
+		{"General chat", true},
+		{"GENERAL CHAT", true},
+		{"  general chat  ", true},
+		{"general", false},
+		{"general chat notes", false},
+		{"generalchat", false},
+		{"chat", false},
+		{"release", false},
+	}
+	for _, tc := range cases {
+		if got := IsGeneralChat(tc.in); got != tc.want {
+			t.Fatalf("IsGeneralChat(%q) = %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }
 
