@@ -40,10 +40,11 @@ type fakeZulip struct {
 	topics map[int64]string
 	// dms records the recipient set of every message sent as a DM,
 	// keyed by message id. A channel message never appears here.
-	dms     map[int64][]int64
-	order   []int64
-	uploads map[string][]byte
-	sendErr error
+	dms         map[int64][]int64
+	order       []int64
+	uploads     map[string][]byte
+	uploadTypes map[string]string
+	sendErr     error
 	// sendHook, when set, runs before every send and can fail it. It
 	// exists to fail exactly ONE post — e.g. the end-of-turn re-post,
 	// which happens after the placeholder has already gone up.
@@ -81,12 +82,13 @@ type fakeZulip struct {
 
 func newZulip() *fakeZulip {
 	return &fakeZulip{
-		bodies:  map[int64]string{},
-		topics:  map[int64]string{},
-		dms:     map[int64][]int64{},
-		widgets: map[int64]string{},
-		uploads: map[string][]byte{},
-		posted:  make(chan struct{}, 256),
+		bodies:      map[int64]string{},
+		topics:      map[int64]string{},
+		dms:         map[int64][]int64{},
+		widgets:     map[int64]string{},
+		uploads:     map[string][]byte{},
+		uploadTypes: map[string]string{},
+		posted:      make(chan struct{}, 256),
 
 		unreacted: make(chan struct{}, 256),
 	}
@@ -259,7 +261,7 @@ func (z *fakeZulip) GetMessage(_ context.Context, id int64) (zulipproto.Message,
 	return zulipproto.Message{ID: id, Content: body, SenderID: botID}, nil
 }
 
-func (z *fakeZulip) Upload(_ context.Context, filename string, r io.Reader) (string, error) {
+func (z *fakeZulip) Upload(_ context.Context, filename, contentType string, r io.Reader) (string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
@@ -270,6 +272,7 @@ func (z *fakeZulip) Upload(_ context.Context, filename string, r io.Reader) (str
 		return "", z.uploadEr
 	}
 	z.uploads[filename] = b
+	z.uploadTypes[filename] = contentType
 	return "/user_uploads/2/ab/" + filename, nil
 }
 
@@ -1478,6 +1481,13 @@ func TestOutboxUploads(t *testing.T) {
 	}
 	if _, leaked := hh.z.uploads[".hidden"]; leaked {
 		t.Fatal("dotfile was uploaded")
+	}
+	// Each upload declares a type Zulip will render inline, rather than
+	// multipart's application/octet-stream, which forces a download.
+	for _, name := range []string{"report.log", "patch.diff"} {
+		if got := hh.z.uploadTypes[name]; got != "text/plain; charset=utf-8" {
+			t.Fatalf("%s uploaded as %q", name, got)
+		}
 	}
 	hh.z.mu.Unlock()
 

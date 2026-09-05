@@ -19,8 +19,11 @@
 //     server echoes it back in `ignored_parameters_unsupported`. The
 //     long poll is bounded by the CLIENT's HTTP timeout only.
 //   - Uploads are a single multipart round-trip returning a relative
-//     URL to interpolate into message markdown. No extension allowlist,
-//     no MIME sniffing.
+//     URL to interpolate into message markdown. The server stores the
+//     part's DECLARED Content-Type verbatim and serves the file back
+//     with it — no extension allowlist, no sniffing on their side — so
+//     what we declare is the whole story, and it decides whether a
+//     reader gets an inline preview or a download. See ContentType.
 //   - LENGTH IS NOT THE ONLY LIMIT. A body that is legal by length can
 //     still be refused with HTTP 400 "Unable to render message" if the
 //     server-side markdown/Pygments pass chokes on it. Measured: ~1000
@@ -613,10 +616,15 @@ func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, b
 
 // Upload uploads a file in a single multipart round-trip and returns
 // the relative URL to interpolate into message markdown.
-func (c *Client) Upload(ctx context.Context, filename string, r io.Reader) (string, error) {
+//
+// contentType is what Zulip stores and serves the file back with; it
+// decides whether a reader gets an inline preview or a download. Use
+// ContentType to derive it. An empty or unusable value falls back to
+// DefaultContentType rather than to multipart's silent default.
+func (c *Client) Upload(ctx context.Context, filename, contentType string, r io.Reader) (string, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	part := mustFormFile(mw, filename)
+	part := mustFormFile(mw, filename, validContentType(contentType))
 	if _, err := io.Copy(part, r); err != nil {
 		return "", fmt.Errorf("zulip: read upload: %w", err)
 	}

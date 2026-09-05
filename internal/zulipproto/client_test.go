@@ -363,7 +363,7 @@ func TestUpload(t *testing.T) {
 		gotBody = string(r.body)
 		return 200, okJSON(`"url":"/user_uploads/2/ab/file.log"`)
 	})
-	u, err := newClient(t, ts).Upload(context.Background(), "file.log", strings.NewReader("payload"))
+	u, err := newClient(t, ts).Upload(context.Background(), "file.log", "text/plain; charset=utf-8", strings.NewReader("payload"))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -376,6 +376,31 @@ func TestUpload(t *testing.T) {
 	if !strings.HasPrefix(ts.requests()[0].ctype, "multipart/form-data") {
 		t.Fatalf("content type = %q", ts.requests()[0].ctype)
 	}
+	// The part carries the declared type, not multipart's hardcoded
+	// application/octet-stream — Zulip serves back what we declare here.
+	if !strings.Contains(gotBody, "Content-Type: text/plain; charset=utf-8") {
+		t.Fatalf("part content type missing: %q", gotBody)
+	}
+}
+
+// TestUploadRejectsUnusableContentType pins the header-injection guard:
+// a type with CRLF in it would otherwise be written into the multipart
+// part verbatim.
+func TestUploadRejectsUnusableContentType(t *testing.T) {
+	var gotBody string
+	ts := newServer(t, func(r recordedReq) (int, string) {
+		gotBody = string(r.body)
+		return 200, okJSON(`"url":"/user_uploads/2/ab/f"`)
+	})
+	if _, err := newClient(t, ts).Upload(context.Background(), "f", "text/plain\r\nX-Evil: 1", strings.NewReader("x")); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if strings.Contains(gotBody, "X-Evil") {
+		t.Fatalf("injected header survived: %q", gotBody)
+	}
+	if !strings.Contains(gotBody, "Content-Type: "+DefaultContentType) {
+		t.Fatalf("did not fall back to %s: %q", DefaultContentType, gotBody)
+	}
 }
 
 // errReader fails on Read so Upload's io.Copy error branch is driven
@@ -386,7 +411,7 @@ func (errReader) Read([]byte) (int, error) { return 0, fmt.Errorf("read boom") }
 
 func TestUploadReadError(t *testing.T) {
 	ts := newServer(t, func(recordedReq) (int, string) { return 200, okJSON(`"url":"/x"`) })
-	if _, err := newClient(t, ts).Upload(context.Background(), "f", errReader{}); err == nil {
+	if _, err := newClient(t, ts).Upload(context.Background(), "f", "application/octet-stream", errReader{}); err == nil {
 		t.Fatal("want read error")
 	}
 }
@@ -399,7 +424,7 @@ func TestUploadRequestError(t *testing.T) {
 	// A cancelled context makes newRequest's caller fail at send time;
 	// an invalid method makes it fail at build time.
 	c.base = "https://z.example/api/v1\n"
-	if _, err := c.Upload(context.Background(), "f", strings.NewReader("x")); err == nil {
+	if _, err := c.Upload(context.Background(), "f", "application/octet-stream", strings.NewReader("x")); err == nil {
 		t.Fatal("want request build error")
 	}
 }
@@ -611,7 +636,7 @@ func TestServerErrorsPropagate(t *testing.T) {
 	if _, err := c.Messages(ctx, TopicNarrow(4, "t"), 5, 0); err == nil {
 		t.Fatal("Messages: want error")
 	}
-	if _, err := c.Upload(ctx, "f", strings.NewReader("x")); err == nil {
+	if _, err := c.Upload(ctx, "f", "application/octet-stream", strings.NewReader("x")); err == nil {
 		t.Fatal("Upload: want error")
 	}
 	if _, err := c.Register(ctx, nil, nil); err == nil {

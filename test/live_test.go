@@ -234,7 +234,7 @@ func TestUploadRoundTripIsByteIdentical(t *testing.T) {
 	c, _ := liveClient(t)
 	ctx := context.Background()
 	payload := []byte("attachment round-trip\x00\x01\x02 binary bytes ☃\n")
-	url, err := c.Upload(ctx, "zulip-acp-live.bin", strings.NewReader(string(payload)))
+	url, err := c.Upload(ctx, "zulip-acp-live.bin", "application/octet-stream", strings.NewReader(string(payload)))
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}

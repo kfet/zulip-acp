@@ -31,6 +31,7 @@ The topic is the conversation:
 
 Sharing files:
 - To attach a file to your reply, write it into ` + "`./outbox/`" + ` in your working directory. Everything you leave there is uploaded to Zulip at the end of your turn and linked from your message.
+- Give the file a real extension: it decides how Zulip serves it. Text, images and PDFs preview inline; anything else is a download.
 - Use it for anything a reader would want to keep or open elsewhere: logs, patches, generated data. Do not paste a large file inline.
 
 Length:
