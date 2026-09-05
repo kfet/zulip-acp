@@ -58,6 +58,13 @@ type fakeZulip struct {
 	// deleteErr models a realm that forbids a bot deleting its own
 	// message — the fallback path when a panel is retired.
 	deleteErr error
+	// moves records every topic move as "<messageID>:<topic>:<mode>",
+	// and moveErr models a realm that forbids the bot moving one.
+	moves   []string
+	moveErr error
+	// moveHook, when set, runs inside MoveMessage — the one place a
+	// test can observe the world as it was BEFORE the move landed.
+	moveHook func()
 	// reactAdd/reactDel record every reaction call, in order, as
 	// "<messageID>:<emoji>".
 	reactAdd []string
@@ -204,6 +211,26 @@ func (z *fakeZulip) EditMessage(_ context.Context, id int64, content string) err
 // DeleteMessage removes a message the way Zulip does when the realm
 // allows it. deleteErr models a realm that does not (or a message past
 // message_content_delete_limit_seconds).
+func (z *fakeZulip) MoveMessage(_ context.Context, id int64, topic, mode string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.moveHook != nil {
+		z.moveHook()
+	}
+	if z.moveErr != nil {
+		return z.moveErr
+	}
+	z.moves = append(z.moves, fmt.Sprintf("%d:%s:%s", id, topic, mode))
+	return nil
+}
+
+// moved returns the recorded topic moves, in order.
+func (z *fakeZulip) moved() []string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return append([]string(nil), z.moves...)
+}
+
 func (z *fakeZulip) DeleteMessage(_ context.Context, id int64) error {
 	z.mu.Lock()
 	defer z.mu.Unlock()

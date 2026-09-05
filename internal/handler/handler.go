@@ -29,6 +29,7 @@ import (
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
+	"github.com/kfet/zulip-acp/internal/autotopic"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
@@ -91,6 +92,9 @@ type ChannelSet interface {
 	Name(streamID int64) (string, bool)
 	// Ambient reports whether a channel engages without an @-mention.
 	Ambient(streamID int64) bool
+	// Autotopic reports whether a general-chat message in a channel
+	// is moved to a generated topic before it is answered.
+	Autotopic(streamID int64) bool
 }
 
 // Poster is the Zulip surface the handler writes to.
@@ -103,6 +107,10 @@ type Poster interface {
 	SendMessageWidget(ctx context.Context, streamID int64, topic, content, widget string) (int64, error)
 	SendDirectMessageWidget(ctx context.Context, userIDs []int64, content, widget string) (int64, error)
 	EditMessage(ctx context.Context, id int64, content string) error
+	// MoveMessage retopics a message. Only the autotopic path uses
+	// it, to lift a general-chat message into a topic of its own; it
+	// may be refused by realm policy, so the caller degrades.
+	MoveMessage(ctx context.Context, id int64, topic, propagateMode string) error
 	// DeleteMessage removes a message the bot posted. Used to retire a
 	// superseded `!opts` panel, which cannot be edited when it carries
 	// a widget, and to retract the placeholder-seeded streaming chain
@@ -455,6 +463,11 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 
 	conv := existing
 	if !engaged {
+		// General chat is Zulip 11's empty topic. In an autotopic
+		// channel the opening message is moved to a topic of its own
+		// FIRST, so the conversation is allocated under its final key
+		// and no journal migration is ever needed.
+		key = h.autotopic(ctx, m, key, text)
 		var err error
 		conv, err = h.cfg.Journal.Ensure(key)
 		if err != nil {
@@ -878,6 +891,39 @@ func (h *Handler) uploadOne(ctx context.Context, dir, name string) (string, erro
 		return "", err
 	}
 	return url, nil
+}
+
+// propagateOne is Zulip's propagate_mode for "move exactly this
+// message" — the only mode autotopic may use: the messages already in
+// general chat belong to other people's conversations.
+const propagateOne = "change_one"
+
+// autotopic moves a general-chat message into a topic named after it,
+// returning the key the conversation should be allocated under.
+//
+// It applies only in a channel configured for it, and only to the
+// empty topic — Zulip 11's "general chat". ANY failure (realm policy,
+// an older server, a transport error) is logged and yields the
+// original key: the relay then answers in general chat exactly as it
+// did before, and the turn is never dropped for a cosmetic reason.
+func (h *Handler) autotopic(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) journal.Key {
+	if m.IsDM() || m.Topic != "" || !h.cfg.Channels.Autotopic(m.StreamID) {
+		return key
+	}
+	topic := autotopic.NameAt(h.promptText(text), h.now())
+	// A generated name is a heuristic, so two people opening general
+	// chat with "hi" would land in ONE conversation — sharing a
+	// session, a cwd and each other's context. The message id breaks
+	// the tie.
+	if _, taken := h.cfg.Journal.Lookup(journal.Channel(m.StreamID, topic)); taken {
+		topic = autotopic.Disambiguate(topic, m.ID)
+	}
+	if err := h.cfg.Client.MoveMessage(ctx, m.ID, topic, propagateOne); err != nil {
+		h.cfg.Logf("handler: autotopic: moving message %d to topic %q failed (%v) — answering in general chat", m.ID, topic, err)
+		return key
+	}
+	h.cfg.Logf("handler: autotopic: moved message %d from general chat to topic %q", m.ID, topic)
+	return journal.Channel(m.StreamID, topic)
 }
 
 // mentioned reports whether raw markdown addresses the bot. Zulip

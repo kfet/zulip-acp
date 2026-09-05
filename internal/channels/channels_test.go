@@ -248,6 +248,32 @@ func TestConcurrentReadWrite(t *testing.T) {
 	wg.Wait()
 }
 
+// TestAutotopic: like the ambient half, a static id set — membership
+// means "a general-chat message here is moved to a topic of its own".
+func TestAutotopic(t *testing.T) {
+	s := New(Config{
+		Explicit:  map[int64]string{4: "fleet", 7: "general"},
+		Autotopic: map[int64]string{4: "fleet"},
+	})
+	if !s.Autotopic(4) {
+		t.Fatal("fleet (4) must be autotopic")
+	}
+	if s.Autotopic(7) {
+		t.Fatal("general (7) is served but not autotopic")
+	}
+	if s.Autotopic(999) {
+		t.Fatal("unknown channel must not be autotopic")
+	}
+	// Keyed by id, so a rename cannot drop membership.
+	s.Apply(subEvent("add", zulipproto.Stream{StreamID: 4, Name: "fleet-renamed"}))
+	if !s.Autotopic(4) {
+		t.Fatal("rename must not drop autotopic membership")
+	}
+	if New(Config{Explicit: map[int64]string{4: "fleet"}}).Autotopic(4) {
+		t.Fatal("no autotopic_channels means nothing is autotopic")
+	}
+}
+
 // TestAmbient: the ambient half is a static id set, independent of the
 // explicit/followed halves. Membership means "every message in this
 // channel is addressed to the bot", so the handler skips the mention

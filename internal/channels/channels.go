@@ -33,6 +33,12 @@ type Config struct {
 	// @-mention (resolved from config ambient_channels). Static for
 	// the process lifetime; ids are stable across renames.
 	Ambient map[int64]string
+	// Autotopic is the set of stream ids where a general-chat
+	// message (the empty topic) is moved to a freshly named topic
+	// before it is answered (resolved from config
+	// autotopic_channels). Static for the process lifetime; ids are
+	// stable across renames.
+	Autotopic map[int64]string
 	// Logf receives join/leave messages. Optional.
 	Logf func(format string, args ...any)
 }
@@ -42,21 +48,23 @@ type Set struct {
 	follow bool
 	logf   func(format string, args ...any)
 
-	mu       sync.RWMutex
-	explicit map[int64]string
-	followed map[int64]string
-	ambient  map[int64]struct{}
+	mu        sync.RWMutex
+	explicit  map[int64]string
+	followed  map[int64]string
+	ambient   map[int64]struct{}
+	autotopic map[int64]struct{}
 }
 
 // New builds a Set. The explicit map is copied, so the caller may keep
 // using its own.
 func New(cfg Config) *Set {
 	s := &Set{
-		follow:   cfg.Follow,
-		logf:     cfg.Logf,
-		explicit: make(map[int64]string, len(cfg.Explicit)),
-		followed: map[int64]string{},
-		ambient:  make(map[int64]struct{}, len(cfg.Ambient)),
+		follow:    cfg.Follow,
+		logf:      cfg.Logf,
+		explicit:  make(map[int64]string, len(cfg.Explicit)),
+		followed:  map[int64]string{},
+		ambient:   make(map[int64]struct{}, len(cfg.Ambient)),
+		autotopic: make(map[int64]struct{}, len(cfg.Autotopic)),
 	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
@@ -66,6 +74,9 @@ func New(cfg Config) *Set {
 	}
 	for id := range cfg.Ambient {
 		s.ambient[id] = struct{}{}
+	}
+	for id := range cfg.Autotopic {
+		s.autotopic[id] = struct{}{}
 	}
 	return s
 }
@@ -77,6 +88,16 @@ func (s *Set) Ambient(id int64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, ok := s.ambient[id]
+	return ok
+}
+
+// Autotopic reports whether a channel names its general chat. In such
+// a channel a message posted to the empty topic is moved to a topic
+// generated from its text, and the conversation happens there.
+func (s *Set) Autotopic(id int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.autotopic[id]
 	return ok
 }
 

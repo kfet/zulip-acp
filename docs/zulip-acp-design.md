@@ -321,6 +321,46 @@ goroutines, so it is `sync.RWMutex`-guarded, and `Sync` computes its join/leave
 diff *under* the lock — the map it publishes becomes shared the instant it is
 stored.
 
+### Naming general chat (`autotopic_channels`)
+
+Zulip 11 added "general chat": the empty topic (`""`). It is a real topic as
+far as the API is concerned, so the relay would happily hold a conversation
+there — and that is the problem. General chat is one shared feed per channel,
+so every conversation the relay ever has in it lands in the same place,
+interleaved, with no subject anyone can search for or mute.
+
+A channel listed in `autotopic_channels` (a third static id set on
+`channels.Set`, alongside `ambient`, keyed by id so a rename cannot drop it)
+therefore **moves** an accepted general-chat message to a topic of its own —
+`PATCH /messages/{id}` with `topic` and `propagate_mode=change_one` — and
+answers there.
+
+Three constraints shape it:
+
+- **The move happens before the conversation is allocated.** `Handler.autotopic`
+  runs after every gate and after command dispatch, but *before*
+  `journal.Ensure`, so the conversation is created under its final key. Doing it
+  later would need a key migration, and the rename path
+  (`handleUpdate` → `journal.Rename`) exists for humans retitling a topic, not
+  for the relay tidying up after itself.
+- **`change_one`, never `change_all`.** The other messages in general chat
+  belong to other people's conversations; moving them would be vandalism.
+- **A failed move must never cost the turn.** Whether a bot may retopic a
+  message is realm policy (`can_move_messages_between_topics_group`, plus the
+  `move_messages_within_stream_limit_seconds` time limit), and older servers
+  have no
+  general chat at all. Any error is logged and the original key is used — the
+  relay answers in general chat, exactly as it did before the feature existed.
+
+The name itself comes from `internal/autotopic`, a pure `func(text, now)
+string` over the raw markdown: first usable line, mentions and markdown
+decoration stripped, whitespace collapsed, truncated on a word boundary to 60
+code points, with a `chat <timestamp>` fallback so the result is never empty —
+an empty topic *is* general chat, so a falsy name would silently mean "did not
+move". Keeping it pure and Zulip-free is what makes it exhaustively
+table-testable, and what makes swapping in an agent-generated title later a
+one-call change.
+
 Event queues get the same treatment. `queue_id` and `last_event_id` are held in
 memory only — queues die on server restart, so persisting them is false comfort.
 `BAD_EVENT_QUEUE_ID` is **routine**: re-register, reset the cursor, log at info.
@@ -912,6 +952,7 @@ contract and the live evidence are in
 
 ```
 cmd/zulip-acp/          flags + wiring (excluded from the coverage gate)
+internal/autotopic/     general-chat topic namer — pure func, NO Zulip imports
 internal/command/       `!command` parse core — NO Zulip imports
 internal/config/        JSON config, DisallowUnknownFields
 internal/handler/       gating, commands, turn execution, streaming sink, outbox, poster

@@ -90,6 +90,7 @@ Write `~/.config/zulip-acp/config.json`:
   "bot_email": "fir-relay-bot@zulip.example.ts.net",
   "channels": ["fleet"],
   "ambient_channels": [],
+  "autotopic_channels": [],
   "agent_cmd": ["fir", "--mode", "acp"],
   "state_dir": "/home/<you>/.config/zulip-acp/state",
   "hide_thinking": false
@@ -106,6 +107,13 @@ an absent key is fine) lists channels that behave like DMs: **every** message
 is addressed, so the first message of a fresh topic summons the relay with no
 @-mention. Everywhere else the mention gate below still applies. Use it for a
 dedicated single-purpose channel; do not use it for a busy general channel.
+
+`autotopic_channels` (same shape) lists channels where a message posted to
+**general chat** — Zulip 11's empty topic — is moved to a topic named after it
+before the relay answers, so conversations do not pile up in one shared feed.
+The bot needs permission to move messages within a channel
+(`can_move_messages_between_topics_group`); without it the
+relay logs the refusal and answers in general chat.
 
 Write `~/.config/zulip-acp/env` (mode **0600**):
 

@@ -220,8 +220,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	autotopic, err := cfg.ResolveAutotopic(streams)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	follow := cfg.FollowsSubscriptions()
-	served := channels.New(channels.Config{Explicit: explicit, Ambient: ambient, Follow: follow, Logf: log.Printf})
+	served := channels.New(channels.Config{Explicit: explicit, Ambient: ambient, Autotopic: autotopic, Follow: follow, Logf: log.Printf})
 	if follow {
 		// The set itself is seeded by the OnRegister hook below, which
 		// fires on the first registration too — one code path for the
@@ -246,6 +250,14 @@ func main() {
 		}
 		sort.Strings(albls)
 		log.Printf("zulip-acp: ambient channels (engage with no @-mention, like a DM): %s", strings.Join(albls, ", "))
+	}
+	if len(autotopic) > 0 {
+		tlbls := make([]string, 0, len(autotopic))
+		for id, name := range autotopic {
+			tlbls = append(tlbls, fmt.Sprintf("#%s (%d)", name, id))
+		}
+		sort.Strings(tlbls)
+		log.Printf("zulip-acp: autotopic channels (general chat is moved to a generated topic): %s", strings.Join(tlbls, ", "))
 	}
 	// Narrowing the event queue is an optimisation, not the allowlist:
 	// a /register narrow cannot express a union of channels, so with

@@ -123,6 +123,19 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   participant, so an allowlisted user can pull agent output in front of people
   who are not on the list. `"dms": true` with no
   `channels` at all is a valid DM-only relay.
+- **`autotopic_channels` names general chat.** Zulip 11's "general chat" is
+  literally the empty topic, and a relay answering there buries every
+  conversation in one undifferentiated feed. In a channel listed here — names
+  or ids, a subset of the served set — a general-chat message that the relay
+  accepts is **moved** to a topic generated from its own text
+  (`propagate_mode=change_one`, so nobody else's messages travel with it), and
+  the conversation is opened there. The move happens *before* the conversation
+  is allocated, so no journal migration is involved; if the server refuses it —
+  realm `can_move_messages_between_topics_group` or the
+  `move_messages_within_stream_limit_seconds` time limit, an older Zulip — the
+  relay logs it and answers in
+  general chat exactly as it would have. Everywhere else general chat is an
+  ordinary topic.
 - **`"channels": ["*"]` follows the bot's subscriptions.** Add the bot to a
   channel and it is served within seconds — no config edit, no restart; remove
   it and the relay stops answering there. Both moves are logged. The sentinel
@@ -250,6 +263,8 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `bot_email` | — | bot's Zulip email. Env: `ZULIP_EMAIL` |
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
 | `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |
+| `ambient_channels` | `[]` | channels (names or ids) that engage with **no** @-mention, like a DM |
+| `autotopic_channels` | `[]` | channels (names or ids) where a **general chat** message is moved to a topic named after it |
 | `dms` | `false` | serve direct messages (1:1 and group). Not gated by `channels` |
 | `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
 | `agent_cmd` | `["fir","--mode","acp"]` | agent argv |

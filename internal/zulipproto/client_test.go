@@ -201,6 +201,59 @@ func TestEditMessage(t *testing.T) {
 	}
 }
 
+func TestMoveMessage(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) { return 200, okJSON("") })
+	if err := newClient(t, ts).MoveMessage(context.Background(), 7, "a new topic", "change_one"); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+	req := ts.requests()[0]
+	if req.method != http.MethodPatch || req.path != "/api/v1/messages/7" {
+		t.Fatalf("request = %+v", req)
+	}
+	for k, want := range map[string]string{"topic": "a new topic", "propagate_mode": "change_one"} {
+		if got := req.form.Get(k); got != want {
+			t.Fatalf("form[%s] = %q, want %q", k, got, want)
+		}
+	}
+	// A move must never touch the body: Zulip re-renders content on
+	// any edit that carries one.
+	if _, ok := req.form["content"]; ok {
+		t.Fatalf("a topic move must not send content: %+v", req.form)
+	}
+}
+
+// TestMoveMessageRefused covers the case the handler must survive: a
+// realm where the bot may not move messages.
+func TestMoveMessageRefused(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 400, `{"result":"error","msg":"You don't have permission to edit this message","code":"BAD_REQUEST"}`
+	})
+	err := newClient(t, ts).MoveMessage(context.Background(), 7, "topic", "change_one")
+	if err == nil {
+		t.Fatal("MoveMessage: want error")
+	}
+	if !RejectedByServer(err) {
+		t.Fatalf("err = %v, want a server rejection", err)
+	}
+}
+
+// TestMoveMessageOversizedTopic: Zulip truncates an over-long topic
+// silently, so the client must refuse it before the wire.
+func TestMoveMessageOversizedTopic(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) { return 200, okJSON("") })
+	c := newClient(t, ts)
+	if err := c.MoveMessage(context.Background(), 7, strings.Repeat("x", MaxTopicLength+1), "change_one"); err == nil {
+		t.Fatal("want error on an oversized topic")
+	}
+	// Code points, not bytes.
+	if err := c.MoveMessage(context.Background(), 7, strings.Repeat("é", MaxTopicLength), "change_one"); err != nil {
+		t.Fatalf("a topic at the exact limit must be accepted: %v", err)
+	}
+	if n := len(ts.requests()); n != 1 {
+		t.Fatalf("an oversized topic must not reach the wire; %d requests", n)
+	}
+}
+
 func TestGetMessage(t *testing.T) {
 	ts := newServer(t, func(recordedReq) (int, string) {
 		return 200, okJSON(`"message":{"id":7,"sender_id":9,"content":"raw **md**","stream_id":4,"subject":"topic"}`)
