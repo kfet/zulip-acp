@@ -1,0 +1,50 @@
+{
+  "name": "zbox-fir",
+  "host": "zbox",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "zulip-acp",
+  "binary": "~/.local/bin/zulip-acp",
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
+  "service": {
+    "config_path": "~/.config/zulip-acp/config.json"
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s",
+    "timeout_stop_sec": "90s"
+  },
+  "config": {
+    "site": "https://zboxserver.tail77d32.ts.net",
+    "bot_email": "zbox-fir-bot@zboxserver.tail77d32.ts.net",
+    "channels": [
+      "*"
+    ],
+    "ambient_channels": [
+      "ask-fir"
+    ],
+    "autotopic_channels": [
+      "ask-fir"
+    ],
+    "dms": true,
+    "relay_mcp": true,
+    "state_dir": "/home/kfet/.config/zulip-acp/state",
+    "hide_thinking": false,
+    "system_prompt": "Treat every message you receive as addressed to you, whether or not the bot is mentioned. Reply to all of them; never emit the silent sentinel.",
+    "allowed_user_ids": [
+      8
+    ]
+  },
+  "credentials": {
+    "env_file": "~/.config/zulip-acp/env"
+  }
+}

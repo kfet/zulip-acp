@@ -1,7 +1,7 @@
 ---
 builtin: true
 name: update
-description: Update zulip-acp on a host, or recycle a running relay. Covers the graceful SIGHUP reload (drain in-flight turns, then re-exec in place — no lost messages), when a hard restart is still required, and how to reload the relay you are yourself running inside.
+description: Update zulip-acp on a host, or recycle a running relay. The upgrade verb is `zulip-acp update` (self-update with an atomic swap), or `scripts/converge.sh` for a fleet host — never a hand-placed binary. Covers the graceful SIGHUP reload (drain in-flight turns, then re-exec in place — no lost messages), when a hard restart is still required, and how to reload the relay you are yourself running inside.
 ---
 
 # Update Skill
@@ -9,6 +9,13 @@ description: Update zulip-acp on a host, or recycle a running relay. Covers the 
 Upgrade `zulip-acp` on **one** host and recycle it, or just recycle a running
 relay. See the `deploy` skill for the canonical file layout; this skill owns the
 upgrade/recycle mechanics.
+
+> **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
+> bot with a spec in `bots/<name>.json`, version moves go through the lock:
+> `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
+> `scripts/converge.sh <bot> --apply` per host. Everywhere else the verb is
+> `zulip-acp update`. **Never place a binary by hand** — no `cp`, no staged
+> `.new` file, no `mv` into `~/.local/bin`.
 
 ## reload vs restart — pick the right verb
 
@@ -45,13 +52,38 @@ Use **restart** — a hard, destructive restart — only for:
 > on disk survives, so nothing is corrupted, but the user gets silence and must
 > re-send. This is exactly what `reload` exists to avoid.
 
+## The canonical order — pick the FIRST one that applies
+
+1. **Fleet host with a spec in `bots/<name>.json` → converge, always.**
+   `scripts/converge.sh --tot` rewrites `dist.lock` (review + commit), then
+   `scripts/converge.sh <bot> --apply` converges that host. **Converge is the
+   only sanctioned way to touch a fleet host** — it moves the binary, `fir`,
+   the fir extensions, `config.json` and the unit to the locked state, then
+   picks and verifies the recycle for you. Never hand-upgrade a fleet host to
+   an unlocked version.
+2. **Any other host → `zulip-acp update`.** The binary updates itself: it
+   resolves the release over the GitHub API, verifies the sha256 against
+   `checksums.txt`, and swaps the file atomically underneath the running
+   process. This is what converge itself runs on the host.
+3. **Fallbacks only when neither fits:** `make deploy HOST=<host>` from the
+   repo (a build that is not released yet), or `brew upgrade zulip-acp` for a
+   brew-managed install (`zulip-acp update` refuses to touch one and tells you
+   so).
+
+**Never hand-place a binary.** No `cp`/`mv` into `~/.local/bin`, no staged
+`.new` file, no `scp` of a locally built binary onto a fleet host. The atomic,
+`ETXTBSY`-safe swap lives *inside* the binary (`internal/selfupdate`) precisely
+so nobody has to reproduce it by hand — and a hand-placed binary is invisible
+to `dist.lock`, so the next converge silently disagrees with the host.
+
 ## Inputs
 
 Confirm with the user before acting:
 
-1. **Host** — `local` or `user@host`. Default local.
-2. **Target version** — default: latest `vX.Y.Z` tag on `origin`. Override only
-   if asked. If `VERSION` is ahead of every pushed tag, an unpublished release
+1. **Host** — `local` or `user@host`. Default local. If it has a spec in
+   `bots/`, use converge (rule 1) and stop reading the per-host steps.
+2. **Target version** — default: latest `vX.Y.Z` release. Override only if
+   asked. If `VERSION` is ahead of every pushed tag, an unpublished release
    exists — run the `release` flow first.
 
 ## Steps
@@ -59,8 +91,11 @@ Confirm with the user before acting:
 ### 1. Determine target version
 
 ```bash
-git fetch --tags origin && git tag --sort=-v:refname | head -1
+gh release view --repo kfet/zulip-acp --json tagName -q .tagName
 ```
+
+`git tag --sort=-v:refname | head -1` after a `git fetch --tags` answers the
+same question from a checkout.
 
 ### 2. Probe the host
 
@@ -68,7 +103,6 @@ git fetch --tags origin && git tag --sort=-v:refname | head -1
 ssh <host> '~/.local/bin/zulip-acp --version 2>/dev/null || echo not-installed'
 ssh <host> 'brew list --versions zulip-acp 2>/dev/null'       # brew install?
 ssh <host> 'systemctl --user is-active zulip-acp 2>/dev/null' # Linux supervisor
-ssh <host> 'launchctl list 2>/dev/null | grep -i zulip-acp'   # macOS supervisor
 ```
 
 If installed already equals target, say so and stop unless a forced recycle is
@@ -87,36 +121,57 @@ ssh <host> 'systemctl --user cat zulip-acp | grep -c ExecReload'
 Zero means the unit predates reload support: install the new unit, `restart`
 once, and reload from then on.
 
-### 3. Upgrade path
+### 3. Upgrade
 
-**Direct deploy (hotfix / private repo — the usual path today):**
+**Fleet host (has a `bots/<name>.json` spec):**
+```bash
+scripts/converge.sh --tot                    # rewrite dist.lock; review + commit
+git diff dist.lock
+scripts/converge.sh <bot>                    # dry run: what would change, and
+                                             # which recycle it would use
+scripts/converge.sh <bot> --apply            # converge + recycle + verify
+```
+
+Converge refuses to guess: it reads the version of the image the *running*
+process is executing (via `/proc/<MainPID>/exe`), not the on-disk file, and
+reports `graceful reload` or `hard restart` with the reason before it acts.
+
+**Any other host — the binary updates itself:**
+```bash
+ssh <host> 'zulip-acp update'                        # latest
+ssh <host> 'zulip-acp update --check'                # report only, install nothing
+ssh <host> 'zulip-acp update --version v0.19.0'      # pin
+ssh <host> 'zulip-acp update --restart-cmd "systemctl --user reload zulip-acp"'
+ssh <host> 'systemctl --user reload zulip-acp'       # if no --restart-cmd
+```
+
+> **`kfet/zulip-acp` is private**, so the plain release-download URL and
+> `brew install` both 404 on the asset. `zulip-acp update` goes through the
+> GitHub **API**, which serves a private asset to a token: it uses
+> `GITHUB_TOKEN`, `GH_TOKEN`, or a logged-in `gh` on the host, in that order.
+> If it reports a 404 with a token hint, run `gh auth login` on that host.
+
+`zulip-acp update` refuses a Homebrew install (`/opt/homebrew`, `…/Cellar`,
+linuxbrew) with a `brew upgrade zulip-acp` hint, and refuses any install
+directory not owned by you (a distro package, `/usr/bin`, a shared `/opt`
+tree) — it would have to write there to swap the file. Both refusals are
+deliberate: use the package manager that owns the install, or put the binary
+under your own home. Do not work around it by hand.
+
+**Unreleased build (hotfix from a working tree):**
 ```bash
 make deploy HOST=<host>                      # scp new binary to ~/.local/bin/zulip-acp
 ssh <host> 'systemctl --user reload zulip-acp'
 ```
 
-`make deploy` needs a `HOST`. Updating **local** is the same idea by hand, with
-one catch: `cp` onto the running binary fails with `Text file busy`. Replace it
-atomically instead — `mv` swaps the directory entry and leaves the running
-image untouched:
-
-```bash
-make build-all
-cp bin/zulip-acp-linux-amd64 ~/.local/bin/.zulip-acp.new
-chmod +x ~/.local/bin/.zulip-acp.new
-mv -f ~/.local/bin/.zulip-acp.new ~/.local/bin/zulip-acp   # atomic
-~/.local/bin/zulip-acp --version                            # confirm before reloading
-```
-
 Build from a **clean tree at the tag**. A stale `bin/` from before the release
-commit yields a `-dev+…dirty` binary that installs happily and reports the wrong
-version.
+commit yields a `-dev+…dirty` binary that installs happily and reports the
+wrong version. Prefer cutting a release and using `zulip-acp update`.
 
 **Brew-managed (once the repo is public):**
 ```bash
 ssh <host> 'brew update && brew upgrade zulip-acp'
-ssh <host> 'systemctl --user reload zulip-acp'       # Linux
-# macOS: launchctl kill SIGHUP gui/$UID/<label>
+ssh <host> 'systemctl --user reload zulip-acp'
 ```
 
 `daemon-reload` is only needed when the **unit file itself** changed, and that
@@ -197,10 +252,16 @@ the error and stop — do not paper over.
 - **Stale tap** — `brew upgrade` is a no-op until `brew update` refreshes the tap.
 - **Missed recycle** — swapping the binary on disk does nothing to the running
   process; you must `systemctl --user reload zulip-acp`.
-- **`Text file busy`** — never `cp` over the running binary; stage beside it and
-  `mv -f`. Leave no `.prev` backup litter behind. (The reload copes with the
-  unlinked inode this leaves behind: `reload.SelfPath` strips the
-  `"(deleted)"` marker `/proc/self/exe` reports.)
+- **`Text file busy`** — a running executable cannot be written in place, which
+  is exactly why `zulip-acp update` exists: it stages the download beside the
+  binary and `rename(2)`s it over, replacing the directory entry while the live
+  process keeps its old inode. Do not reproduce that by hand — use the
+  subcommand. (The reload copes with the unlinked inode: `reload.SelfPath`
+  strips the `"(deleted)"` marker `/proc/self/exe` reports.)
+- **A hand-placed binary is invisible to the lock** — `dist.lock` is what
+  converge believes a fleet host runs. Anything installed around converge makes
+  the next `--apply` disagree with the host, or silently "downgrade" it back to
+  the locked version.
 - **Unchanged PID is expected** — a reload re-execs in place, so `MainPID` does
   not move and neither does uptime in `systemctl status`. Use the journal lines
   above, or `/proc/<pid>/exe --version`, to confirm the new image is running.
@@ -218,9 +279,10 @@ the error and stop — do not paper over.
 
 ## Checklist
 
-- [ ] Target version confirmed (latest pushed tag).
+- [ ] Target version confirmed (latest release).
+- [ ] Fleet host? → converge (`--tot`, commit the lock, `<bot> --apply`) and nothing else.
+- [ ] Otherwise: `zulip-acp update` — never a hand-placed binary.
 - [ ] Install method + supervisor identified; `ExecReload` present in the unit.
-- [ ] Binary upgraded via the matching path, from a clean tree.
 - [ ] Relay recycled with `reload` (or `restart`, if unit-file/first-cutover/dead).
 - [ ] `/proc/<MainPID>/exe --version` matches target; service active; journal
       shows `resuming inherited event queue`.

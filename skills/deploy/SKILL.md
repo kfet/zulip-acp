@@ -22,7 +22,9 @@ conversations — you must restart the service to pick it up.
 ## Canonical file layout (do not deviate — this is the whole point of this skill)
 
 ```
-~/.local/bin/zulip-acp                        # binary, on PATH, from `make deploy` or brew
+~/.local/bin/zulip-acp                        # binary, on PATH; first install from
+                                              # `make deploy`/brew, upgrades via
+                                              # `zulip-acp update` or converge
 ~/.config/zulip-acp/config.json               # site, bot_email, channels, agent_cmd, state_dir
 ~/.config/zulip-acp/env                        # ZULIP_API_KEY=...   (mode 0600)
 ~/.config/zulip-acp/state/                     # per-conversation state + journal.json
@@ -53,7 +55,9 @@ poe-acp's multi-bot layout.
 
 ### 1. Ship the binary
 
-From the repo, cross-build + arch-detect + scp to `~/.local/bin/zulip-acp`:
+A **first** install is the one moment a binary is placed by hand — there is
+nothing on the host yet to update itself. From the repo, cross-build +
+arch-detect + scp to `~/.local/bin/zulip-acp`:
 
 ```bash
 make deploy HOST=<host>
@@ -67,8 +71,15 @@ ssh <host> 'brew install kfet/ai/zulip-acp'
 
 > **Private repo caveat:** while `kfet/zulip-acp` is private, `brew install`
 > 404s on the release asset (the tap is public but the asset is not). Use
-> `make deploy`, or `gh release download <tag> --repo kfet/zulip-acp`, until the
-> repo is made public. Recorded in the repo BACKLOG.
+> `make deploy`, or `gh release download <tag> --repo kfet/zulip-acp`, for the
+> first install. Recorded in the repo BACKLOG.
+
+**Every subsequent upgrade is `zulip-acp update` on the host, or converge for
+a fleet host with a `bots/<name>.json` spec — never another hand-placed
+binary.** See the `update` skill; it owns the upgrade order.
+
+Add the host to `bots/` while you are here: a spec plus `dist.lock` is what
+makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.
 
 ### 2. Confirm the ACP agent is on the host PATH
 
@@ -277,6 +288,9 @@ dir once the systemd service is verified live.
   path (`~/.local/bin/zulip-acp --version`) or the running image
   (`readlink /proc/<pid>/exe`), not a bare `zulip-acp --version` that PATH may
   resolve to a checkout copy.
+- **Hand-placed upgrades** — after the first install, never `cp`/`scp` a binary
+  onto a host again. `zulip-acp update` does the atomic swap safely, and a
+  fleet host must go through `scripts/converge.sh` so `dist.lock` stays true.
 - **state_dir in config vs `--state-dir`** — if both are set the flag wins. Keep
   state under `~/.config/zulip-acp/state`; never leave it defaulting into a cwd.
 

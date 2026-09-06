@@ -11,6 +11,19 @@ Things deliberately not done in v1, with the reason.
 > reason about them from memory. The entry below was written on the
 > assumption that no second consumer existed; one had for months.
 
+- **`internal/selfupdate` → `acp-kit/selfupdate`.** `zulip-acp update` is
+  written with zero Zulip imports for exactly this reason: only `DefaultRepo`,
+  the asset stem and the restart hint name this relay, and all three are one
+  parameter away from generic. It is not promoted yet because promoting it
+  properly means migrating `poe-acp`'s own copy
+  (`poe-acp/internal/selfupdate`, the source of this port) in the same change
+  and giving `slack-acp` — which has no self-update at all — the wiring;
+  otherwise the family gains a third copy instead of losing one. Do that as
+  one cross-repo change, not as a drive-by: cut `acp-kit`, delete both
+  `internal/selfupdate` trees, keep each relay's wiring to a single `Main`
+  call. The GitHub-API-with-token path (needed while a repo is private) is the
+  part poe-acp's copy lacks and must not be lost in the merge.
+
 - **`internal/rollover` → `acp-kit/chunker`.** The splitter is written with
   zero Zulip imports precisely so it can move. It is not promoted in v1: a
   new, unproven design earns its API in one consumer first. Promote once a

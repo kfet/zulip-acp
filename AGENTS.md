@@ -53,7 +53,9 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 ## Repository layout
 
 ```
+bots/                   one JSON spec per fleet host (converge's input)
 cmd/zulip-acp/          entry point: flags + wiring
+dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
@@ -61,14 +63,26 @@ internal/handler/       event → ACP prompt; streaming sink; topic poster; comm
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
+internal/selfupdate/    `zulip-acp update`: GitHub API release fetch, sha256
+                        verify, ETXTBSY-safe atomic swap (NO Zulip imports)
 internal/statusline/    Zulip-markdown status-line renderer (live spinner +
                         italic footer under the finished answer)
 internal/sysprompt/     built-in Zulip-formatting system prompt
 internal/zulipmcp/      self-hosted MCP server identity (socket, env, subcommand)
 internal/zulipproto/    HTTP Basic client + /events long-poll runner; zform.go is
                         the only coupling to Zulip's widget subsystem
-test/                   live-server integration tests (ZULIP_LIVE=1)
+scripts/converge.sh     the ONLY sanctioned way to change a fleet host
+test/                   live-server integration tests (ZULIP_LIVE=1);
+                        converge_render.sh = offline tests for converge.sh
 ```
+
+## Updating a host
+
+**Never hand-place a binary** — no `cp`/`scp`/`mv` into `~/.local/bin` after
+the first install. `zulip-acp update` performs the checksum-verified, atomic,
+`ETXTBSY`-safe swap; `scripts/converge.sh <bot> --apply` is the only sanctioned
+way to touch a host that has a spec in `bots/`. See
+`internal/skills/bundle/update/SKILL.md`.
 
 ## Think before you specialise
 
