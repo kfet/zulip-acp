@@ -478,13 +478,14 @@ func main() {
 	}
 
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{
-		Client:            zc,
-		EventTypes:        eventTypes,
-		Narrow:            narrow,
-		OnRegister:        onRegister,
-		Handoff:           handoff,
-		ResumeQueueID:     cursor.QueueID,
-		ResumeLastEventID: cursor.LastEventID,
+		Client:             zc,
+		EventTypes:         eventTypes,
+		Narrow:             narrow,
+		OnRegister:         onRegister,
+		Handoff:            handoff,
+		ResumeQueueID:      cursor.QueueID,
+		ResumeLastEventID:  cursor.LastEventID,
+		ResumeRegistration: cursor.Registration,
 		Handle: func(ctx context.Context, ev zulipproto.Event) {
 			// The served set is updated from the same goroutine that
 			// dispatches messages, so a message can never be judged
@@ -534,7 +535,7 @@ func main() {
 	// exec: it runs no deferred functions.
 	cleanup()
 	qid, last := runner.Cursor()
-	c := reload.Cursor{QueueID: qid, LastEventID: last}
+	c := reload.Cursor{QueueID: qid, LastEventID: last, Registration: runner.Registration()}
 	if !c.Valid() {
 		// The queue had already died (expired, or a silence
 		// re-registration was in flight) when the reload landed. The

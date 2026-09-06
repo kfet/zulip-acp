@@ -100,7 +100,11 @@ func execPhase1(t *testing.T) {
 	fmt.Printf("PHASE1 posted %q with nobody polling\n", marker)
 
 	// Replace this image, carrying the cursor exactly as a reload does.
-	cur := reload.Cursor{QueueID: res.QueueID, LastEventID: res.LastEventID}
+	cur := reload.Cursor{
+		QueueID:      res.QueueID,
+		LastEventID:  res.LastEventID,
+		Registration: zulipproto.RegistrationFingerprint([]string{zulipproto.EventMessage}, nil),
+	}
 	env := reload.Environ(os.Environ(), cur)
 	env = append(env, "ZULIP_ACP_LIVE_EXEC_MARKER="+marker)
 	for i, kv := range env {
@@ -131,6 +135,12 @@ func execPhase2(t *testing.T) {
 	}
 	if !cur.Valid() {
 		t.Fatal("no cursor inherited across exec")
+	}
+	// The registration must survive the exec too: without it the
+	// successor cannot tell a resumable queue from one registered for a
+	// different event set, and re-registers on every reload.
+	if want := zulipproto.RegistrationFingerprint([]string{zulipproto.EventMessage}, nil); cur.Registration != want {
+		t.Fatalf("inherited registration = %q, want %q", cur.Registration, want)
 	}
 	fmt.Printf("PHASE2 resumed queue %s at %d\n", cur.QueueID, cur.LastEventID)
 

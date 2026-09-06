@@ -37,9 +37,17 @@
 //     observes the service go away, so Restart= is never triggered and
 //     Type=simple needs no readiness handshake.
 //  6. The new image finds the cursor in its environment and RESUMES
-//     GetEvents on that queue instead of calling /register. No gap
-//     (nothing posted in the window is skipped) and no double delivery
-//     (the cursor is exact).
+//     GetEvents on that queue instead of calling /register — PROVIDED
+//     the queue's registration (event types + narrow) is the one the
+//     new image wants. Then there is no gap (nothing posted in the
+//     window is skipped) and no double delivery (the cursor is exact).
+//     If the registration differs, or was not recorded at all, the
+//     inherited queue is deleted and a fresh one registered: a
+//     /register takes the server's CURRENT last_event_id, so anything
+//     posted before that instant is behind the cursor and is never
+//     delivered. That loss is real; it is strictly smaller than
+//     polling a queue that can never carry the events this image
+//     asked for.
 //
 // If the drain deadline expires with turns still running, the exec
 // happens anyway and the successor's handler.MarkInterrupted annotates
@@ -49,16 +57,25 @@
 //
 // # Wire contract
 //
-// Two environment variables, set only by Exec and consumed only by
+// Three environment variables, set only by Exec and consumed only by
 // Inherited:
 //
-//	ZULIP_ACP_QUEUE_ID        the live Zulip event queue to resume
-//	ZULIP_ACP_LAST_EVENT_ID   the id of the last event already dispatched
+//	ZULIP_ACP_QUEUE_ID            the live Zulip event queue to resume
+//	ZULIP_ACP_LAST_EVENT_ID       the id of the last event already dispatched
+//	ZULIP_ACP_QUEUE_REGISTRATION  the event_types + narrow that queue was registered with
 //
-// Both must be present and well-formed or neither is honoured: half a
-// cursor is worse than none, because it would silently skip or replay
-// events. A stale pair is never inherited by accident — Exec strips
-// both from the base environment before appending its own.
+// The first two must both be present and well-formed or neither is
+// honoured: half a cursor is worse than none, because it would
+// silently skip or replay events. The third may legitimately be
+// absent — that is what an upgrade from an image predating it looks
+// like — and absence means "unknown", which the runner treats as
+// DIFFERENT and re-registers on. A Zulip queue's event_types and
+// narrow are frozen at /register, so resuming a queue whose
+// registration is not the one this image wants means polling a queue
+// that cannot carry the events it asked for, silently, across every
+// subsequent reload. A stale set is never inherited by accident —
+// Exec strips all three from the base environment before appending its
+// own.
 // The cursor must never reach the ACP agent. It is a relay capability:
 // a queue id plus the bot's credentials is enough to poll the relay's
 // own event queue and silently divert its messages. The agent is driven
@@ -89,6 +106,12 @@ const (
 	// EnvLastEventID names the env var carrying the cursor into that
 	// queue: the id of the last event the previous image dispatched.
 	EnvLastEventID = "ZULIP_ACP_LAST_EVENT_ID"
+	// EnvRegistration names the env var carrying the fingerprint of
+	// the registration (event types + narrow) the inherited queue was
+	// created with. A queue's registration is frozen at /register, so
+	// the successor must refuse to resume one that does not match what
+	// it wants — see Cursor.Registration.
+	EnvRegistration = "ZULIP_ACP_QUEUE_REGISTRATION"
 )
 
 // AgentEnvNames lists the reload contract variables that must be
@@ -97,14 +120,24 @@ const (
 // holder poll the relay's own event queue and take delivery of messages
 // meant for the relay. The agent is driven by untrusted text, so it
 // gets the same treatment as the bot API key.
-func AgentEnvNames() []string { return []string{EnvQueueID, EnvLastEventID} }
+func AgentEnvNames() []string { return []string{EnvQueueID, EnvLastEventID, EnvRegistration} }
 
-// Cursor is a position in a Zulip event queue: the queue to poll and
-// the id of the last event already dispatched from it. The zero value
-// means "no live queue"; Valid reports that.
+// Cursor is a position in a Zulip event queue: the queue to poll, the
+// id of the last event already dispatched from it, and the
+// registration that queue was created with. The zero value means "no
+// live queue"; Valid reports that.
 type Cursor struct {
 	QueueID     string
 	LastEventID int64
+	// Registration fingerprints the queue's event_types and narrow.
+	// Zulip freezes both at /register — there is no way to widen a
+	// live queue — so a successor image that wants a DIFFERENT set
+	// must not resume this queue: it would poll a queue that cannot
+	// carry the events it asked for, silently, across every subsequent
+	// reload. Empty means "unknown", which is treated as different:
+	// that is what an upgrade from an image predating this field looks
+	// like, and it is precisely the case that must not resume.
+	Registration string
 }
 
 // Valid reports whether c names a queue that can be resumed.
@@ -138,7 +171,11 @@ func Inherited() (Cursor, error) {
 	if err != nil {
 		return Cursor{}, fmt.Errorf("reload: inherited %s=%q: %w", EnvLastEventID, l, err)
 	}
-	return Cursor{QueueID: q, LastEventID: last}, nil
+	// A missing registration is NOT an error: an upgrade from an image
+	// that never recorded one is a legitimate, expected state. It is
+	// carried through as "" — unknown — and the runner refuses to
+	// resume on it.
+	return Cursor{QueueID: q, LastEventID: last, Registration: os.Getenv(EnvRegistration)}, nil
 }
 
 // Environ returns base with any pre-existing cursor variables removed
@@ -146,9 +183,9 @@ func Inherited() (Cursor, error) {
 // stale cursor from an earlier reload surviving into a generation that
 // has no live queue to hand on.
 func Environ(base []string, c Cursor) []string {
-	out := make([]string, 0, len(base)+2)
+	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {
-		if strings.HasPrefix(kv, EnvQueueID+"=") || strings.HasPrefix(kv, EnvLastEventID+"=") {
+		if strings.HasPrefix(kv, EnvQueueID+"=") || strings.HasPrefix(kv, EnvLastEventID+"=") || strings.HasPrefix(kv, EnvRegistration+"=") {
 			continue
 		}
 		out = append(out, kv)
@@ -157,6 +194,7 @@ func Environ(base []string, c Cursor) []string {
 		out = append(out,
 			EnvQueueID+"="+c.QueueID,
 			EnvLastEventID+"="+strconv.FormatInt(c.LastEventID, 10),
+			EnvRegistration+"="+c.Registration,
 		)
 	}
 	return out

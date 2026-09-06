@@ -37,6 +37,7 @@ func TestInherited(t *testing.T) {
 		name       string
 		queue      *string
 		last       *string
+		reg        *string
 		wantCursor Cursor
 		wantErr    string
 	}{
@@ -58,7 +59,14 @@ func TestInherited(t *testing.T) {
 			wantErr: "inherited " + EnvLastEventID,
 		},
 		{
-			name: "resumable", queue: ptr("q1"), last: ptr("7"),
+			name: "resumable", queue: ptr("q1"), last: ptr("7"), reg: ptr(`{"event_types":["message"],"narrow":[]}`),
+			wantCursor: Cursor{QueueID: "q1", LastEventID: 7, Registration: `{"event_types":["message"],"narrow":[]}`},
+		},
+		{
+			// The upgrade FROM an image that never recorded a
+			// registration. Not an error — but the empty string means
+			// "unknown", and the runner refuses to resume on it.
+			name: "resumable without a registration", queue: ptr("q1"), last: ptr("7"),
 			wantCursor: Cursor{QueueID: "q1", LastEventID: 7},
 		},
 		{
@@ -72,15 +80,20 @@ func TestInherited(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Unsetenv(EnvQueueID)
 			os.Unsetenv(EnvLastEventID)
+			os.Unsetenv(EnvRegistration)
 			t.Cleanup(func() {
 				os.Unsetenv(EnvQueueID)
 				os.Unsetenv(EnvLastEventID)
+				os.Unsetenv(EnvRegistration)
 			})
 			if tc.queue != nil {
 				t.Setenv(EnvQueueID, *tc.queue)
 			}
 			if tc.last != nil {
 				t.Setenv(EnvLastEventID, *tc.last)
+			}
+			if tc.reg != nil {
+				t.Setenv(EnvRegistration, *tc.reg)
 			}
 			got, err := Inherited()
 			if tc.wantErr == "" {
@@ -104,13 +117,13 @@ func ptr(s string) *string { return &s }
 // the other would hand the relay's event queue to the child agent.
 func TestAgentEnvNamesCoversTheWholeContract(t *testing.T) {
 	got := AgentEnvNames()
-	want := []string{EnvQueueID, EnvLastEventID}
+	want := []string{EnvQueueID, EnvLastEventID, EnvRegistration}
 	if !slices.Equal(got, want) {
 		t.Fatalf("AgentEnvNames() = %q, want %q", got, want)
 	}
 	// Environ is the other half of the contract: anything it can SET
 	// must be something AgentEnvNames scrubs.
-	set := Environ(nil, Cursor{QueueID: "q", LastEventID: 1})
+	set := Environ(nil, Cursor{QueueID: "q", LastEventID: 1, Registration: "r"})
 	for _, kv := range set {
 		name, _, _ := strings.Cut(kv, "=")
 		if !slices.Contains(got, name) {
@@ -125,9 +138,11 @@ func TestEnvironStripsStaleCursorAndAppends(t *testing.T) {
 		EnvQueueID + "=stale",
 		"HOME=/home/x",
 		EnvLastEventID + "=999",
+		EnvRegistration + `={"event_types":["message"],"narrow":[]}`,
 	}
-	got := Environ(base, Cursor{QueueID: "fresh", LastEventID: 12})
-	want := []string{"PATH=/bin", "HOME=/home/x", EnvQueueID + "=fresh", EnvLastEventID + "=12"}
+	reg := `{"event_types":["message","reaction"],"narrow":[]}`
+	got := Environ(base, Cursor{QueueID: "fresh", LastEventID: 12, Registration: reg})
+	want := []string{"PATH=/bin", "HOME=/home/x", EnvQueueID + "=fresh", EnvLastEventID + "=12", EnvRegistration + "=" + reg}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Environ() = %q, want %q", got, want)
 	}
@@ -137,6 +152,30 @@ func TestEnvironStripsStaleCursorAndAppends(t *testing.T) {
 	want = []string{"PATH=/bin", "HOME=/home/x"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Environ(invalid) = %q, want %q", got, want)
+	}
+}
+
+// TestCursorRoundTripsThroughTheEnvironment: Environ and Inherited are
+// the two halves of one wire contract, and the REGISTRATION is now part
+// of it. If it did not survive the exec, every successor would see
+// "unknown" and re-register — throwing away a perfectly resumable queue
+// on every single reload.
+func TestCursorRoundTripsThroughTheEnvironment(t *testing.T) {
+	want := Cursor{
+		QueueID:      "05db1c49-8a91",
+		LastEventID:  7966,
+		Registration: `{"event_types":["message","reaction","update_message"],"narrow":[["stream","fleet"]]}`,
+	}
+	for _, kv := range Environ(nil, want) {
+		name, value, _ := strings.Cut(kv, "=")
+		t.Setenv(name, value)
+	}
+	got, err := Inherited()
+	if err != nil {
+		t.Fatalf("Inherited() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 }
 

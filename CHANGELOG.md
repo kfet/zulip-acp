@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A graceful reload no longer resumes an event queue that cannot carry the
+  events the new image wants.** A Zulip queue's `event_types` and `narrow` are
+  frozen at `/register`, and the reload cursor was only
+  `(queue_id, last_event_id)` — so every reload resumed the *predecessor's*
+  registration, forever, until a hard restart. On v0.18.1 that made emoji
+  reaction delivery silently dead in production: the queue predated the
+  feature, so no `reaction` event could ever reach it. The cursor now carries a
+  registration fingerprint (`zulipproto.RegistrationFingerprint`, canonical
+  JSON of the sorted event types + narrow) through
+  `ZULIP_ACP_QUEUE_REGISTRATION`, and a successor that wants a different
+  registration deletes the stale queue and registers fresh, with a WARN naming
+  the difference. An absent fingerprint counts as different — otherwise the
+  very reload installing this fix would resume the broken queue. A fresh
+  registration loses whatever was posted before it; that cost is stated in the
+  log line and in `docs/graceful-reload.md`.
+
 ## [0.19.0] - 2026-09-06
 
 ### Added

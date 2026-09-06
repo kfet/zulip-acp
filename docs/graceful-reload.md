@@ -64,9 +64,13 @@ the state directory.
    finished posting, bounded by `-reload-drain-deadline` (30m).
 4. `cleanup()` closes the ACP agent, the session manager and the MCP host.
 5. `reload.Exec` `syscall.Exec`s the on-disk binary, passing the cursor in
-   `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID`.
+   `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID` /
+   `ZULIP_ACP_QUEUE_REGISTRATION`.
 6. The new image reads that cursor and **resumes** `GetEvents` on the same
-   queue instead of registering. No gap and no double delivery.
+   queue instead of registering — *provided* the queue was registered with the
+   event types and narrow this image wants. No gap and no double delivery. If
+   the registration differs, the inherited queue is deleted and a fresh one
+   registered; see *When the queue cannot be resumed* below.
 
 The PID never moves, so systemd never sees the service stop: `Type=simple` is
 correct and no readiness handshake is needed.
@@ -86,6 +90,57 @@ server by re-running itself across an actual `syscall.Exec`: it registers a
 queue, posts a message while nobody is polling, execs, and asserts the resumed
 queue still delivers that message — while a control queue registered *after*
 the post, which is exactly what a hard restart does, never sees it.
+
+## When the queue cannot be resumed
+
+A Zulip event queue's `event_types` and `narrow` are **frozen at `/register`**.
+There is no call that widens a live queue. So a queue registered for
+`["message","update_message"]` will never deliver a `reaction` event, however
+loudly the polling process believes it subscribed to one.
+
+That collides with the handoff above. Because the cursor was originally *only*
+`(queue_id, last_event_id)`, the successor resumed whatever it inherited, and
+therefore kept polling the **predecessor's** registration — forever, across
+every subsequent reload, until someone happened to do a hard restart. This is
+not hypothetical: on v0.18.1 emoji reaction delivery was dead in production for
+as long as the relay kept being reloaded. The feature was on, the code was
+correct, and the queue could not carry the events.
+
+So the registration travels with the cursor, as a fingerprint — the canonical
+JSON of the sorted `event_types` and `narrow`
+(`zulipproto.RegistrationFingerprint`) — and the successor **refuses to resume**
+a queue whose fingerprint is not the one it wants. It deletes the stale queue
+(best-effort) and registers fresh, naming the difference:
+
+```
+zulip: WARN registration changed (event types +reaction); inherited queue
+05db1c49… discarded, registering fresh — messages posted during the gap are
+not delivered
+```
+
+**A missing fingerprint counts as different.** An upgrade *from* an image that
+never recorded one leaves it unset, and unset means *unknown*, not *matching* —
+otherwise the very reload that installs this check would resume the broken
+queue and preserve the defect it exists to end.
+
+### The cost, honestly
+
+This qualifies the "nothing posted in the window is lost" claim above, in this
+one case. `/register` hands back the server's **current** `last_event_id`, so
+anything posted before that instant is already behind the cursor and is never
+delivered. A fresh registration therefore loses whatever was posted between the
+predecessor's last poll and the successor's `/register` — sub-second in a
+normal reload, but real.
+
+That loss is bounded, one-off (it happens only on the reload where the
+registration actually changed), and strictly smaller than what it replaces:
+silently polling a queue that can never carry the events the running image
+asked for, indefinitely. The log line says so rather than pretending otherwise.
+
+A corollary for operators: **a relay already running a pre-fix image needs one
+hard `systemctl --user restart`** to escape a queue registered under the old
+shape. A reload cannot do it, because the image doing the resuming is the one
+without the check.
 
 ## Why a reload drains and a stop does not, really
 
@@ -133,7 +188,8 @@ pid stable at 833097/854272 throughout):
   SIGHUP mid-flight. The journal shows `SIGHUP — graceful reload` at T+0,
   `re-exec with queue … at event 58` at T+40s once the turn finished, and the
   topic holds exactly **one** complete reply — not truncated, not duplicated.
-- **Nothing posted in the window is lost.** A message posted to a second topic
+- **Nothing posted in the window is lost** (when the queue is resumed — see
+  *When the queue cannot be resumed*). A message posted to a second topic
   *while the relay was not polling* was dispatched 30s later by the new image,
   immediately after `resuming inherited event queue …`.
 - **The agent can reload itself, inline.** A turn that ran `kill -HUP <relay>`
@@ -150,6 +206,8 @@ pid stable at 833097/854272 throughout):
 | Drain deadline expires with turns still running | Exec happens anyway; the successor's `handler.MarkInterrupted` annotates the half-streamed messages. Same as a hard restart — the worst case here, not the normal one. |
 | The inherited queue died (server restarted during the exec) | `BAD_EVENT_QUEUE_ID` is routine: the runner registers fresh and carries on. Messages in the window are lost, as with a hard restart. |
 | `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID` half-set or malformed | Neither is honoured. Register fresh, log a WARN. Half a cursor would silently skip or replay events, which is worse than a logged gap. |
+| The new image wants different `event_types` or a different `narrow` | The inherited queue **cannot** carry them (both are frozen at `/register`). It is deleted and a fresh one registered, with a WARN naming the difference. Messages posted in the gap are lost — see *When the queue cannot be resumed*. |
+| `ZULIP_ACP_QUEUE_REGISTRATION` absent (upgrade from an image predating it) | Treated as *unknown, therefore different*: re-register rather than resume. Resuming on a guess is the defect this check exists to end. |
 | `syscall.Exec` fails (binary removed mid-reload) | `log.Fatalf`, exit non-zero, `Restart=on-failure` brings the relay back cold. The orphaned queue is named in the log line. |
 | Binary replaced by an atomic `mv` before the reload | `os.Executable` reads `/proc/self/exe`, which names the now-unlinked inode as `"<path> (deleted)"`. `reload.SelfPath` strips that marker, re-stats, and falls back to `os.Args[0]` through `PATH`. Getting this wrong would fail the exec *after* the agent had already been shut down. |
 
