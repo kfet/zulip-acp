@@ -193,8 +193,63 @@ Thought chunks are **force-hidden** on the ambient path regardless of
 `hide_thinking`: a thought that reached the surface before the verdict could not
 be retracted.
 
-### The end-of-turn repost (`repost_on_close`)
+### Reactions as a third turn source (`reactions`)
 
+An emoji reaction is a real conversational signal — often the only response a
+message gets — and until now it was invisible to the agent. With
+`"reactions": true` (the default) it arrives as one compact ambient turn:
+
+```
+[reaction] Ada Lovelace added :tada: to your own message 1234 ("the first few words…")
+```
+
+The delivery is trivial. The **gating** is the design, because a `reaction`
+event is nothing like a `message` event (all measured on Zulip 12.2, see
+[the protocol reference](zulip-protocol-reference.md#reactions)):
+
+- the `/register` narrow does not apply to it, so the relay receives reactions
+  for every message the bot can see, realm-wide;
+- it carries no channel, no topic, no body and no user name — only
+  `message_id` and `user_id`.
+
+So the naive version answers realm-wide traffic with an unbounded stream of
+`GET /messages/{id}`. `internal/handler/reaction.go` orders the gates cheapest
+first, and the order is load-bearing:
+
+1. `op` must be `add`. A removal is not a prompt — and the relay retracts its
+   own ack reaction at the end of every turn.
+2. Drop the relay's own `user_id` **before any allowlist**, exactly as the
+   message path does. The relay reacts on every message it accepts
+   (`ack_emoji`) and on every `!opts` change; re-ingesting either is a
+   self-sustaining loop by construction. Other bots are dropped next.
+3. `allowed_user_ids`, unchanged.
+4. Resolve the message to a conversation, in three tiers: an in-memory index of
+   the messages the relay itself streamed into (no API call — this is the
+   common case, a reaction on the relay's last message); the ids the *journal*
+   holds (an interrupted tail, an `!opts` panel), which survive a restart the
+   index does not; and finally one `GET /messages/{id}`, rate-limited to 20 per
+   minute and negatively cached, so an unrelated message costs at most one
+   lookup ever.
+5. If it does not resolve to a conversation the relay is **already engaged in**,
+   drop it silently. A reaction must never create a conversation or a session —
+   it cannot summon the bot — and a channel that has since left the served set,
+   or a conversation retired by `!new`, does not count as engagement.
+
+Two further rules fall out of what a reaction *is*. It is delivered on the
+**ambient** path, never the addressed one, so the agent may answer with the
+silent sentinel — and `internal/sysprompt` tells it that silence is the normal
+response to a reaction. And it never supersedes a running turn: a message
+cancels the turn in flight because the human changed their mind, but cancelling
+someone's answer because a third party tapped an emoji would be pure loss.
+
+`handler.reactionTrigger` is the seam for the planned relay-side action —
+react with a specific emoji on the relay's last message to archive the topic.
+It sees the resolved conversation and message before the agent is involved and
+reports whether it consumed the reaction; today it always returns false. That
+is a *relay* action, not an agent turn, which is why it belongs there and not
+in a prompt.
+
+### The end-of-turn repost (`repost_on_close`)
 Zulip generates a mobile push notification when a message is **created**, and
 never when one is edited. Streaming is edits, so every push carried the eager
 `Thinking...` placeholder and no phone ever saw an answer.

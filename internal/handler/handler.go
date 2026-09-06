@@ -119,6 +119,9 @@ type Poster interface {
 	// Handler.repostForNotify).
 	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
+	// UserByID resolves a user id to a user record. Used only by the
+	// reaction path, which is handed an id and nothing else.
+	UserByID(ctx context.Context, id int64) (zulipproto.User, error)
 	Upload(ctx context.Context, filename, contentType string, r io.Reader) (string, error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
 	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
@@ -185,6 +188,22 @@ type Config struct {
 	// AckEmoji is the emoji reaction placed on the triggering message
 	// for the duration of a turn. Empty disables the acknowledgement.
 	AckEmoji string
+
+	// Reactions delivers emoji reactions into the owning conversation
+	// as an ambient synthetic turn. See reaction.go for why every gate
+	// there is mandatory — reaction events are NOT narrowed by the
+	// event queue, so the whole realm's traffic reaches us.
+	Reactions bool
+
+	// ReactionTrigger, if set, gets first refusal on every reaction
+	// that resolves to an engaged conversation, and reports whether it
+	// consumed it — i.e. whether the relay itself acted on the
+	// reaction instead of handing it to the agent.
+	//
+	// Nil in production today. It is the seam for the planned
+	// react-to-archive control: that is a RELAY action, not an agent
+	// turn, so it belongs here rather than in a prompt.
+	ReactionTrigger func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool
 
 	// Commands is the acp-kit chat-command broker. Nil disables the
 	// whole `!command` surface, which is what the relay does when it
@@ -280,6 +299,22 @@ type Handler struct {
 	// the Handler, not the Splitter, precisely because it must outlive
 	// a turn: see repostForNotify.
 	repostBroken atomic.Bool
+
+	// ownMsgs maps a message the relay posted to the conversation that
+	// owns it, so a reaction on the relay's own last message resolves
+	// with no API call. badMsgs is the negative cache for message ids
+	// that did not resolve, and userNames caches reactor names. All
+	// three are bounded hints — see reaction.go.
+	ownMsgs   *msgIndex
+	badMsgs   *msgIndex
+	userNames *msgIndex
+
+	// lookupMu, lookupStart, lookupCount and lookupWarned are the token
+	// bucket in front of the reaction path's GET /messages/{id}.
+	lookupMu     sync.Mutex
+	lookupStart  time.Time
+	lookupCount  int
+	lookupWarned bool
 }
 
 // New constructs a Handler.
@@ -307,6 +342,10 @@ func New(cfg Config) (*Handler, error) {
 		inflight:     map[string]*inflightEntry{},
 		modelChoices: map[string]modelChoice{},
 		dmNames:      map[string][]string{},
+		ownMsgs:      newMsgIndex(reactionIndexSize),
+		badMsgs:      newMsgIndex(reactionIndexSize),
+		userNames:    newMsgIndex(reactionIndexSize),
+		lookupStart:  cfg.Now(),
 	}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
 	// Wiring the Controller here rather than in the caller keeps the
@@ -328,6 +367,8 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 		h.handleMessage(ctx, ev.Message)
 	case zulipproto.EventUpdateMessage:
 		h.handleUpdate(ev)
+	case zulipproto.EventReaction:
+		h.handleReaction(ctx, ev)
 	}
 }
 
@@ -501,15 +542,62 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 			return
 		}
 		h.cfg.Logf("handler: new conversation %s in %s", conv.ID, h.describe(key))
+		// A reaction on a message in this conversation may already
+		// have been refused as unresolvable — the topic was not
+		// engaged when it arrived. Engagement is the only moment that
+		// answer can change, and it changes it for this key alone.
+		h.badMsgs.dropValue(key.Label())
 	}
 
 	prompt = "[" + m.SenderName + "] " + prompt
 
+	h.startTurn(ctx, conv, prompt, addressed, m.ID)
+}
+
+// startTurn supersedes whatever is running in the conversation and
+// runs one turn in the background.
+//
+// ackMsgID is the message the in-flight acknowledgement reaction goes
+// on; 0 means no acknowledgement, which is what the reaction path
+// passes — reacting to a reaction is noise.
+func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID int64) {
 	// A follow-up supersedes whatever is still running in this topic.
 	h.cancelInflight(ctx, conv.ID)
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
 	entry := &inflightEntry{cancel: cancel}
 	h.setInflight(conv.ID, entry)
+	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
+}
+
+// startTurnIfIdle is startTurn for an input that must NEVER supersede a
+// running turn — a reaction. It reports whether the turn started.
+//
+// The busy check and the claim are one atomic step on purpose: turns
+// are also started by scheduled prompts, from another goroutine, so a
+// check-then-start would have a window in which an emoji could cancel
+// an answer that had just begun. That is also why the reaction path
+// does no cheap pre-check of its own: two ways to answer "is this
+// conversation busy" is one too many, and the cost of finding out late
+// is a cached name lookup.
+func (h *Handler) startTurnIfIdle(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID int64) bool {
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
+	entry := &inflightEntry{cancel: cancel}
+	h.inflightMu.Lock()
+	if _, busy := h.inflight[conv.ID]; busy {
+		h.inflightMu.Unlock()
+		cancel()
+		return false
+	}
+	h.inflight[conv.ID] = entry
+	h.inflightMu.Unlock()
+	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
+	return true
+}
+
+// runTurn owns the turn goroutine and its unwinding. Both entry points
+// above end here, so there is exactly one place that decides what
+// happens as a turn finishes.
+func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv journal.Conv, entry *inflightEntry, prompt string, addressed bool, ackMsgID int64) {
 	go func() {
 		// LIFO: deferred actions the agent asked for are applied only
 		// after the turn is fully unwound and no longer inflight, so
@@ -517,7 +605,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		defer h.endTurn(conv)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, addressed, m.ID); err != nil {
+		if err := h.run(pctx, conv, prompt, addressed, ackMsgID); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -801,8 +889,17 @@ func (h *Handler) repostForNotify(ctx context.Context, conv journal.Conv, split 
 
 // trackTail records the message the relay is currently streaming into,
 // so a crash mid-turn can be reported on the next start.
+//
+// It also indexes that message id against the conversation, which is
+// what lets a reaction on the relay's LAST message resolve without an
+// API call — the tail is the only id indexed, so a reaction on an
+// earlier message of a multi-message answer still costs a lookup. The
+// journal's tail is cleared when the turn ends — it means
+// "interrupted", not "mine" — so the in-memory index is the only thing
+// that remembers a FINISHED turn's message.
 func (h *Handler) trackTail(convID string, split *rollover.Splitter) {
 	if id := split.TailID(); id != 0 {
+		h.ownMsgs.put(id, convID)
 		if err := h.cfg.Journal.SetTail(convID, id); err != nil {
 			h.cfg.Logf("handler: recording tail for %s: %v", convID, err)
 		}

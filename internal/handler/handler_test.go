@@ -73,11 +73,20 @@ type fakeZulip struct {
 	reactErr error
 	// posted is signalled after every Post or Edit, so tests can
 	// synchronise on surface state instead of polling a clock.
-	posted chan struct{}
-	// unreacted is signalled after every RemoveReaction. A superseded
+	posted chan struct{} // unreacted is signalled after every RemoveReaction. A superseded
 	// turn retracts its ack AFTER its inflight entry is gone, so
 	// WaitIdle cannot observe that cleanup — tests wait on this.
 	unreacted chan struct{}
+	// messages overrides what GetMessage answers for an id, so the
+	// reaction path can be handed a message the fake never "posted"
+	// (a human's message, a DM, another channel's). gets records
+	// every GetMessage id, which is how the flood gates are asserted.
+	messages map[int64]zulipproto.Message
+	gets     []int64
+	// users backs UserByID, and userGets records every lookup — the
+	// name cache is proved by the SECOND reaction costing no call.
+	users    map[int64]zulipproto.User
+	userGets []int64
 }
 
 func newZulip() *fakeZulip {
@@ -88,6 +97,8 @@ func newZulip() *fakeZulip {
 		widgets:     map[int64]string{},
 		uploads:     map[string][]byte{},
 		uploadTypes: map[string]string{},
+		messages:    map[int64]zulipproto.Message{},
+		users:       map[int64]zulipproto.User{humanID: {UserID: humanID, FullName: "Ada Lovelace"}},
 		posted:      make(chan struct{}, 256),
 
 		unreacted: make(chan struct{}, 256),
@@ -251,14 +262,30 @@ func (z *fakeZulip) DeleteMessage(_ context.Context, id int64) error {
 func (z *fakeZulip) GetMessage(_ context.Context, id int64) (zulipproto.Message, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
+	z.gets = append(z.gets, id)
 	if z.getErr != nil {
 		return zulipproto.Message{}, z.getErr
+	}
+	if m, ok := z.messages[id]; ok {
+		return m, nil
 	}
 	body, ok := z.bodies[id]
 	if !ok {
 		return zulipproto.Message{}, fmt.Errorf("no such message %d", id)
 	}
 	return zulipproto.Message{ID: id, Content: body, SenderID: botID}, nil
+}
+
+// UserByID plays GET /users/{id}. users holds the realm; anyone absent
+// is "No such user", exactly as Zulip answers.
+func (z *fakeZulip) UserByID(_ context.Context, id int64) (zulipproto.User, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.userGets = append(z.userGets, id)
+	if u, ok := z.users[id]; ok {
+		return u, nil
+	}
+	return zulipproto.User{}, &zulipproto.APIError{Status: 400, Msg: "No such user", Code: "BAD_REQUEST"}
 }
 
 func (z *fakeZulip) Upload(_ context.Context, filename, contentType string, r io.Reader) (string, error) {

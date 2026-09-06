@@ -408,6 +408,28 @@ func (j *Journal) SetOpts(convID string, msgID int64) error {
 	return j.commit(func() { c.OptsID = prev })
 }
 
+// LookupMessage returns the conversation that owns a message id the
+// journal itself recorded — the tail of a turn that was in flight, or
+// the conversation's `!opts` panel.
+//
+// It exists for the reaction path, which is handed a message id and
+// nothing else and must decide whether it belongs to us without
+// spending an API call. Retired conversations never match: they no
+// longer answer to anything.
+func (j *Journal) LookupMessage(msgID int64) (Conv, bool) {
+	if msgID == 0 {
+		return Conv{}, false
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, c := range j.byID {
+		if !c.Retired && (c.TailID == msgID || c.OptsID == msgID) {
+			return *c, true
+		}
+	}
+	return Conv{}, false
+}
+
 // OpenTails returns every conversation with a tail message still
 // recorded — i.e. a turn that was in flight when the relay stopped.
 // On startup these are marked as interrupted and cleared.

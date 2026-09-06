@@ -41,7 +41,7 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	hostDir := filepath.Join(dir, "skills")
 	return func() string {
 		return sysprompt.Resolve(cfg.SystemPrompt, false,
-			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel())
+			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions())
 	}
 }
 

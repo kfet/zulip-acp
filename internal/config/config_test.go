@@ -504,3 +504,36 @@ func TestRelayMCPIsOffByDefault(t *testing.T) {
 		t.Fatalf("config = %+v", c)
 	}
 }
+
+// TestReactions pins the default: reactions reach the agent unless the
+// operator turns them off. They only ever fire inside a conversation
+// the relay is already engaged in, for a user the allowlist already
+// permits, so ON is the honest default for a feature that adds no new
+// way in — and "reactions": false is the escape hatch for an operator
+// who does not want a stray :+1: to cost a turn.
+func TestReactions(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"unset defaults on", `{}`, true},
+		{"explicit true", `{"reactions":true}`, true},
+		{"explicit false", `{"reactions":false}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetReactions(); got != c.want {
+				t.Fatalf("GetReactions() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

@@ -524,3 +524,45 @@ func TestSetOptsRollsBackOnAWriteFailure(t *testing.T) {
 		t.Fatalf("panel = %d after a failed write, want the previous 5", got.OptsID)
 	}
 }
+
+// TestLookupMessage: the reaction path is handed a message id and
+// nothing else, and must resolve the ids the journal itself recorded
+// without an API call. A retired conversation never matches.
+func TestLookupMessage(t *testing.T) {
+	j, _ := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "t"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if _, ok := j.LookupMessage(0); ok {
+		t.Fatal("message id 0 is not a message")
+	}
+	if _, ok := j.LookupMessage(11); ok {
+		t.Fatal("an unrecorded id must not match")
+	}
+	if err := j.SetTail(c.ID, 11); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	if err := j.SetOpts(c.ID, 12); err != nil {
+		t.Fatalf("SetOpts: %v", err)
+	}
+	for _, id := range []int64{11, 12} {
+		got, ok := j.LookupMessage(id)
+		if !ok || got.ID != c.ID {
+			t.Fatalf("LookupMessage(%d) = %+v,%v", id, got, ok)
+		}
+	}
+	prev, fresh, existed, err := j.Retire(Channel(4, "t"))
+	if err != nil || !existed {
+		t.Fatalf("Retire: existed=%v err=%v", existed, err)
+	}
+	// Retire clears the retired conversation's tail and hands its
+	// `!opts` panel — which belongs to the PLACE — to the fresh one.
+	if _, ok := j.LookupMessage(11); ok {
+		t.Fatal("a retired conversation must not answer to its tail")
+	}
+	got, ok := j.LookupMessage(12)
+	if !ok || got.ID != fresh.ID || got.ID == prev.ID {
+		t.Fatalf("LookupMessage(12) = %+v,%v, want the fresh conversation %s", got, ok, fresh.ID)
+	}
+}
