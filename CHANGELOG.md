@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-06
+
 ### Fixed
 
 - **Replacing an unresumable event queue is now lossless.** v0.19.1 refused to
