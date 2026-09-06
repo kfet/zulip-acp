@@ -79,6 +79,11 @@ type Config struct {
 	// Required: without it there is no identity, and without identity
 	// there is no safe read. Returning ok=false rejects the call.
 	ConvKey func(sessionKey string) (journal.Key, bool)
+	// Rename arms a rename of the conversation's topic, to be applied
+	// when the turn ends. Required; it is the Handler's, because a
+	// rename must not land while the turn is still posting into the
+	// old topic. The returned string is what the agent is told.
+	Rename func(key journal.Key, title string) (string, error)
 	// Timeout bounds one Zulip round-trip. The agent's turn is blocked
 	// until the tool call returns, so an unbounded fetch would let one
 	// wedged request hang the turn forever.
@@ -112,6 +117,9 @@ func NewTools(cfg Config) (*Tools, error) {
 	}
 	if cfg.ConvKey == nil {
 		return nil, errors.New("zulipmcp: ConvKey is required")
+	}
+	if cfg.Rename == nil {
+		return nil, errors.New("zulipmcp: Rename is required")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
@@ -165,7 +173,7 @@ func (t *Tools) Tools() []Tool {
 			}
 			return t.history(key, a.Limit, a.BeforeID)
 		}),
-	}}
+	}, t.renameTool()}
 }
 
 // history fetches and renders one page.

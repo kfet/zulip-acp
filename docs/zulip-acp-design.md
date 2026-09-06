@@ -946,8 +946,9 @@ implemented, plus two OPTIONAL capabilities in the shape of `TurnStopper`:
 | `Poster` | `post` tool | yes | no — nothing to speak on after the response |
 | `Scheduler` | `schedule` tools, `!schedules`, `!unschedule` | yes | no — same reason |
 
-`history` sits outside that table on purpose: it has no `!command` twin and no
-Broker action, because it is not a relay-generic control at all. See below.
+`history` and `rename_topic` sit outside that table on purpose: neither has a
+`!command` twin or a Broker action, because neither is a relay-generic control
+at all. See below.
 
 ### What is deliberately not exposed
 
@@ -966,6 +967,8 @@ commands fall foul of that one rule:
   Same `Controller`, same implementation, honest timing. The `defer` ordering
   in `handleMessage` and `FireSchedule` is load-bearing: `endTurn` is
   registered first so it runs last.
+- **`rename_topic` is deferred, for a Zulip-shaped version of the same
+  reason.** See below.
 
 ### `post` and its blast radius
 
@@ -983,14 +986,15 @@ It posts through the **rollover splitter**, like every agent answer. Zulip
 truncates past `MAX_MESSAGE_LENGTH` silently; a `post` that called
 `SendMessage` directly would be a brand-new way to lose output.
 
-### `history`: the one Zulip-specific tool
+### `history` and `rename_topic`: the Zulip-specific tools
 
 Every other loopback tool is relay-generic and lives in `acp-kit/relaytool`,
 over a `command.Broker` action, so `poe-acp` and `slack-acp` get it too.
-`history` is not: it is a query against a Zulip **narrow**, it answers in
-Zulip message shapes, and the question "which conversation may I read" is
-answered by a `journal.Key`. So it lives in `internal/zulipmcp`, which existed
-from the start precisely to keep that option open, and it resolves identity
+These two are not: one is a query against a Zulip **narrow**, the other is a
+Zulip topic move, and both answer in
+Zulip message shapes; the question "which conversation is this" is answered by
+a `journal.Key`. So they live in `internal/zulipmcp`, which existed from the
+start precisely to keep that option open, and they resolve identity
 through `Handler.ConvKey` — the same server-side binding as `ConvToken`, one
 layer earlier, because a narrow needs the stream id and topic (or the DM
 participant set), not an opaque broker token.
@@ -1014,6 +1018,57 @@ capability the relay should own rather than leak.
   blow the agent's context window in one call.
 - **`before_id` is exclusive**, so feeding back the oldest id of a page yields
   the page before it with neither overlap nor gap.
+
+`rename_topic` exists because of `autotopic_channels`. The relay names a new
+topic from the opening line of the message that starts it — a pure heuristic
+over raw markdown, because at that instant nothing has read the message. It is
+the *question*, verbatim, and it cannot be a title. The agent is the only thing
+in the system that understands what the conversation turned out to be about, so
+the name is not guessed harder: it is asked for.
+
+- **Deferred to `Handler.endTurn`, like `new_session`, for a reason of its
+  own.** A turn posts into the topic it started in: the placeholder, every
+  streaming edit, each rollover message, the end-of-turn repost, all built from
+  the conversation key as it was when the turn began. A topic that moves
+  underneath a running turn splits the answer between two topics — the
+  messages already posted travel with the move, the ones after it do not. So
+  the tool ARMS a rename and the relay performs it once the answer is out.
+- **The arm belongs to the TURN, not the conversation.** A follow-up cancels
+  whatever is running and starts its own turn, so the cancelled turn unwinds
+  while the new one is already streaming into the old topic name. An arm keyed
+  on the conversation would let the dying turn move the topic out from under
+  the live one — the very split the deferral exists to prevent. So it hangs off
+  the turn's `inflightEntry`, and `applyRename` drops the rename if any turn
+  still holds the conversation when it runs.
+- **A rename is a message edit.** Zulip has no rename-topic endpoint: it is
+  `PATCH /messages/{id}` with `propagate_mode=change_all` on some message in
+  the topic. The anchor is the turn's triggering message, which is the one
+  certain to be there — so a scheduled turn, which has none, is refused rather
+  than given an invented anchor. The anchor is read back first: a human who
+  moved that message elsewhere mid-turn must not have the relay rename whatever
+  topic it landed in.
+- **Renaming onto a live topic is refused.** `change_all` into an existing
+  topic merges the two on Zulip, and `Journal.Rename` resolves the collision by
+  keeping the other conversation — so the agent would lose the session it is
+  running in to make a cosmetic change. The tool says so and asks for another
+  title.
+- **The journal is migrated inline.** The move echoes back as an
+  `update_message` event and `handleUpdate` would migrate it anyway, but not
+  instantly; a message arriving in the new topic inside that window would
+  allocate a second conversation. Renaming the journal in place closes it, and
+  the echoed event then finds nothing left to move.
+- **Bounded by a short timeout, not `PromptTimeout`.** It runs in `endTurn`,
+  after the turn has left the inflight map, where a wedged request would hold
+  up the deferred loopback drain and, during a graceful reload, the exec. A
+  reload that cuts a rename short loses the rename and nothing else.
+- **Failure is cosmetic.** Moving is a realm policy
+  (`can_move_messages_between_topics_group`), so a refusal is logged and the
+  topic keeps its placeholder name. A turn that answered correctly is never
+  reported as failed over a topic name.
+- **The instruction is per-turn, not in the system prompt.** Only the message
+  the autotopic move lifted out of general chat is told its topic is a
+  placeholder. Saying it on every turn is how a relay ends up renaming topics
+  humans named.
 
 ### The loop hazard
 
@@ -1130,7 +1185,8 @@ internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown model/mood/plan line (spinner + footer)
 internal/sysprompt/     built-in Zulip formatting block
 internal/zulipmcp/      MCP server identity (socket naming, env vars, subcommand)
-                        and the one Zulip-specific loopback tool, `history`
+                        and the Zulip-specific loopback tools, `history` and
+                        `rename_topic`
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
 internal/zulipproto/zform.go
                         the ONLY coupling to Zulip's widget subsystem

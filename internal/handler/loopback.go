@@ -205,7 +205,9 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 	// arriving in the gap cannot have its own turn silently displaced.
 	// The store fires each item in its own goroutine, so waiting here
 	// holds nothing else up.
-	entry := &inflightEntry{cancel: cancelTurn}
+	// No anchor: a scheduled prompt has no triggering message, so it
+	// cannot rename the topic (see rename.go).
+	entry := &inflightEntry{cancel: cancelTurn, rename: &pendingRename{}}
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
 		return err
 	}
@@ -213,7 +215,7 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 	defer cancel()
 	// See handleMessage: endTurn runs after the turn has left the
 	// inflight map, never before.
-	defer h.endTurn(conv)
+	defer h.endTurn(conv, entry)
 	defer h.clearInflight(conv.ID, entry)
 
 	h.cfg.Logf("handler: firing schedule %s in %s (depth %d)", it.ID, h.describe(key), it.Depth)
@@ -269,7 +271,11 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // is the fail-safe direction — nothing is reset — and the user's next
 // `!new` does what they wanted anyway; carrying a rename through would
 // mean tracking identity across a turn for one vanishingly rare case.
-func (h *Handler) endTurn(conv journal.Conv) {
+func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
+	// Before the deferred loopback actions and before OnTurnEnd: the
+	// rename is the last thing the turn does to the topic it has been
+	// posting into, and nothing after it may assume the old name.
+	h.applyRename(conv, entry)
 	if h.cfg.Loopback != nil {
 		h.cfg.Loopback.EndTurn(conv.Key.Token())
 	}

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rename_topic` — the agent names its own topic.** `autotopic_channels`
+  moves a general-chat message into a topic of its own before answering it,
+  but the name it picks has always been a pure heuristic over the raw
+  markdown: the opening line, stripped and truncated. That is the *question*,
+  verbatim — typos and all — and it never was a title, because at that instant
+  nothing had read the message. The seam for an agent-generated name has been
+  open in `internal/autotopic` since the feature shipped; this closes it.
+
+  With `relay_mcp` on, the turn that opens an auto-named topic is told so, and
+  the agent replaces the placeholder through a new Zulip-specific loopback
+  tool. The rename is **deferred to the end of the turn**, like `new_session`
+  and for a Zulip-shaped version of the same reason: a turn posts into the
+  topic it started in — placeholder, streaming edits, rollovers, repost — so a
+  topic that moved underneath it would split its own answer between two
+  topics. On the wire it is `propagate_mode=change_all`, so the whole topic
+  travels and the conversation's session follows it; the journal is migrated
+  inline rather than waiting for the `update_message` echo, which closes the
+  window in which a message in the new topic would allocate a second
+  conversation. The arm belongs to the *turn*, not the conversation: a
+  superseded turn unwinds while its replacement is already streaming into the
+  old topic name, and it must not move the topic out from under it. Renaming
+  onto a topic that already holds a conversation is refused rather than
+  attempted — Zulip would merge them and the journal would orphan one session —
+  and the anchor message is read back before the move, so a human who moved it
+  elsewhere mid-turn cannot make the relay rename an unrelated topic. A rename
+  refused by realm policy is logged and the topic keeps its placeholder name — a turn that answered correctly is never failed over a
+  topic name. A scheduled turn cannot rename: a rename is a message edit, and
+  a scheduled turn has no triggering message to anchor one on.
+
 ## [0.19.1] - 2026-09-06
 
 ### Fixed

@@ -10,7 +10,8 @@ was a decision, not drift.** As of the relay-loopback work the binary hosts
 one MCP server — on a private unix socket, advertised only to its own child
 agent — so the agent can drive the relay from inside a turn: post out of band,
 schedule a prompt back into the same conversation, and read that
-conversation's own earlier messages (`history`). ACP has no
+conversation's own earlier messages (`history`), and rename the topic it is
+talking in (`rename_topic`). ACP has no
 agent-initiated message and the streaming sink is bound per turn, but an MCP
 tool call runs agent→client, so this is the mechanism the protocol already
 gives us. It is **off by default** (`"relay_mcp": true`), because it widens
@@ -119,10 +120,11 @@ Zulip wire protocol it stays here.
   Zulip knows: conv-id → broker token / `journal.Key`, posting through the
   splitter, and re-applying the relay's gates when a schedule fires.
 - **A tool that needs something only Zulip knows lives in
-  `internal/zulipmcp`.** That is `history` today — a narrow over a topic or a
-  DM, resolved from `Handler.ConvKey`. It has no `!command` twin and no Broker
-  action, because it is not a relay-generic control. Do not push it to
-  acp-kit, and do not add a relay-generic tool here.
+  `internal/zulipmcp`.** That is `history` and `rename_topic` today — a narrow
+  over a topic or a DM, and a topic move, both resolved from
+  `Handler.ConvKey`. Neither has a `!command` twin or a Broker action, because
+  neither is a relay-generic control. Do not push them to acp-kit, and do not
+  add a relay-generic tool here.
 - **A tool whose result can be large must bound it.** `history` caps each
   message body and the whole reply, keeps the newest end, and states the
   `before_id` to page back. One tool call must never be able to flood the
@@ -136,8 +138,10 @@ Zulip wire protocol it stays here.
   knob the agent has not reported (see the thinking-level note in the design
   doc): a button that silently fails is worse than no button.
 - **A loopback tool must never destroy the turn that is calling it.** That is
-  why there is no `stop` tool and why `new_session` is deferred to
-  `Handler.endTurn`. Do not "fix" either.
+  why there is no `stop` tool, why `new_session` is deferred to
+  `Handler.endTurn`, and why `rename_topic` is deferred to the same place — a
+  turn posts into the topic it started in, so a topic that moves underneath it
+  splits its own answer between two topics. Do not "fix" any of the three.
 - **`post` has no target parameter, and must not grow one casually.** The
   conversation comes from the MCP connection token. An agent that can post
   anywhere is a realm-wide megaphone for anything that can prompt-inject it.

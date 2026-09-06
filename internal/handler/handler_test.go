@@ -234,6 +234,16 @@ func (z *fakeZulip) MoveMessage(_ context.Context, id int64, topic, mode string)
 		return z.moveErr
 	}
 	z.moves = append(z.moves, fmt.Sprintf("%d:%s:%s", id, topic, mode))
+	// A move is what GetMessage reports afterwards, exactly as on the
+	// server: the rename path reads the anchor back to check it is
+	// still in the topic it is renaming.
+	if m, ok := z.messages[id]; ok {
+		m.Topic = topic
+		z.messages[id] = m
+	}
+	if _, ok := z.topics[id]; ok {
+		z.topics[id] = topic
+	}
 	return nil
 }
 
@@ -394,6 +404,10 @@ type fakeAgent struct {
 	hold chan struct{}
 	// entered is signalled when Prompt starts.
 	entered chan struct{}
+	// during, when non-nil, runs inside Prompt — i.e. while the turn
+	// is in flight. It stands in for an MCP tool call, which is the
+	// only way the real agent reaches back into the relay mid-turn.
+	during func()
 	// deadlines records the deadline of the context each Prompt ran
 	// under. It is how "this turn got a full timeout, not the
 	// remainder of one" is asserted without a sleep.
@@ -456,7 +470,11 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 	}
 	sink, chunks, thoughts, meta := a.sink, a.chunks, a.thoughts, a.meta
 	block, hold, stop, err := a.block, a.hold, a.stop, a.err
+	during := a.during
 	a.mu.Unlock()
+	if during != nil {
+		during()
+	}
 	select {
 	case a.entered <- struct{}{}:
 	default:
