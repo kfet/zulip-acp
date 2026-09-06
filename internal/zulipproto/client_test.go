@@ -437,7 +437,7 @@ func TestRegisterAndEvents(t *testing.T) {
 		return 200, okJSON(`"events":[{"id":0,"type":"heartbeat"},{"id":1,"type":"message","message":{"id":33,"sender_id":5,"content":"hi","stream_id":4,"subject":"t"}}]`)
 	})
 	c := newClient(t, ts)
-	res, err := c.Register(context.Background(), []string{"message", "update_message"}, [][2]string{{"channel", "4"}})
+	res, err := c.Register(context.Background(), []string{"message", "update_message"}, [][2]string{{"channel", "4"}}, 45*time.Minute)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -455,6 +455,11 @@ func TestRegisterAndEvents(t *testing.T) {
 	var narrow [][]string
 	if err := json.Unmarshal([]byte(form.Get("narrow")), &narrow); err != nil || narrow[0][0] != "channel" || narrow[0][1] != "4" {
 		t.Fatalf("narrow = %q (%v)", form.Get("narrow"), err)
+	}
+	// The queue must outlive a reload drain; nothing a client does
+	// afterwards can extend it.
+	if got := form.Get("queue_lifespan_secs"); got != "2700" {
+		t.Fatalf("queue_lifespan_secs = %q, want 2700", got)
 	}
 
 	evs, err := c.GetEvents(context.Background(), "q1", -1)
@@ -479,7 +484,7 @@ func TestRegisterWithoutNarrowOrTypes(t *testing.T) {
 	ts := newServer(t, func(recordedReq) (int, string) {
 		return 200, okJSON(`"queue_id":"q","last_event_id":0`)
 	})
-	if _, err := newClient(t, ts).Register(context.Background(), nil, nil); err != nil {
+	if _, err := newClient(t, ts).Register(context.Background(), nil, nil, 0); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	form := ts.requests()[0].form
@@ -639,7 +644,7 @@ func TestServerErrorsPropagate(t *testing.T) {
 	if _, err := c.Upload(ctx, "f", "application/octet-stream", strings.NewReader("x")); err == nil {
 		t.Fatal("Upload: want error")
 	}
-	if _, err := c.Register(ctx, nil, nil); err == nil {
+	if _, err := c.Register(ctx, nil, nil, 0); err == nil {
 		t.Fatal("Register: want error")
 	}
 	if err := c.DeleteQueue(ctx, "q"); err == nil {

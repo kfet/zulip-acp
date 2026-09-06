@@ -83,7 +83,7 @@ func execPhase1(t *testing.T) {
 		t.Fatalf("me: %v", err)
 	}
 
-	res, rerr := c.Register(ctx, []string{zulipproto.EventMessage}, nil)
+	res, rerr := c.Register(ctx, []string{zulipproto.EventMessage}, nil, 0)
 	if err := rerr; err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -146,7 +146,7 @@ func execPhase2(t *testing.T) {
 
 	// The control: what a hard restart does. Registering now puts the
 	// cursor AFTER the probe message, so this queue can never see it.
-	fresh, err := c.Register(ctx, []string{zulipproto.EventMessage}, nil)
+	fresh, err := c.Register(ctx, []string{zulipproto.EventMessage}, nil, 0)
 	if err != nil {
 		t.Fatalf("control register: %v", err)
 	}

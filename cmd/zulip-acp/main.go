@@ -488,6 +488,11 @@ func main() {
 		ResumeQueueID:      cursor.QueueID,
 		ResumeLastEventID:  cursor.LastEventID,
 		ResumeRegistration: cursor.Registration,
+		// The queue must outlive the longest a reload can hold it
+		// unpolled: a turn drains for up to -reload-drain-deadline,
+		// and the server collects an unpolled queue after ten
+		// minutes.
+		QueueLifespan: *reloadDrain + 5*time.Minute,
 		Handle: func(ctx context.Context, ev zulipproto.Event) {
 			// The served set is updated from the same goroutine that
 			// dispatches messages, so a message can never be judged

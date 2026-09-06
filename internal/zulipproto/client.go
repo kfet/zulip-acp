@@ -664,19 +664,38 @@ type RegisterResult struct {
 	QueueID      string `json:"queue_id"`
 	LastEventID  int64  `json:"last_event_id"`
 	MaxMessageID int64  `json:"max_message_id"`
+	// IgnoredParameters lists request parameters the server did not
+	// understand. Zulip does not fail such a request — it succeeds and
+	// silently ignores them — so this is the ONLY way to learn that a
+	// parameter had no effect.
+	IgnoredParameters []string `json:"ignored_parameters_unsupported"`
 }
 
 // Register creates an event queue. eventTypes and narrow are encoded as
 // Zulip expects (JSON arrays in form fields). narrow entries are
 // [operator, operand] pairs, e.g. {"channel", "4"}.
 //
+// lifespan, when positive, asks the server to keep the queue for that
+// long without being polled (`queue_lifespan_secs`, capped server-side
+// at 7 days). The default is ten minutes, and NOTHING a client does
+// short of a blocking poll on an empty queue refreshes that clock —
+// Zulip only updates last_connection_time in connect_handler, so a
+// `dont_block` fetch does not count. A graceful reload can legitimately
+// spend longer than ten minutes draining one turn, so the lifespan is
+// the only thing standing between a long turn and a
+// garbage-collected queue. Check IgnoredParameters: an older server
+// takes the request and ignores the field.
+//
 // The returned queue_id and last_event_id are IN-MEMORY state. Queues
 // die on server restart, so persisting them is false comfort.
-func (c *Client) Register(ctx context.Context, eventTypes []string, narrow [][2]string) (RegisterResult, error) {
+func (c *Client) Register(ctx context.Context, eventTypes []string, narrow [][2]string, lifespan time.Duration) (RegisterResult, error) {
 	form := url.Values{
 		// Raw markdown in, raw markdown out: the relay never wants
 		// Zulip's rendered HTML.
 		"apply_markdown": {"false"},
+	}
+	if lifespan > 0 {
+		form.Set("queue_lifespan_secs", strconv.FormatInt(int64(lifespan.Seconds()), 10))
 	}
 	if len(eventTypes) > 0 {
 		form.Set("event_types", mustJSON(eventTypes))
@@ -710,6 +729,11 @@ type Event struct {
 	Topic string `json:"subject"`
 	// OrigTopic is the topic the message was in before the rename.
 	OrigTopic string `json:"orig_subject"`
+	// EditTimestamp is when an update_message edit happened, in whole
+	// seconds. An edited message keeps its message_id across every
+	// edit, so this is what distinguishes two edits of one message —
+	// see eventKey in dedup.go.
+	EditTimestamp int64 `json:"edit_timestamp"`
 
 	// Op discriminates subscription, stream and reaction events:
 	// "add"/"remove"/"peer_add"/… for subscription,
@@ -790,9 +814,29 @@ const (
 // ctx and by the HTTP client's own timeout, and the server returns
 // heartbeat events so an idle queue still produces traffic.
 func (c *Client) GetEvents(ctx context.Context, queueID string, lastEventID int64) ([]Event, error) {
+	return c.getEvents(ctx, queueID, lastEventID, false)
+}
+
+// DrainEvents fetches whatever the queue is holding RIGHT NOW and
+// returns immediately, empty if it holds nothing (`dont_block=true`).
+//
+// That is what makes draining a queue decidable. A long poll cannot
+// distinguish "this queue is empty" from "the server has not answered
+// yet", so a drain built on GetEvents would have to guess with a
+// timeout — and guess wrong under load, discarding a queue that still
+// held messages. Here an empty result is the SERVER saying the queue
+// is empty, and a timeout is a fault.
+func (c *Client) DrainEvents(ctx context.Context, queueID string, lastEventID int64) ([]Event, error) {
+	return c.getEvents(ctx, queueID, lastEventID, true)
+}
+
+func (c *Client) getEvents(ctx context.Context, queueID string, lastEventID int64, dontBlock bool) ([]Event, error) {
 	q := url.Values{
 		"queue_id":      {queueID},
 		"last_event_id": {strconv.FormatInt(lastEventID, 10)},
+	}
+	if dontBlock {
+		q.Set("dont_block", "true")
 	}
 	var resp struct {
 		Events []Event `json:"events"`

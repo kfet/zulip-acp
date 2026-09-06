@@ -24,6 +24,19 @@ const (
 	DefaultMaxBackoff = 30 * time.Second
 	// baseBackoff is the first retry delay; it doubles from here.
 	baseBackoff = 500 * time.Millisecond
+	// DefaultDrainPollTimeout bounds ONE non-blocking poll of a queue
+	// being swapped out. These polls return whatever the queue holds
+	// immediately, so this is a fault bound, not a wait.
+	DefaultDrainPollTimeout = 10 * time.Second
+	// DefaultDrainBudget bounds the WHOLE drain of a queue being
+	// swapped out, so a queue that keeps producing can never stall the
+	// startup of a new image indefinitely.
+	DefaultDrainBudget = 60 * time.Second
+	// swapRegisterAttempts is how many times a swap tries to register
+	// the replacement queue before giving up and dropping the
+	// inherited one. The inherited queue still holds messages, so a
+	// single 5xx must not cost them.
+	swapRegisterAttempts = 5
 )
 
 // RunnerConfig configures a Runner.
@@ -78,12 +91,31 @@ type RunnerConfig struct {
 	// cannot be changed afterwards, so an inherited queue is only
 	// resumable when its registration is the one this image wants.
 	// When it differs — or is absent, which is what an upgrade from an
-	// image that never recorded one looks like — the queue is deleted
-	// and a fresh one registered, at the documented cost above. That
-	// cost is strictly smaller than the alternative it replaces:
-	// silently polling the OLD registration forever, across every
-	// subsequent reload.
+	// image that never recorded one looks like — the queue is SWAPPED,
+	// not simply dropped: a replacement is registered while the old
+	// queue is still buffering, the old one is drained and dispatched,
+	// and only then deleted. Nothing posted across the change is lost;
+	// the overlap both queues saw is de-duplicated on event identity.
 	ResumeRegistration string
+
+	// DrainPollTimeout bounds one non-blocking poll of a queue being
+	// swapped out. 0 uses DefaultDrainPollTimeout.
+	DrainPollTimeout time.Duration
+	// DrainBudget bounds the whole drain of a queue being swapped out.
+	// If it expires the swap degrades to the lossy behaviour — the
+	// replacement queue is used anyway and the gap is logged loudly.
+	// 0 uses DefaultDrainBudget.
+	DrainBudget time.Duration
+	// QueueLifespan asks the server to keep this runner's queue for
+	// that long without being polled. It must cover the longest a
+	// reload drain can hold the queue unpolled — an agent turn can run
+	// for tens of minutes, and the server's default is ten. 0 accepts
+	// the server default.
+	QueueLifespan time.Duration
+	// DedupWindow is how many dispatched event identities to remember
+	// so the swap overlap is delivered exactly once. 0 uses
+	// DefaultDedupWindow.
+	DedupWindow int
 
 	// Now and Sleep are injected by tests so the backoff and liveness
 	// logic can be driven without wall-clock waits. Nil uses the real
@@ -117,6 +149,17 @@ type Runner struct {
 	// registration is the fingerprint of what THIS image registers
 	// with; an inherited queue is only resumable when it matches.
 	registration string
+	// queueRegistration is the fingerprint the queue currently HELD
+	// was registered with. It is normally registration, and differs
+	// only when a swap was interrupted mid-drain and the inherited
+	// queue was handed back on: a successor told the wrong fingerprint
+	// would resume a queue that cannot carry its events, which is the
+	// exact defect this machinery exists to end.
+	queueRegistration string
+	// seen remembers the identities dispatched during a queue swap, so
+	// the window where two queues overlap is delivered exactly once.
+	// It is nil except during a swap — see swapQueue and dedup.go.
+	seen *seenSet
 }
 
 // ErrHandoff is returned by Run when the loop stopped because its
@@ -143,6 +186,12 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	if cfg.Silence <= 0 {
 		cfg.Silence = DefaultSilence
 	}
+	if cfg.DrainPollTimeout <= 0 {
+		cfg.DrainPollTimeout = DefaultDrainPollTimeout
+	}
+	if cfg.DrainBudget <= 0 {
+		cfg.DrainBudget = DefaultDrainBudget
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -154,18 +203,21 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	}
 	r := &Runner{cfg: cfg, lastEventID: -1}
 	r.registration = RegistrationFingerprint(cfg.EventTypes, cfg.Narrow)
+	r.queueRegistration = r.registration
 	if cfg.ResumeQueueID != "" {
 		r.queueID = cfg.ResumeQueueID
 		r.lastEventID = cfg.ResumeLastEventID
+		r.queueRegistration = cfg.ResumeRegistration
 		r.resuming = true
 	}
 	return r, nil
 }
 
-// Registration reports the fingerprint of the registration this
-// runner's queue was created with — what a successor image must match
-// before it may resume the queue. Hand it on beside Cursor.
-func (r *Runner) Registration() string { return r.registration }
+// Registration reports the fingerprint of the registration the queue
+// this runner is holding was created with — what a successor image
+// must match before it may resume that queue. Hand it on beside
+// Cursor.
+func (r *Runner) Registration() string { return r.queueRegistration }
 
 // LastEventID exposes the cursor, for logging and tests.
 func (r *Runner) LastEventID() int64 { return r.lastEventID }
@@ -214,10 +266,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			// /register. Resuming one that was registered for a
 			// different set means polling a queue that CANNOT carry
 			// the events this image asks for — silently, forever,
-			// because every subsequent reload resumes it again.
-			r.cfg.Logf("zulip: WARN registration changed (%s); inherited queue %s discarded, registering fresh — messages posted during the gap are not delivered",
-				DescribeRegistrationChange(r.cfg.ResumeRegistration, r.registration), r.queueID)
-			r.dropQueue()
+			// because every subsequent reload resumes it again. Swap
+			// it out, without losing what it is holding.
+			r.swapQueue(pollCtx, ctx)
 		} else {
 			r.lastActive = r.cfg.Now()
 			r.cfg.Logf("zulip: resuming inherited event queue %s (last_event_id=%d) — nothing posted during the reload is lost", r.queueID, r.lastEventID)
@@ -259,7 +310,7 @@ func (r *Runner) Discard() { r.teardown() }
 // attempt failed and the caller should loop again (after the backoff it
 // has already applied).
 func (r *Runner) register(pollCtx, dispatch context.Context) bool {
-	res, err := r.cfg.Client.Register(pollCtx, r.cfg.EventTypes, r.cfg.Narrow)
+	res, err := r.cfg.Client.Register(pollCtx, r.cfg.EventTypes, r.cfg.Narrow, r.cfg.QueueLifespan)
 	if err != nil {
 		r.cfg.Logf("zulip: register failed: %v", err)
 		r.wait(pollCtx)
@@ -267,13 +318,223 @@ func (r *Runner) register(pollCtx, dispatch context.Context) bool {
 	}
 	r.queueID = res.QueueID
 	r.lastEventID = res.LastEventID
+	r.queueRegistration = r.registration
 	r.lastActive = r.cfg.Now()
 	r.backoff = 0
 	r.cfg.Logf("zulip: event queue %s registered (last_event_id=%d)", res.QueueID, res.LastEventID)
+	r.warnUnsupportedLifespan(res)
 	if r.cfg.OnRegister != nil {
 		r.cfg.OnRegister(dispatch)
 	}
 	return true
+}
+
+// swapQueue replaces an inherited queue whose registration is not the
+// one this image wants — without losing anything posted across the
+// change.
+//
+// The ORDER is the whole design:
+//
+//  1. Register the replacement FIRST, while the old queue is still
+//     alive and still buffering server-side. From that instant nothing
+//     new can be missed by both.
+//  2. Drain the old queue and dispatch what it holds, in order, before
+//     the replacement is ever polled.
+//  3. Only then delete it.
+//
+// Deleting first — which is what this used to do — puts everything
+// posted between the predecessor's last poll and /register behind the
+// new cursor, where it is never delivered.
+//
+// Everything posted between steps 1 and 3 lands in BOTH queues. Event
+// ids are per-queue and cannot be compared across them, so the overlap
+// is de-duplicated on event IDENTITY instead; see dispatch and
+// dedup.go.
+func (r *Runner) swapQueue(pollCtx, dispatch context.Context) {
+	old, oldLast := r.queueID, r.lastEventID
+	r.cfg.Logf("zulip: registration changed (%s); inherited queue %s cannot carry this image's events — registering a replacement, then draining it",
+		DescribeRegistrationChange(r.cfg.ResumeRegistration, r.registration), old)
+	// A single /register failure is not a reason to throw the old
+	// queue away: it still holds messages, and a 5xx during a server
+	// restart is routine. Retry under the ordinary backoff first.
+	for attempt := 1; !r.register(pollCtx, dispatch); attempt++ {
+		if pollCtx.Err() != nil {
+			// A handoff or a shutdown landed while we were retrying.
+			// The inherited queue is still alive and still holds
+			// everything posted during the reload — keep it, with its
+			// own registration, and let the successor redo the swap.
+			r.cfg.Logf("zulip: swap interrupted before a replacement existed; handing inherited queue %s back on", old)
+			return
+		}
+		if attempt >= swapRegisterAttempts {
+			// There is nothing to swap TO. Drop the unusable inherited
+			// queue and let the loop retry a fresh registration — the
+			// one case where the gap is unavoidable.
+			r.cfg.Logf("zulip: WARN no replacement queue for inherited queue %s after %d attempts — messages posted during the gap are not delivered", old, attempt)
+			r.dropQueue()
+			return
+		}
+	}
+	// Arm the dedup window: everything dispatched from the old queue
+	// from here on is a candidate to arrive again from the new one.
+	r.seen = newSeenSet(r.cfg.DedupWindow)
+	fresh, freshLast := r.queueID, r.lastEventID
+	drained := r.drain(pollCtx, dispatch, old, oldLast)
+	// Note: r.queueID is the replacement from here on.
+	if pollCtx.Err() != nil {
+		// A handoff (or a shutdown) landed mid-drain. The OLD queue
+		// still holds everything the drain did not reach, and the new
+		// one holds only the overlap — so keep the old one and throw
+		// the replacement away. The successor image redoes the swap
+		// from the drained cursor and loses nothing; on a shutdown,
+		// teardown deletes the old queue instead.
+		r.deleteQueue(fresh)
+		r.queueID, r.lastEventID, r.queueRegistration = old, drained, r.cfg.ResumeRegistration
+		r.seen = nil
+		r.cfg.Logf("zulip: swap interrupted; handing inherited queue %s back on at event %d rather than losing what it still holds", old, drained)
+		return
+	}
+	r.deleteQueue(old)
+	r.queueID, r.lastEventID = fresh, freshLast
+	// The drain may have taken a while; the replacement has only just
+	// been registered, so the silence clock starts now.
+	r.lastActive = r.cfg.Now()
+}
+
+// drain polls the outgoing queue from the inherited cursor until it
+// holds nothing, dispatching everything it has in order. It returns
+// the cursor it reached, which is what a swap interrupted mid-drain
+// hands back on.
+//
+// The polls are non-blocking (DrainEvents): an empty result is the
+// server stating the queue is empty, so no timeout has to stand in for
+// that judgement. The whole drain is bounded anyway — if a queue keeps
+// producing, the swap degrades to the old lossy behaviour (the
+// replacement is already registered and is used regardless) and says
+// so loudly rather than hanging.
+func (r *Runner) drain(pollCtx, dispatch context.Context, queueID string, lastEventID int64) int64 {
+	budget, cancelBudget := context.WithTimeout(pollCtx, r.cfg.DrainBudget)
+	defer cancelBudget()
+	n := 0
+	for {
+		pctx, cancelPoll := context.WithTimeout(budget, r.cfg.DrainPollTimeout)
+		evs, err := r.cfg.Client.DrainEvents(pctx, queueID, lastEventID)
+		cancelPoll()
+		if err != nil {
+			r.drainStopped(queueID, n, err, budget.Err(), pollCtx.Err() != nil)
+			return lastEventID
+		}
+		if len(evs) == 0 {
+			r.drainDone(queueID, n)
+			return lastEventID
+		}
+		before := lastEventID
+		for _, ev := range evs {
+			// The outgoing queue may redeliver too; its cursor still
+			// only moves forward.
+			if ev.ID <= lastEventID {
+				continue
+			}
+			lastEventID = ev.ID
+			if ev.Type == EventHeartbeat {
+				continue
+			}
+			n++
+			r.dispatch(dispatch, ev)
+		}
+		if lastEventID == before {
+			// Nothing new: polling again would ask the same question
+			// with the same cursor, forever.
+			r.drainDone(queueID, n)
+			return lastEventID
+		}
+	}
+}
+
+// drainStopped narrates why a drain ended on an error: cleanly (the
+// server had already collected the queue), or with a gap the operator
+// must know about. A timeout is NOT clean here — a non-blocking poll
+// that did not answer says nothing about whether the queue was empty.
+func (r *Runner) drainStopped(queueID string, n int, err, budgetErr error, interrupted bool) {
+	switch {
+	case interrupted:
+		// A reload or a stop cut the drain short. Nothing is lost by
+		// it: the caller hands the un-drained queue back on rather
+		// than deleting it.
+		r.cfg.Logf("zulip: drain of inherited queue %s interrupted after %d event(s)", queueID, n)
+	case budgetErr != nil:
+		r.cfg.Logf("zulip: WARN drain of inherited queue %s did not finish (%v) after %d event(s) — anything still buffered there is NOT delivered",
+			queueID, budgetErr, n)
+	case IsBadEventQueue(err):
+		// The queue was collected WITH whatever it still held: this is
+		// a loss, not a tidy finish.
+		r.cfg.Logf("zulip: WARN inherited queue %s expired before it could be drained (%d event(s) delivered) — anything it still held is NOT delivered",
+			queueID, n)
+	default:
+		r.cfg.Logf("zulip: WARN drain of inherited queue %s failed after %d event(s): %v — anything still buffered there is NOT delivered",
+			queueID, n, err)
+	}
+}
+
+func (r *Runner) drainDone(queueID string, n int) {
+	r.cfg.Logf("zulip: drained %d event(s) from inherited queue %s — nothing posted during the reload is lost", n, queueID)
+}
+
+// dispatch hands an event to the handler unless the very same event
+// has already been delivered by the queue being swapped out.
+//
+// There are two redeliveries to defend against, and they need
+// different mechanisms. WITHIN one queue ids are monotonic, so the
+// cursor check in poll and drain covers a reconnect replay. ACROSS two
+// queues — the overlap of a swap — ids are incomparable, so identity
+// has to come from the event's content; message ids are realm-global.
+//
+// The identity check is deliberately NOT always on. An event identity
+// can legitimately recur: a user who adds a reaction, removes it and
+// adds it again produces the same (message, user, emoji, op) twice,
+// and a permanent dedup set would silently swallow the second one. It
+// is only during a swap that the same event can be DELIVERED twice, so
+// that is the only window in which the set is armed — see swapQueue
+// and retireDedup.
+func (r *Runner) dispatch(ctx context.Context, ev Event) {
+	if r.seen != nil {
+		if key, ok := eventKey(ev); ok && !r.seen.add(key) {
+			r.cfg.Logf("zulip: dropping duplicate %s event (%s) — already delivered by the queue being swapped out", ev.Type, key)
+			return
+		}
+	}
+	r.cfg.Handle(ctx, ev)
+}
+
+// retireDedup disarms the dedup window after the FIRST successful poll
+// of the replacement queue.
+//
+// One poll is enough because the overlap is closed by then: every
+// event that reached both queues was posted before the old queue was
+// deleted, so it was already buffered in the new queue when that poll
+// was issued, and GET /events returns everything a queue is holding.
+func (r *Runner) retireDedup() {
+	if r.seen == nil {
+		return
+	}
+	r.seen = nil
+	r.cfg.Logf("zulip: queue swap complete; duplicate detection off")
+}
+
+// warnUnsupportedLifespan reports a server that took the registration
+// but ignored the queue lifespan. Zulip answers "success" either way,
+// so without this the relay would believe a reload drain longer than
+// the server's ten-minute default is safe when it is not.
+func (r *Runner) warnUnsupportedLifespan(res RegisterResult) {
+	if r.cfg.QueueLifespan <= 0 {
+		return
+	}
+	for _, p := range res.IgnoredParameters {
+		if p == "queue_lifespan_secs" {
+			r.cfg.Logf("zulip: WARN this server ignores queue_lifespan_secs — a reload whose drain runs past the server's queue lifespan (10 minutes by default) loses the queue, and the new image will miss anything posted during it")
+			return
+		}
+	}
 }
 
 // poll performs one long poll and dispatches whatever it returns.
@@ -300,8 +561,11 @@ func (r *Runner) poll(pollCtx, dispatch context.Context) {
 			// point of a heartbeat.
 			continue
 		}
-		r.cfg.Handle(dispatch, ev)
+		r.dispatch(dispatch, ev)
 	}
+	// One completed poll of the replacement queue closes the swap
+	// overlap; anything after it is a genuinely new event.
+	r.retireDedup()
 	if r.cfg.Now().Sub(r.lastActive) > r.cfg.Silence {
 		r.cfg.Logf("zulip: no events (not even a heartbeat) for %s — re-registering queue %s", r.cfg.Silence, r.queueID)
 		r.dropQueue()
