@@ -70,6 +70,20 @@ type RunnerConfig struct {
 	// before that instant is behind the cursor and is never delivered.
 	ResumeQueueID     string
 	ResumeLastEventID int64
+	// ResumeRegistration is the RegistrationFingerprint the inherited
+	// queue was REGISTERED with, as recorded by the process image that
+	// created it.
+	//
+	// A queue's event_types and narrow are fixed at /register and
+	// cannot be changed afterwards, so an inherited queue is only
+	// resumable when its registration is the one this image wants.
+	// When it differs — or is absent, which is what an upgrade from an
+	// image that never recorded one looks like — the queue is deleted
+	// and a fresh one registered, at the documented cost above. That
+	// cost is strictly smaller than the alternative it replaces:
+	// silently polling the OLD registration forever, across every
+	// subsequent reload.
+	ResumeRegistration string
 
 	// Now and Sleep are injected by tests so the backoff and liveness
 	// logic can be driven without wall-clock waits. Nil uses the real
@@ -100,6 +114,9 @@ type Runner struct {
 	// caller's derived state (the followed channel set) would otherwise
 	// start empty and stay empty until the queue happened to die.
 	resuming bool
+	// registration is the fingerprint of what THIS image registers
+	// with; an inherited queue is only resumable when it matches.
+	registration string
 }
 
 // ErrHandoff is returned by Run when the loop stopped because its
@@ -136,6 +153,7 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 		cfg.Jitter = jitter
 	}
 	r := &Runner{cfg: cfg, lastEventID: -1}
+	r.registration = RegistrationFingerprint(cfg.EventTypes, cfg.Narrow)
 	if cfg.ResumeQueueID != "" {
 		r.queueID = cfg.ResumeQueueID
 		r.lastEventID = cfg.ResumeLastEventID
@@ -143,6 +161,11 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	}
 	return r, nil
 }
+
+// Registration reports the fingerprint of the registration this
+// runner's queue was created with — what a successor image must match
+// before it may resume the queue. Hand it on beside Cursor.
+func (r *Runner) Registration() string { return r.registration }
 
 // LastEventID exposes the cursor, for logging and tests.
 func (r *Runner) LastEventID() int64 { return r.lastEventID }
@@ -185,12 +208,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		}()
 	}
 	if r.resuming {
-		r.lastActive = r.cfg.Now()
-		r.cfg.Logf("zulip: resuming inherited event queue %s (last_event_id=%d) — nothing posted during the reload is lost", r.queueID, r.lastEventID)
-		if r.cfg.OnRegister != nil {
-			r.cfg.OnRegister(ctx)
-		}
 		r.resuming = false
+		if r.cfg.ResumeRegistration != r.registration {
+			// A queue's event_types and narrow are frozen at
+			// /register. Resuming one that was registered for a
+			// different set means polling a queue that CANNOT carry
+			// the events this image asks for — silently, forever,
+			// because every subsequent reload resumes it again.
+			r.cfg.Logf("zulip: WARN registration changed (%s); inherited queue %s discarded, registering fresh — messages posted during the gap are not delivered",
+				DescribeRegistrationChange(r.cfg.ResumeRegistration, r.registration), r.queueID)
+			r.dropQueue()
+		} else {
+			r.lastActive = r.cfg.Now()
+			r.cfg.Logf("zulip: resuming inherited event queue %s (last_event_id=%d) — nothing posted during the reload is lost", r.queueID, r.lastEventID)
+			if r.cfg.OnRegister != nil {
+				r.cfg.OnRegister(ctx)
+			}
+		}
 	}
 	for pollCtx.Err() == nil {
 		if r.queueID == "" {

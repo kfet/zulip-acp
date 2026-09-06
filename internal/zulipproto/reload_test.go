@@ -99,6 +99,7 @@ func TestRunResumesInheritedQueue(t *testing.T) {
 	h := newHarness(t, ss, func(context.Context, Event) {}, func(cfg *RunnerConfig) {
 		cfg.ResumeQueueID = "q-inherited"
 		cfg.ResumeLastEventID = 41
+		cfg.ResumeRegistration = RegistrationFingerprint(cfg.EventTypes, cfg.Narrow)
 		cfg.OnRegister = func(context.Context) { resynced++ }
 	})
 
@@ -140,6 +141,7 @@ func TestRunResumeOfADeadQueueFallsBackToRegister(t *testing.T) {
 	h := newHarness(t, ss, func(context.Context, Event) {}, func(cfg *RunnerConfig) {
 		cfg.ResumeQueueID = "q-inherited"
 		cfg.ResumeLastEventID = 41
+		cfg.ResumeRegistration = RegistrationFingerprint(cfg.EventTypes, cfg.Narrow)
 	})
 	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() = %v", err)
@@ -267,5 +269,110 @@ func TestRunWithHandoffArmedButNeverFired(t *testing.T) {
 	}
 	if !hasDelete(ss.calls()) {
 		t.Fatalf("shutdown did not delete the queue: %v", ss.calls())
+	}
+}
+
+// TestRunDiscardsInheritedQueueWhenRegistrationChanged is the fix for
+// the production defect this fingerprint exists for: a queue
+// registered for ["message"] can NEVER deliver a reaction event, and
+// resuming it across every reload made the reactions feature silently
+// dead for as long as the process kept being reloaded. A changed
+// registration must delete the stale queue and register fresh.
+func TestRunDiscardsInheritedQueueWhenRegistrationChanged(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ss := newScript(t,
+		// The stale queue is deleted before anything else happens.
+		func(r *http.Request) (int, string) {
+			if r.Method != http.MethodDelete {
+				t.Errorf("first call = %s %s, want a DELETE of the stale queue", r.Method, r.URL.Path)
+			}
+			return 200, `{"result":"success","msg":""}`
+		},
+		registerOK("q-fresh", 900),
+		func(*http.Request) (int, string) {
+			cancel()
+			return 200, `{"result":"success","msg":"","events":[]}`
+		},
+	)
+	var registered int
+	h := newHarness(t, ss, func(context.Context, Event) {}, func(cfg *RunnerConfig) {
+		cfg.EventTypes = []string{"message", "reaction"}
+		cfg.ResumeQueueID = "q-stale"
+		cfg.ResumeLastEventID = 41
+		// What the predecessor image registered: no reaction events.
+		cfg.ResumeRegistration = RegistrationFingerprint([]string{"message"}, cfg.Narrow)
+		cfg.OnRegister = func(context.Context) { registered++ }
+	})
+
+	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() = %v, want context.Canceled", err)
+	}
+	if h.logged("resuming inherited event queue") {
+		t.Fatalf("a stale registration was resumed: %v", ss.calls())
+	}
+	if !h.logged("registration changed (event types +reaction); inherited queue q-stale discarded") {
+		t.Fatal("mismatch was not narrated")
+	}
+	if !h.logged("messages posted during the gap are not delivered") {
+		t.Fatal("the cost of a fresh registration was not stated")
+	}
+	if !hasDelete(ss.calls()) {
+		t.Fatalf("the stale queue was not deleted: %v", ss.calls())
+	}
+	if registered != 1 {
+		t.Fatalf("OnRegister fired %d times, want 1", registered)
+	}
+}
+
+// TestRunDoesNotResumeAnUnrecordedRegistration covers the upgrade that
+// installs this fix: the predecessor image never recorded a
+// registration, so the inherited queue's shape is UNKNOWN. Unknown
+// must mean different — otherwise the very reload that ships the fix
+// resumes the broken queue and the defect survives it.
+func TestRunDoesNotResumeAnUnrecordedRegistration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ss := newScript(t,
+		func(*http.Request) (int, string) { return 200, `{"result":"success","msg":""}` },
+		registerOK("q-fresh", 5),
+		func(*http.Request) (int, string) {
+			cancel()
+			return 200, `{"result":"success","msg":"","events":[]}`
+		},
+	)
+	h := newHarness(t, ss, func(context.Context, Event) {}, func(cfg *RunnerConfig) {
+		cfg.ResumeQueueID = "q-unknown"
+		cfg.ResumeLastEventID = 41
+	})
+
+	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() = %v, want context.Canceled", err)
+	}
+	if h.logged("resuming inherited event queue") {
+		t.Fatal("an unrecorded registration was resumed")
+	}
+	if !h.logged("recorded no registration") {
+		t.Fatal("the unknown registration was not narrated")
+	}
+	if !hasDelete(ss.calls()) {
+		t.Fatalf("the unresumable queue was not deleted: %v", ss.calls())
+	}
+}
+
+// TestRunnerRegistrationIsWhatItRegisteredWith: the fingerprint handed
+// to a successor must describe THIS image's registration, so the
+// successor can compare it against its own.
+func TestRunnerRegistrationIsWhatItRegisteredWith(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{
+		Client:     &Client{},
+		Handle:     func(context.Context, Event) {},
+		EventTypes: []string{"update_message", "message"},
+		Narrow:     [][2]string{{"stream", "fleet"}},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	want := RegistrationFingerprint([]string{"message", "update_message"}, [][2]string{{"stream", "fleet"}})
+	if got := r.Registration(); got != want {
+		t.Fatalf("Registration() = %q, want %q", got, want)
 	}
 }
