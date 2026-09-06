@@ -139,6 +139,11 @@ go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
   relay logs it and answers in
   general chat exactly as it would have. Everywhere else general chat is an
   ordinary topic.
+  The generated name is a **placeholder**, not a title: it is the opening line
+  stripped of markdown and truncated, because at that instant nothing has read
+  the message. With `relay_mcp` on, the turn is told so and the agent replaces
+  it through `rename_topic` (below) once it knows what the conversation is
+  about.
 - **`"channels": ["*"]` follows the bot's subscriptions.** Add the bot to a
   channel and it is served within seconds — no config edit, no restart; remove
   it and the relay stops answering there. Both moves are logged. The sentinel
@@ -401,6 +406,13 @@ socket and advertises it to its own child agent. The agent can then:
 - `schedule` / `list_schedules` / `unschedule` a prompt to itself. On fire it
   re-enters the same conversation with its full history and the answer streams
   into the topic normally.
+- `rename_topic` — rename the topic **this** conversation lives in. It exists
+  for the `autotopic_channels` placeholder above: the relay names a new topic
+  from the opening line before anything has understood it, and the agent is
+  the only thing that can do better. The rename is **deferred to the end of
+  the turn** — a turn posts into the topic it started in, so moving it early
+  would split the answer in two — and it moves the whole topic, so the
+  conversation and its session follow it.
 - read `history` — the conversation's **own earlier messages**, oldest first,
   as raw markdown, including the bot's own past replies. That is how an agent
   whose session was cleared (or that started after a restart) recovers what a
@@ -416,7 +428,8 @@ prompt-injected agent could do. Three things bound it:
   the MCP connection token, server-side. No tool takes a channel, topic or
   user as an argument, so there is no way to address anywhere else — and that
   applies to reading as much as to posting: `history` can only read the topic
-  or DM the call came from.
+  or DM the call came from, and `rename_topic` can only rename that same
+  topic.
 - **Output is bounded.** `history` caps each message body and the reply as a
   whole, keeps the newest end, and states the `before_id` to page further
   back — one call cannot flood the agent's context window.

@@ -40,7 +40,8 @@ func newTools(t *testing.T, c *fakeClient, convID string, key journal.Key) *Tool
 			}
 			return key, true
 		},
-		Logf: func(string, ...any) {},
+		Rename: func(journal.Key, string) (string, error) { return "armed", nil },
+		Logf:   func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
@@ -48,14 +49,23 @@ func newTools(t *testing.T, c *fakeClient, convID string, key journal.Key) *Tool
 	return tools
 }
 
-// only returns the single history tool.
-func only(t *testing.T, tools *Tools) Tool {
+// only returns the history tool out of the set.
+func only(t *testing.T, tools *Tools) Tool { return pick(t, tools, ToolHistory) }
+
+// pick returns the named tool, and fails if the set has drifted.
+func pick(t *testing.T, tools *Tools, name string) Tool {
 	t.Helper()
 	set := tools.Tools()
-	if len(set) != 1 || set[0].Name != ToolHistory {
+	if len(set) != 2 {
 		t.Fatalf("tool set = %+v", set)
 	}
-	return set[0]
+	for _, x := range set {
+		if x.Name == name {
+			return x
+		}
+	}
+	t.Fatalf("no %s tool in %+v", name, set)
+	return Tool{}
 }
 
 func msg(id int64, who, body string) zulipproto.Message {
@@ -65,13 +75,18 @@ func msg(id int64, who, body string) zulipproto.Message {
 // --- construction --------------------------------------------------------
 
 func TestNewToolsRequiresItsDependencies(t *testing.T) {
-	if _, err := NewTools(Config{ConvKey: func(string) (journal.Key, bool) { return journal.Key{}, true }}); err == nil {
+	key := func(string) (journal.Key, bool) { return journal.Key{}, true }
+	rename := func(journal.Key, string) (string, error) { return "", nil }
+	if _, err := NewTools(Config{ConvKey: key, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no Client must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no ConvKey has no identity and must not construct")
 	}
-	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: func(string) (journal.Key, bool) { return journal.Key{}, true }})
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key}); err == nil {
+		t.Fatal("a Tools with no Rename must not construct: rename_topic would panic on the first call")
+	}
+	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
 	}
@@ -189,6 +204,7 @@ func TestHistoryTimesOut(t *testing.T) {
 	tools, err := NewTools(Config{
 		Client:  clientFunc(func(ctx context.Context) error { <-ctx.Done(); close(blocked); return ctx.Err() }),
 		ConvKey: func(string) (journal.Key, bool) { return journal.Channel(4, "t"), true },
+		Rename:  func(journal.Key, string) (string, error) { return "", nil },
 		Timeout: time.Millisecond,
 	})
 	if err != nil {

@@ -34,6 +34,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
+	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -290,7 +291,15 @@ type Config struct {
 
 // inflightEntry wraps a cancel func with its own identity, so clearing
 // can tell its entry from one a follow-up has since installed.
-type inflightEntry struct{ cancel context.CancelFunc }
+//
+// rename is the topic rename this turn has armed through the
+// `rename_topic` loopback tool, applied as the turn ends. It hangs off
+// the TURN rather than the conversation on purpose — see rename.go —
+// and is read and written under inflightMu, like the map itself.
+type inflightEntry struct {
+	cancel context.CancelFunc
+	rename *pendingRename
+}
 
 // Handler implements the event side of the relay.
 type Handler struct {
@@ -534,6 +543,12 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	// move and disable the feature in that channel forever.
 	lobby := h.isLobby(m)
 
+	// named is the topic an autotopic move generated for this message,
+	// and it is set only when the move actually happened. It is the one
+	// case where the relay knows the topic's name is a placeholder — so
+	// it is the one case where the agent is told to replace it.
+	var named string
+
 	var (
 		existing journal.Conv
 		engaged  bool
@@ -565,7 +580,11 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		// yields the lobby key back and the relay answers in general
 		// chat — for this message only; the next one is attempted
 		// afresh.
+		before := key.Topic
 		key = h.autotopic(ctx, m, key, text)
+		if key.Topic != before {
+			named = key.Topic
+		}
 		existing, engaged = h.cfg.Journal.Lookup(key)
 	}
 
@@ -586,8 +605,27 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	}
 
 	prompt = "[" + m.SenderName + "] " + prompt
+	if named != "" && h.cfg.Loopback != nil {
+		prompt += renameHint(named)
+	}
 
 	h.startTurn(ctx, conv, prompt, addressed, m.ID)
+}
+
+// renameHint is the one-off instruction appended to the turn that
+// opened an auto-named topic.
+//
+// It is a per-TURN note rather than a line in the durable system prompt
+// on purpose. The instruction is only true for the single message the
+// autotopic move lifted out of general chat; every other turn is in a
+// topic a human named, and telling the agent on every one of those that
+// its topic is a placeholder is how a relay ends up renaming the
+// channel out from under people.
+func renameHint(topic string) string {
+	return "\n\n[relay] This message opened a new topic. The relay auto-named it \"" + topic +
+		"\" from the message's first line, which is a placeholder, not a title. Once you know what this " +
+		"conversation is about, call the relay `" + zulipmcp.ToolRenameTopic + "` tool with a better one. " +
+		"Do not mention the rename in your reply."
 }
 
 // startTurn supersedes whatever is running in the conversation and
@@ -599,7 +637,7 @@ func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt strin
 	// A follow-up supersedes whatever is still running in this topic.
 	h.cancelInflight(ctx, conv.ID)
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
-	entry := &inflightEntry{cancel: cancel}
+	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: ackMsgID}}
 	h.setInflight(conv.ID, entry)
 	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
 }
@@ -612,7 +650,7 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 		// LIFO: deferred actions the agent asked for are applied only
 		// after the turn is fully unwound and no longer inflight, so
 		// `new_session` cannot cancel the very turn that requested it.
-		defer h.endTurn(conv)
+		defer h.endTurn(conv, entry)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
 		if err := h.run(pctx, conv, prompt, addressed, ackMsgID); err != nil {

@@ -499,7 +499,7 @@ func TestDeferredNewSessionAppliesAfterTheTurn(t *testing.T) {
 
 func TestEndTurnWithoutLoopbackIsANoOp(t *testing.T) {
 	hh := cmdHarness(t, newAgent("ok"), nil)
-	hh.h.endTurn(journal.Conv{ID: "c1", Key: journal.Channel(4, "t")})
+	hh.h.endTurn(journal.Conv{ID: "c1", Key: journal.Channel(4, "t")}, nil)
 }
 
 // callTool invokes a relaytool tool by name, the way mcphost would.
