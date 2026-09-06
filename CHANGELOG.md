@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Emoji reaction REMOVALS are delivered too.** Un-reacting is real signal — an
+  approval withdrawn, a trigger retracted — and reads as `removed :x: from …`
+  against the add's `added :x: to …`. Same gates, same silence-by-default norm.
+- **Reaction bursts are coalesced into one turn.** Reactions are buffered per
+  conversation for `reactionDebounce` (4s) and delivered together as
+  `[reactions] N in this conversation:` with one line each, capped at 20 lines
+  plus a count of the rest. Ten people reacting to the same message now costs
+  one agent turn instead of ten, which is what makes `"reactions"` affordable as
+  a default-on feature. A reaction arriving while a turn is running — or while
+  the flush waits for it — is folded into the same delivery rather than
+  cancelling the turn or being dropped; the wait and the claim are one critical
+  section (`claimConvIdle`, shared with scheduled prompts). Coalescing applies
+  to reactions ONLY: inbound human messages are never delayed, and a message
+  burst still supersedes turn-by-turn.
+
+### Changed
+
+- `"reactions"` is documented as default-on with opting **out** as the
+  deliberate act, now that a pile-on costs one turn.
+
+### Fixed
+
+- **A queued turn was charged for its own wait.** A scheduled prompt — and now a
+  coalesced reaction burst — waits for the conversation to go idle, but its
+  `PromptTimeout` context was created *before* that wait. Behind a human turn
+  longer than `prompt_timeout_seconds` (exactly when reactions pile up) the turn
+  started already expired and posted `*error: context deadline exceeded*` into
+  the topic. The clock now starts when the conversation is claimed.
+- Buffered reactions are dropped when polling stops (`SIGHUP`/`SIGTERM`), so a
+  debounce cannot expire mid-drain and start a turn the re-exec kills; a flush
+  that wakes to an emptied buffer releases the conversation instead of prompting
+  the agent with nothing. Documented in `docs/graceful-reload.md`.
+
 ## [0.17.1] - 2026-09-06
 
 ### Changed

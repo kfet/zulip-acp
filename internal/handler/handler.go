@@ -205,6 +205,24 @@ type Config struct {
 	// turn, so it belongs here rather than in a prompt.
 	ReactionTrigger func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool
 
+	// After is the timer the reaction debounce waits on. Defaults to
+	// time.After.
+	//
+	// It is injected for the same reason the clock is: a debounce
+	// proved by sleeping is a flaky test, and this is the one place in
+	// the relay whose behaviour IS a duration.
+	After func(d time.Duration) <-chan time.Time
+
+	// OnReactionBatch, if set, is called with a conversation's
+	// coalesced reaction burst at the instant the conversation has
+	// been claimed for it and the buffer emptied — i.e. the one moment
+	// from which WaitIdle can see the turn.
+	//
+	// It exists so the test suite can prove coalescing without racing
+	// a timer; nil in production. Like OnWaitForConv it must only
+	// signal.
+	OnReactionBatch func(convID string, n int)
+
 	// Commands is the acp-kit chat-command broker. Nil disables the
 	// whole `!command` surface, which is what the relay does when it
 	// has no agent to ask. New wires the Handler in as the broker's
@@ -315,6 +333,12 @@ type Handler struct {
 	lookupStart  time.Time
 	lookupCount  int
 	lookupWarned bool
+
+	// reactPending buffers each conversation's in-flight burst of
+	// reactions, so a pile-on costs one turn. An entry exists only
+	// while a flush is armed for it — see enqueueReaction.
+	reactMu      sync.Mutex
+	reactPending map[string]*reactionBatch
 }
 
 // New constructs a Handler.
@@ -345,6 +369,7 @@ func New(cfg Config) (*Handler, error) {
 		ownMsgs:      newMsgIndex(reactionIndexSize),
 		badMsgs:      newMsgIndex(reactionIndexSize),
 		userNames:    newMsgIndex(reactionIndexSize),
+		reactPending: map[string]*reactionBatch{},
 		lookupStart:  cfg.Now(),
 	}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
@@ -558,8 +583,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 // runs one turn in the background.
 //
 // ackMsgID is the message the in-flight acknowledgement reaction goes
-// on; 0 means no acknowledgement, which is what the reaction path
-// passes — reacting to a reaction is noise.
+// on; 0 means no acknowledgement.
 func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID int64) {
 	// A follow-up supersedes whatever is still running in this topic.
 	h.cancelInflight(ctx, conv.ID)
@@ -567,31 +591,6 @@ func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt strin
 	entry := &inflightEntry{cancel: cancel}
 	h.setInflight(conv.ID, entry)
 	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
-}
-
-// startTurnIfIdle is startTurn for an input that must NEVER supersede a
-// running turn — a reaction. It reports whether the turn started.
-//
-// The busy check and the claim are one atomic step on purpose: turns
-// are also started by scheduled prompts, from another goroutine, so a
-// check-then-start would have a window in which an emoji could cancel
-// an answer that had just begun. That is also why the reaction path
-// does no cheap pre-check of its own: two ways to answer "is this
-// conversation busy" is one too many, and the cost of finding out late
-// is a cached name lookup.
-func (h *Handler) startTurnIfIdle(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID int64) bool {
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
-	entry := &inflightEntry{cancel: cancel}
-	h.inflightMu.Lock()
-	if _, busy := h.inflight[conv.ID]; busy {
-		h.inflightMu.Unlock()
-		cancel()
-		return false
-	}
-	h.inflight[conv.ID] = entry
-	h.inflightMu.Unlock()
-	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
-	return true
 }
 
 // runTurn owns the turn goroutine and its unwinding. Both entry points

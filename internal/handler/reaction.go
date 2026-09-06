@@ -75,7 +75,33 @@ const (
 	// that turned out to be a bot. A name is never this, and a bot
 	// never becomes a human, so one lookup settles it for good.
 	botMarker = "\x00bot"
+
+	// reactionDebounce is how long a conversation's reactions are
+	// buffered before they are delivered as one turn.
+	//
+	// Four seconds, chosen from how the two sides actually behave. A
+	// pile-on is people reacting to the SAME message after reading it,
+	// which lands over a couple of seconds, and Zulip delivers the
+	// events of one long poll together, so the whole burst is usually
+	// inside one window. Longer would start to feel disconnected from
+	// the tap that caused it, and would widen the gap in which the
+	// agent answers something the user has already moved on from;
+	// shorter would split an ordinary pile-on into several turns,
+	// which is exactly the cost this exists to avoid.
+	reactionDebounce = 4 * time.Second
+
+	// reactionBatchMax caps how many reactions one turn lists. Beyond
+	// it the burst is still ONE turn — the agent is told the count it
+	// did not see. A prompt that grows with the size of a pile-on is
+	// the other way to make this expensive.
+	reactionBatchMax = 20
 )
+
+// reactionBatch is one conversation's buffered burst.
+type reactionBatch struct {
+	lines []string
+	extra int
+}
 
 // msgIndex is a bounded id→string map with FIFO eviction.
 //
@@ -147,10 +173,12 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 	if !h.cfg.Reactions {
 		return
 	}
-	// Removals are not delivered. "Someone took a reaction back" is
-	// not a prompt, and a reaction the relay itself retracts at the
-	// end of every turn would otherwise be one.
-	if ev.Op != zulipproto.ReactionAdd {
+	// Both ops are delivered. Un-reacting is real signal — an approval
+	// withdrawn, a trigger taken back — and it costs no more than an
+	// add, because a burst of either is coalesced into one turn (see
+	// enqueueReaction). What keeps the relay's own :eyes: retraction
+	// out is the user-id guard below, not the op.
+	if ev.Op != zulipproto.ReactionAdd && ev.Op != zulipproto.ReactionRemove {
 		return
 	}
 	// The relay's own reactions: the in-flight ack (Handler.ack) and
@@ -185,23 +213,174 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 	if isBot {
 		return
 	}
-	prompt := h.reactionPrompt(who, ev, msg)
+	h.enqueueReaction(ctx, conv, reactionLine(who, ev, msg, h.cfg.BotUserID))
+}
+
+// enqueueReaction buffers one rendered reaction for a conversation and,
+// if this is the first of a burst, arms the flush that will deliver the
+// whole burst as ONE turn.
+//
+// This is what makes reactions affordable enough to be on by default.
+// Ten people tapping the same message is one event each and one
+// conversational fact — "ten people reacted" — so it must cost one
+// agent turn, not ten. Without it the feature would be a token pump
+// that any popular message could start.
+func (h *Handler) enqueueReaction(ctx context.Context, conv journal.Conv, line string) {
+	h.reactMu.Lock()
+	b, armed := h.reactPending[conv.ID]
+	if !armed {
+		b = &reactionBatch{}
+		h.reactPending[conv.ID] = b
+	}
+	switch {
+	case len(b.lines) < reactionBatchMax:
+		b.lines = append(b.lines, line)
+	default:
+		// A burst larger than the cap is still one turn: the agent is
+		// told how many it did not see rather than being handed a
+		// prompt that grows without limit.
+		b.extra++
+	}
+	h.reactMu.Unlock()
+	if !armed {
+		go h.flushReactions(ctx, conv)
+	}
+}
+
+// flushReactions waits out the debounce window, then waits for the
+// conversation to be free, and delivers everything buffered as one
+// ambient turn.
+//
+// The batch is taken AFTER the conversation is claimed, so a reaction
+// that lands while a human turn is still running — or during the wait
+// for it — is folded into the same delivery instead of racing it or
+// being dropped. That ordering is the whole reason this is not a
+// simple timer.
+func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
+	select {
+	case <-h.after(reactionDebounce):
+	case <-ctx.Done():
+		// Shutting down. A buffered reaction is not a turn anyone is
+		// waiting on, so it is dropped rather than kept alive past the
+		// relay it belongs to.
+		h.takeReactions(conv.ID)
+		return
+	}
+	// The turn's context is created cancellable-only and the CLOCK IS
+	// STARTED AFTER THE CLAIM. Deriving the timeout before the wait
+	// would charge the reaction turn for however long the human turn
+	// it queued behind took — and a conversation busy for longer than
+	// PromptTimeout (the exact case reactions pile up in) would start
+	// this turn already expired and post "*error: context deadline
+	// exceeded*" into the topic, caused by nothing but an emoji.
+	turnCtx, cancelTurn := context.WithCancel(context.WithoutCancel(ctx))
+	entry := &inflightEntry{cancel: cancelTurn}
+	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
+		cancelTurn()
+		h.takeReactions(conv.ID)
+		return
+	}
+	pctx, cancelTimeout := context.WithTimeout(turnCtx, h.cfg.PromptTimeout)
+	cancel := func() { cancelTimeout(); cancelTurn() }
+	lines, extra := h.takeReactions(conv.ID)
+	// Re-read the conversation: seconds have passed, and unlike a
+	// message turn — where this window is microseconds — the topic may
+	// have been renamed (posting under the stale name would recreate
+	// it) or retired by `!new` (the reaction belongs to the
+	// conversation the user just replaced). The id is stable; the key
+	// is not.
+	fresh, ok := h.cfg.Journal.LookupID(conv.ID)
+	if !ok || fresh.Retired {
+		h.cfg.Logf("handler: dropping %d buffered reaction(s): %s is gone", len(lines)+extra, conv.ID)
+		h.clearInflight(conv.ID, entry)
+		cancel()
+		return
+	}
+	conv = fresh
+	if len(lines) == 0 && extra == 0 {
+		// The buffer was emptied under us — DropPendingReactions at
+		// shutdown. Release the claim rather than running a turn with
+		// nothing in it.
+		h.clearInflight(conv.ID, entry)
+		cancel()
+		return
+	}
+	if h.cfg.OnReactionBatch != nil {
+		h.cfg.OnReactionBatch(conv.ID, len(lines))
+	}
+	h.cfg.Logf("handler: delivering %d reaction(s) to %s", len(lines)+extra, conv.ID)
 	// Ambient, never addressed: a reaction is by nature something the
 	// agent should usually pass over, so it goes down the same path a
 	// non-mention channel message takes and may be answered with the
 	// silent sentinel. No ack reaction either (msgID 0) — reacting to
 	// a reaction is noise, and the message reacted to is often an old
 	// one nobody is looking at any more.
-	//
-	// And it must never destroy a turn: a message supersedes the
-	// running one on purpose — the human changed their mind — but
-	// cancelling an answer because someone tapped an emoji would be
-	// pure loss.
-	if !h.startTurnIfIdle(ctx, conv, prompt, false, 0) {
-		h.cfg.Logf("handler: dropping :%s: on message %d — a turn is already running in %s", ev.EmojiName, ev.MessageID, conv.ID)
-		return
+	h.runTurn(pctx, cancel, conv, entry, reactionBatchPrompt(lines, extra), false, 0)
+}
+
+// DropPendingReactions discards every buffered reaction burst and
+// reports how many reactions were dropped.
+//
+// It is the shutdown/reload counterpart to the debounce: once polling
+// has stopped, a reaction still waiting to be coalesced is not a turn
+// anyone is waiting on, and letting its timer expire mid-drain would
+// start a turn the re-exec then kills. A flush already claimed and
+// running is a real turn and is drained normally by WaitIdle.
+func (h *Handler) DropPendingReactions() int {
+	h.reactMu.Lock()
+	defer h.reactMu.Unlock()
+	n := 0
+	for id, b := range h.reactPending {
+		n += len(b.lines) + b.extra
+		delete(h.reactPending, id)
 	}
-	h.cfg.Logf("handler: reaction :%s: from user %d delivered to %s", ev.EmojiName, ev.UserID, conv.ID)
+	return n
+}
+
+// takeReactions removes and returns a conversation's buffered
+// reactions. An empty result is possible only on a shutdown race and
+// renders as nothing.
+func (h *Handler) takeReactions(convID string) (lines []string, extra int) {
+	h.reactMu.Lock()
+	defer h.reactMu.Unlock()
+	b, ok := h.reactPending[convID]
+	if !ok {
+		return nil, 0
+	}
+	delete(h.reactPending, convID)
+	return b.lines, b.extra
+}
+
+// after is the injected timer. Production uses time.After; the test
+// suite supplies a channel it fires by hand, because a debounce proved
+// by sleeping is a flaky test.
+func (h *Handler) after(d time.Duration) <-chan time.Time {
+	if h.cfg.After != nil {
+		return h.cfg.After(d)
+	}
+	return time.After(d)
+}
+
+// reactionBatchPrompt renders a burst as one synthetic user turn. A
+// single reaction keeps the compact one-line form; several are listed,
+// so the agent can see at a glance that it is looking at a pile-on
+// rather than a conversation.
+func reactionBatchPrompt(lines []string, extra int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) == 1 && extra == 0 {
+		return "[reaction] " + lines[0]
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[reactions] %d in this conversation:", len(lines)+extra)
+	for _, l := range lines {
+		sb.WriteString("\n- " + l)
+	}
+	if extra > 0 {
+		fmt.Fprintf(&sb, "\n- …and %d more", extra)
+	}
+	return sb.String()
 }
 
 // reactionTrigger is the hook for RELAY-side reaction actions — the
@@ -337,23 +516,31 @@ func (h *Handler) allowReactionLookup() bool {
 	return true
 }
 
-// reactionPrompt renders the synthetic user turn.
+// reactionLine renders ONE reaction as a fragment of the synthetic
+// turn. It is a plain function, not a method, because it decides
+// nothing about the relay — only how a fact reads.
 //
-// One compact line, and unambiguous about whose message was reacted
-// to: "your own message" is the case a later trigger and the agent
-// itself both care about most.
-func (h *Handler) reactionPrompt(who string, ev zulipproto.Event, m *zulipproto.Message) string {
+// Two things it must always make unambiguous: whether the reaction was
+// added or REMOVED (un-reacting is real signal: an approval withdrawn,
+// a trigger taken back), and whether the message reacted to was the
+// relay's own.
+func reactionLine(who string, ev zulipproto.Event, m *zulipproto.Message, botUserID int64) string {
+	verb, prep := "added", "to"
+	if ev.Op == zulipproto.ReactionRemove {
+		verb, prep = "removed", "from"
+	}
 	target := "message " + strconv.FormatInt(ev.MessageID, 10)
-	if m == nil {
+	switch {
+	case m == nil:
 		// Resolved from the relay's own index or the journal's
 		// recorded ids: it is ours by construction.
 		target = "your own " + target
-	} else if m.SenderID == h.cfg.BotUserID {
+	case m.SenderID == botUserID:
 		target = "your own " + target
-	} else if m.SenderName != "" {
-		target += " from " + m.SenderName
+	case m.SenderName != "":
+		target += " by " + m.SenderName
 	}
-	line := fmt.Sprintf("[reaction] %s added :%s: to %s", who, ev.EmojiName, target)
+	line := fmt.Sprintf("%s %s :%s: %s %s", who, verb, ev.EmojiName, prep, target)
 	if m != nil {
 		if ex := excerpt(m.Content, reactionExcerptRunes); ex != "" {
 			line += " (" + strconv.Quote(ex) + ")"

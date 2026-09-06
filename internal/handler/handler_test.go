@@ -394,6 +394,10 @@ type fakeAgent struct {
 	hold chan struct{}
 	// entered is signalled when Prompt starts.
 	entered chan struct{}
+	// deadlines records the deadline of the context each Prompt ran
+	// under. It is how "this turn got a full timeout, not the
+	// remainder of one" is asserted without a sleep.
+	deadlines []time.Time
 }
 
 func newAgent(chunks ...string) *fakeAgent {
@@ -447,6 +451,9 @@ func (a *fakeAgent) selections() []string {
 func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
 	a.mu.Lock()
 	a.prompts = append(a.prompts, blocks[0].Text.Text)
+	if d, ok := ctx.Deadline(); ok {
+		a.deadlines = append(a.deadlines, d)
+	}
 	sink, chunks, thoughts, meta := a.sink, a.chunks, a.thoughts, a.meta
 	block, hold, stop, err := a.block, a.hold, a.stop, a.err
 	a.mu.Unlock()
@@ -572,6 +579,12 @@ type harness struct {
 	jdir  string
 	logs  []string
 	logMu sync.Mutex
+	// timer is the reaction debounce, fired by hand: a coalescing
+	// window proved by sleeping would be exactly the flaky test
+	// AGENTS.md forbids. batches carries the size of each coalesced
+	// burst at the instant its turn is claimed.
+	timer   chan time.Time
+	batches chan int
 }
 
 // breakJournal makes every subsequent journal write fail, by removing
@@ -594,7 +607,8 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 	if err != nil {
 		t.Fatalf("journal: %v", err)
 	}
-	hh := &harness{z: z, a: agent, s: sess, j: j, jdir: jdir}
+	hh := &harness{z: z, a: agent, s: sess, j: j, jdir: jdir,
+		timer: make(chan time.Time), batches: make(chan int, 16)}
 	cfg := Config{
 		Client:         z,
 		Agent:          agent,
@@ -606,6 +620,13 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 		EditInterval:   time.Millisecond,
 		SilentSentinel: "<<SILENT>>",
 		RepostOnClose:  true,
+		After:          func(time.Duration) <-chan time.Time { return hh.timer },
+		OnReactionBatch: func(_ string, n int) {
+			select {
+			case hh.batches <- n:
+			default:
+			}
+		},
 		Logf: func(format string, args ...any) {
 			hh.logMu.Lock()
 			hh.logs = append(hh.logs, fmt.Sprintf(format, args...))
@@ -2667,4 +2688,15 @@ func TestAFailedRepostLeavesTheAnswerInPlace(t *testing.T) {
 	if hh.logged("DISABLING end-of-turn repost") {
 		t.Fatal("a failed post must not trip the delete breaker")
 	}
+}
+
+// lastDeadline is the deadline of the most recent turn's context.
+func (a *fakeAgent) lastDeadline(t *testing.T) time.Time {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.deadlines) == 0 {
+		t.Fatal("no turn recorded a deadline")
+	}
+	return a.deadlines[len(a.deadlines)-1]
 }

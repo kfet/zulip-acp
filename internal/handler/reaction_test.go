@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -38,15 +39,62 @@ func reactHarness(t *testing.T, tune func(*Config)) (*harness, int64) {
 	return hh, hh.z.lastID()
 }
 
-// react feeds a reaction event and waits for any turn it started.
-func (hh *harness) react(t *testing.T, ev zulipproto.Event) {
+// react feeds one or more reaction events, drives the debounce, and
+// returns once the coalesced turn has finished.
+func (hh *harness) react(t *testing.T, evs ...zulipproto.Event) {
 	t.Helper()
-	hh.h.Handle(context.Background(), ev)
+	for _, ev := range evs {
+		hh.h.Handle(context.Background(), ev)
+	}
+	hh.flushReactions(t)
+}
+
+// flushReactions fires the debounce timer and waits for the coalesced
+// turn to start and then finish. The two guard timeouts are failure
+// detection, not synchronisation: every step is driven by hand.
+func (hh *harness) flushReactions(t *testing.T) {
+	t.Helper()
+	select {
+	case hh.timer <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reaction flush was armed")
+	}
+	select {
+	case <-hh.batches:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the coalesced reaction turn never started")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("reaction turn did not finish: %v", err)
 	}
+}
+
+// reactDropped feeds a reaction that must not reach the agent: nothing
+// is buffered, so nothing will ever be delivered. Fully synchronous —
+// Handle returns having decided.
+func (hh *harness) reactDropped(t *testing.T, ev zulipproto.Event) {
+	t.Helper()
+	before := hh.promptCount()
+	hh.h.Handle(context.Background(), ev)
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("reaction buffered %d line(s) instead of being dropped", n)
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("reaction reached the agent: %q", hh.lastPrompt())
+	}
+}
+
+// pendingReactions counts everything currently buffered for delivery.
+func (hh *harness) pendingReactions() int {
+	hh.h.reactMu.Lock()
+	defer hh.h.reactMu.Unlock()
+	n := 0
+	for _, b := range hh.h.reactPending {
+		n += len(b.lines) + b.extra
+	}
+	return n
 }
 
 // lastPrompt is the most recent prompt the agent received, "" if none.
@@ -83,8 +131,10 @@ func TestReactionGates(t *testing.T) {
 			ev:   func(id int64) zulipproto.Event { return reactionEvent(humanID, id, "tada", zulipproto.ReactionAdd) },
 		},
 		{
-			name: "removal",
-			ev:   func(id int64) zulipproto.Event { return reactionEvent(humanID, id, "tada", zulipproto.ReactionRemove) },
+			// Not a reaction op at all. Zulip sends only add/remove,
+			// and anything else is a shape we do not understand.
+			name: "unknown op",
+			ev:   func(id int64) zulipproto.Event { return reactionEvent(humanID, id, "tada", "update") },
 		},
 		{
 			// The relay puts :eyes: on every message it accepts and
@@ -113,11 +163,7 @@ func TestReactionGates(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			hh, own := reactHarness(t, c.tune)
-			before := hh.promptCount()
-			hh.react(t, c.ev(own))
-			if got := hh.promptCount(); got != before {
-				t.Fatalf("reaction reached the agent anyway: %q", hh.lastPrompt())
-			}
+			hh.reactDropped(t, c.ev(own))
 		})
 	}
 }
@@ -171,7 +217,7 @@ func TestReactionOnHumanMessageFallsBackToLookup(t *testing.T) {
 	hh.react(t, reactionEvent(humanID, 555, "tada", zulipproto.ReactionAdd))
 
 	got := hh.lastPrompt()
-	if !strings.HasPrefix(got, "[reaction] Ada Lovelace added :tada: to message 555 from Ada Lovelace (") {
+	if !strings.HasPrefix(got, "[reaction] Ada Lovelace added :tada: to message 555 by Ada Lovelace (") {
 		t.Fatalf("prompt = %q", got)
 	}
 	if strings.Contains(got, "has to bite") {
@@ -200,12 +246,8 @@ func TestReactionOutsideServedSetIsDroppedOnce(t *testing.T) {
 	hh.z.gets = nil
 	hh.z.mu.Unlock()
 
-	before := hh.promptCount()
 	for _, id := range []int64{600, 600, 601, 601} {
-		hh.react(t, reactionEvent(humanID, id, "tada", zulipproto.ReactionAdd))
-	}
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("a reaction outside the served set reached the agent: %q", hh.lastPrompt())
+		hh.reactDropped(t, reactionEvent(humanID, id, "tada", zulipproto.ReactionAdd))
 	}
 	hh.z.mu.Lock()
 	gets := len(hh.z.gets)
@@ -226,7 +268,7 @@ func TestReactionLookupRateLimited(t *testing.T) {
 	hh.z.mu.Unlock()
 
 	for i := range reactionLookupsPerMinute + 5 {
-		hh.react(t, reactionEvent(humanID, int64(10_000+i), "tada", zulipproto.ReactionAdd))
+		hh.reactDropped(t, reactionEvent(humanID, int64(10_000+i), "tada", zulipproto.ReactionAdd))
 	}
 	hh.z.mu.Lock()
 	gets := len(hh.z.gets)
@@ -242,7 +284,7 @@ func TestReactionLookupRateLimited(t *testing.T) {
 	}
 	// The window rolls: past it, lookups are allowed again.
 	now = now.Add(2 * reactionLookupWindow)
-	hh.react(t, reactionEvent(humanID, 20_001, "tada", zulipproto.ReactionAdd))
+	hh.reactDropped(t, reactionEvent(humanID, 20_001, "tada", zulipproto.ReactionAdd))
 	hh.z.mu.Lock()
 	gets = len(hh.z.gets)
 	hh.z.mu.Unlock()
@@ -251,17 +293,20 @@ func TestReactionLookupRateLimited(t *testing.T) {
 	}
 }
 
-// TestReactionNeverSupersedesATurn: a message may cancel a running
-// turn, an emoji may not.
-func TestReactionNeverSupersedesATurn(t *testing.T) {
+// TestReactionDuringTurnFoldsIntoTheBatch: an emoji must never cancel
+// a running answer, and it must not be thrown away either — it waits
+// for the conversation and is delivered with whatever else arrived.
+func TestReactionDuringTurnFoldsIntoTheBatch(t *testing.T) {
 	agent := newAgent("slow answer")
-	agent.block = make(chan struct{})
 	hh := newHarness(t, agent, func(c *Config) { c.Reactions = true })
-	// Engage the topic first, with the agent free to answer.
-	close(agent.block)
 	hh.deliver(t, "t", mention("hi"))
 	own := hh.z.lastID()
 
+	// A second human turn, held open by the agent. Drain the entry
+	// signal from the first turn so the wait below observes THIS one.
+	for len(agent.entered) > 0 {
+		<-agent.entered
+	}
 	agent.mu.Lock()
 	agent.block = make(chan struct{})
 	block := agent.block
@@ -271,17 +316,41 @@ func TestReactionNeverSupersedesATurn(t *testing.T) {
 
 	before := hh.promptCount()
 	hh.h.Handle(context.Background(), reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	hh.h.Handle(context.Background(), reactionEvent(4242, own, "+1", zulipproto.ReactionAdd))
 	if got := hh.promptCount(); got != before {
 		t.Fatalf("the reaction started a turn on top of a running one: %q", hh.lastPrompt())
 	}
-	if !hh.logged("a turn is already running") {
-		t.Fatal("dropping a reaction mid-turn must be logged")
+	if n := hh.pendingReactions(); n != 2 {
+		t.Fatalf("buffered %d reactions during the turn, want 2", n)
+	}
+	// The debounce expires while the human turn is still running: the
+	// flush must wait for the conversation rather than race it.
+	select {
+	case hh.timer <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reaction flush was armed")
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("the reaction turn jumped the running one: %q", hh.lastPrompt())
 	}
 	close(block)
+	select {
+	case n := <-hh.batches:
+		if n != 2 {
+			t.Fatalf("delivered %d reactions, want both", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the buffered reactions were never delivered")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("turn did not finish: %v", err)
+	}
+	got := hh.lastPrompt()
+	if !strings.HasPrefix(got, "[reactions] 2 in this conversation:") ||
+		!strings.Contains(got, ":tada:") || !strings.Contains(got, ":+1:") {
+		t.Fatalf("prompt = %q", got)
 	}
 }
 
@@ -293,11 +362,7 @@ func TestReactionOnRetiredConversationDropped(t *testing.T) {
 	if _, _, existed, err := hh.j.Retire(journal.Channel(4, "t")); err != nil || !existed {
 		t.Fatalf("Retire: existed=%v err=%v", existed, err)
 	}
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("a retired conversation answered a reaction: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
 }
 
 // TestReactionOnUnservedChannelViaIndex: the served set moves
@@ -306,11 +371,7 @@ func TestReactionOnRetiredConversationDropped(t *testing.T) {
 func TestReactionOnUnservedChannelViaIndex(t *testing.T) {
 	hh, own := reactHarness(t, nil)
 	hh.h.cfg.Channels = channels.New(channels.Config{Explicit: map[int64]string{7: "other"}})
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("answered in a channel that left the served set: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
 }
 
 // TestReactionResolvesFromJournal covers the tier the in-memory index
@@ -356,11 +417,7 @@ func TestReactionInDM(t *testing.T) {
 		hh.z.mu.Lock()
 		hh.z.messages[900] = dm
 		hh.z.mu.Unlock()
-		before := hh.promptCount()
-		hh.react(t, reactionEvent(humanID, 900, "tada", zulipproto.ReactionAdd))
-		if got := hh.promptCount(); got != before {
-			t.Fatalf("a DM reaction landed with dms off: %q", hh.lastPrompt())
-		}
+		hh.reactDropped(t, reactionEvent(humanID, 900, "tada", zulipproto.ReactionAdd))
 	})
 	t.Run("dms enabled", func(t *testing.T) {
 		hh := newHarness(t, newAgent("hello"), func(c *Config) { c.Reactions, c.DMs = true, true })
@@ -375,7 +432,7 @@ func TestReactionInDM(t *testing.T) {
 		hh.z.messages[900] = dm
 		hh.z.mu.Unlock()
 		hh.react(t, reactionEvent(humanID, 900, "tada", zulipproto.ReactionAdd))
-		if got := hh.lastPrompt(); !strings.Contains(got, "added :tada: to message 900 from Ada Lovelace") {
+		if got := hh.lastPrompt(); !strings.Contains(got, "added :tada: to message 900 by Ada Lovelace") {
 			t.Fatalf("prompt = %q", got)
 		}
 		// And on the relay's own DM message, which resolves from the
@@ -388,11 +445,7 @@ func TestReactionInDM(t *testing.T) {
 		// With DMs switched off underneath it, the same reaction is
 		// dropped: a journal entry is not by itself permission.
 		hh.h.cfg.DMs = false
-		before := hh.promptCount()
-		hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
-		if got := hh.promptCount(); got != before {
-			t.Fatalf("a DM reaction landed after DMs were switched off: %q", hh.lastPrompt())
-		}
+		hh.reactDropped(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
 	})
 	t.Run("no usable recipient list", func(t *testing.T) {
 		hh := newHarness(t, newAgent("hello"), func(c *Config) { c.Reactions, c.DMs = true, true })
@@ -401,10 +454,7 @@ func TestReactionInDM(t *testing.T) {
 		hh.z.mu.Lock()
 		hh.z.messages[900] = broken
 		hh.z.mu.Unlock()
-		hh.react(t, reactionEvent(humanID, 900, "tada", zulipproto.ReactionAdd))
-		if got := hh.promptCount(); got != 0 {
-			t.Fatalf("a DM with no participants was delivered: %q", hh.lastPrompt())
-		}
+		hh.reactDropped(t, reactionEvent(humanID, 900, "tada", zulipproto.ReactionAdd))
 	})
 }
 
@@ -433,8 +483,8 @@ func TestReactionLookupFailureIsLogged(t *testing.T) {
 	hh.z.getErr = errors.New("boom")
 	hh.z.gets = nil
 	hh.z.mu.Unlock()
-	hh.react(t, reactionEvent(humanID, 4242, "tada", zulipproto.ReactionAdd))
-	hh.react(t, reactionEvent(humanID, 4242, "tada", zulipproto.ReactionAdd))
+	hh.reactDropped(t, reactionEvent(humanID, 4242, "tada", zulipproto.ReactionAdd))
+	hh.reactDropped(t, reactionEvent(humanID, 4242, "tada", zulipproto.ReactionAdd))
 	if !hh.logged("reading reacted-to message 4242") {
 		t.Fatal("a failed lookup must be logged")
 	}
@@ -490,11 +540,7 @@ func TestReactionTriggerHook(t *testing.T) {
 			return ev.EmojiName == "wastebasket"
 		}
 	})
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(humanID, own, "wastebasket", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("a consumed reaction still reached the agent: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(humanID, own, "wastebasket", zulipproto.ReactionAdd))
 	// One it does not claim is delivered as usual.
 	hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
 	if got := hh.lastPrompt(); !strings.Contains(got, ":tada:") {
@@ -550,11 +596,7 @@ func TestReactionFromJournalOutsideServedSet(t *testing.T) {
 	}
 	hh.h.ownMsgs = newMsgIndex(reactionIndexSize)
 	hh.h.cfg.Channels = channels.New(channels.Config{Explicit: map[int64]string{7: "other"}})
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(humanID, 8888, "tada", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("answered in a channel that left the served set: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(humanID, 8888, "tada", zulipproto.ReactionAdd))
 }
 
 // --- units ---------------------------------------------------------------
@@ -602,15 +644,11 @@ func TestReactionNegativeCacheClearedOnEngagement(t *testing.T) {
 	}
 	hh.z.mu.Unlock()
 
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(humanID, 770, "tada", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("an unengaged topic answered: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(humanID, 770, "tada", zulipproto.ReactionAdd))
 	// Now the topic is engaged, so the same reaction resolves.
 	hh.deliver(t, "later", mention("hello there"))
 	hh.react(t, reactionEvent(humanID, 770, "tada", zulipproto.ReactionAdd))
-	if got := hh.lastPrompt(); !strings.Contains(got, "to message 770 from Ada Lovelace") {
+	if got := hh.lastPrompt(); !strings.Contains(got, "to message 770 by Ada Lovelace") {
 		t.Fatalf("prompt = %q", got)
 	}
 }
@@ -624,15 +662,11 @@ func TestReactionFromLateBotDropped(t *testing.T) {
 	hh.z.mu.Lock()
 	hh.z.users[55] = zulipproto.User{UserID: 55, FullName: "Notification Bot", IsBot: true}
 	hh.z.mu.Unlock()
-	before := hh.promptCount()
-	hh.react(t, reactionEvent(55, own, "tada", zulipproto.ReactionAdd))
-	if got := hh.promptCount(); got != before {
-		t.Fatalf("a bot's reaction reached the agent: %q", hh.lastPrompt())
-	}
+	hh.reactDropped(t, reactionEvent(55, own, "tada", zulipproto.ReactionAdd))
 	// Nothing was cached as a NAME for it, but the bot verdict is:
 	// re-asking on every reaction a bot leaves is exactly the
 	// per-event cost this path exists to avoid.
-	hh.react(t, reactionEvent(55, own, "tada", zulipproto.ReactionAdd))
+	hh.reactDropped(t, reactionEvent(55, own, "tada", zulipproto.ReactionAdd))
 	hh.z.mu.Lock()
 	n := len(hh.z.userGets)
 	hh.z.mu.Unlock()
@@ -667,5 +701,350 @@ func TestMsgIndexDropValue(t *testing.T) {
 	x.put(7, "g")
 	if _, ok := x.get(2); ok {
 		t.Fatal("FIFO order broke after dropValue")
+	}
+}
+
+// TestReactionsCoalesceIntoOneTurn is what makes "reactions on by
+// default" affordable: ten people tapping the same message is one
+// conversational fact and must cost ONE turn.
+func TestReactionsCoalesceIntoOneTurn(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	before := hh.promptCount()
+
+	evs := make([]zulipproto.Event, 0, 10)
+	for i := range 10 {
+		evs = append(evs, reactionEvent(int64(100+i), own, "tada", zulipproto.ReactionAdd))
+	}
+	hh.react(t, evs...)
+
+	if got := hh.promptCount(); got != before+1 {
+		t.Fatalf("10 reactions cost %d turns, want 1", got-before)
+	}
+	got := hh.lastPrompt()
+	if !strings.HasPrefix(got, "[reactions] 10 in this conversation:") {
+		t.Fatalf("prompt = %q", got)
+	}
+	if n := strings.Count(got, "\n- "); n != 10 {
+		t.Fatalf("prompt lists %d reactions, want 10: %q", n, got)
+	}
+	// The buffer is empty again, so the next burst arms a fresh flush.
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("%d reactions left buffered after delivery", n)
+	}
+	hh.react(t, reactionEvent(humanID, own, "eyes", zulipproto.ReactionAdd))
+	if got := hh.lastPrompt(); !strings.HasPrefix(got, "[reaction] ") {
+		t.Fatalf("a lone reaction after a burst = %q", got)
+	}
+}
+
+// TestReactionBurstIsCapped: a pile-on is one turn AND a bounded
+// prompt. Beyond the cap the agent is told the count, not the content.
+func TestReactionBurstIsCapped(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	evs := make([]zulipproto.Event, 0, reactionBatchMax+3)
+	for i := range reactionBatchMax + 3 {
+		evs = append(evs, reactionEvent(int64(200+i), own, "tada", zulipproto.ReactionAdd))
+	}
+	hh.react(t, evs...)
+
+	got := hh.lastPrompt()
+	if !strings.HasPrefix(got, fmt.Sprintf("[reactions] %d in this conversation:", reactionBatchMax+3)) {
+		t.Fatalf("prompt = %q", got)
+	}
+	if n := strings.Count(got, "\n- "); n != reactionBatchMax+1 {
+		t.Fatalf("prompt lists %d lines, want %d plus the overflow note: %q", n, reactionBatchMax, got)
+	}
+	if !strings.Contains(got, "…and 3 more") {
+		t.Fatalf("the overflow must be counted: %q", got)
+	}
+}
+
+// TestReactionRemovalIsDelivered: un-reacting is real signal — an
+// approval withdrawn, a trigger taken back — and reads differently
+// from an add.
+func TestReactionRemovalIsDelivered(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	hh.react(t, reactionEvent(humanID, own, "+1", zulipproto.ReactionRemove))
+	want := fmt.Sprintf("[reaction] Ada Lovelace removed :+1: from your own message %d", own)
+	if got := hh.lastPrompt(); got != want {
+		t.Fatalf("prompt = %q, want %q", got, want)
+	}
+	// A message we did not post reads the same way, with attribution.
+	hh.z.mu.Lock()
+	hh.z.messages[810] = zulipproto.Message{
+		ID: 810, SenderID: humanID, SenderName: "Ada Lovelace", StreamID: 4, Topic: "t",
+		Type: zulipproto.MessageTypeStream, Content: "ship it?",
+	}
+	hh.z.mu.Unlock()
+	hh.react(t, reactionEvent(humanID, 810, "rocket", zulipproto.ReactionRemove))
+	if got := hh.lastPrompt(); got != `[reaction] Ada Lovelace removed :rocket: from message 810 by Ada Lovelace ("ship it?")` {
+		t.Fatalf("prompt = %q", got)
+	}
+	// Add and remove in one burst keep their order and their verbs.
+	hh.react(t,
+		reactionEvent(humanID, own, "eyes", zulipproto.ReactionAdd),
+		reactionEvent(humanID, own, "eyes", zulipproto.ReactionRemove),
+	)
+	got := hh.lastPrompt()
+	add := strings.Index(got, "added :eyes:")
+	rem := strings.Index(got, "removed :eyes:")
+	if add < 0 || rem < 0 || add > rem {
+		t.Fatalf("burst lost the add/remove order: %q", got)
+	}
+}
+
+// TestReactionBatchDroppedOnShutdown: a buffered reaction is not a turn
+// anybody is waiting on, so it dies with the relay rather than
+// outliving it.
+func TestReactionBatchDroppedOnShutdown(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	before := hh.promptCount()
+	hh.h.Handle(ctx, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	if n := hh.pendingReactions(); n != 1 {
+		t.Fatalf("buffered %d reactions, want 1", n)
+	}
+	cancel()
+	// The flush goroutine wakes on the cancelled context, empties the
+	// buffer and starts nothing. Draining is observable through
+	// WaitIdle plus the buffer going empty.
+	deadline := time.Now().Add(10 * time.Second)
+	for hh.pendingReactions() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the buffer was not dropped on shutdown")
+		}
+		runtime.Gosched()
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("a shutdown-dropped reaction still reached the agent: %q", hh.lastPrompt())
+	}
+}
+
+// TestReactionBatchPromptEmpty: the shutdown race can hand the renderer
+// an empty batch; it must render nothing rather than an empty header.
+func TestReactionBatchPromptEmpty(t *testing.T) {
+	if got := reactionBatchPrompt(nil, 0); got != "" {
+		t.Fatalf("reactionBatchPrompt(nil) = %q", got)
+	}
+}
+
+// TestReactionFlushGivesUpOnShutdown: the flush can also be waiting for
+// a busy conversation when the relay stops. It must let go of the
+// buffer instead of holding a goroutine open on a dead relay.
+func TestReactionFlushGivesUpOnShutdown(t *testing.T) {
+	agent := newAgent("slow answer")
+	hh := newHarness(t, agent, func(c *Config) { c.Reactions = true })
+	hh.deliver(t, "t", mention("hi"))
+	own := hh.z.lastID()
+
+	for len(agent.entered) > 0 {
+		<-agent.entered
+	}
+	agent.mu.Lock()
+	agent.block = make(chan struct{})
+	block := agent.block
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), channelEvent(humanID, "t", "keep going"))
+	<-agent.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	before := hh.promptCount()
+	hh.h.Handle(ctx, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	// The debounce expires, so the flush is now parked on the busy
+	// conversation — and that is where the shutdown catches it.
+	select {
+	case hh.timer <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reaction flush was armed")
+	}
+	cancel()
+	deadline := time.Now().Add(10 * time.Second)
+	for hh.pendingReactions() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the buffer was not dropped when the wait was abandoned")
+		}
+		runtime.Gosched()
+	}
+	close(block)
+	wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer wcancel()
+	if err := hh.h.WaitIdle(wctx); err != nil {
+		t.Fatalf("turn did not finish: %v", err)
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("the abandoned reaction still reached the agent: %q", hh.lastPrompt())
+	}
+}
+
+// TestTakeReactionsUnknownConv: taking a buffer that is not there is
+// the shutdown race — both exits empty it, and the second must be a
+// no-op rather than a panic.
+func TestTakeReactionsUnknownConv(t *testing.T) {
+	hh, _ := reactHarness(t, nil)
+	lines, extra := hh.h.takeReactions("no-such-conv")
+	if lines != nil || extra != 0 {
+		t.Fatalf("takeReactions(unknown) = %v,%d", lines, extra)
+	}
+}
+
+// TestAfterDefaultsToTimeAfter: production wires no timer, so the
+// debounce must fall back to the real clock.
+func TestAfterDefaultsToTimeAfter(t *testing.T) {
+	hh, _ := reactHarness(t, func(c *Config) { c.After = nil })
+	if ch := hh.h.after(time.Hour); ch == nil {
+		t.Fatal("after() with no injected timer returned nil")
+	}
+}
+
+// TestBufferedReactionsFollowTheConversation: seconds pass between
+// buffering a reaction and delivering it, so the conversation is
+// re-read at the last moment. A rename must be followed, and a
+// conversation retired by `!new` in the meantime must be dropped —
+// the reaction belonged to the one the user just replaced.
+func TestBufferedReactionsFollowTheConversation(t *testing.T) {
+	t.Run("rename is followed", func(t *testing.T) {
+		hh, own := reactHarness(t, nil)
+		hh.h.Handle(context.Background(), reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+		if _, moved, err := hh.j.Rename(4, "t", "t (renamed)"); err != nil || !moved {
+			t.Fatalf("Rename: moved=%v err=%v", moved, err)
+		}
+		hh.flushReactions(t)
+		if got := hh.z.topics[hh.z.lastID()]; got != "t (renamed)" {
+			t.Fatalf("reaction turn posted into topic %q, want the renamed one", got)
+		}
+	})
+	t.Run("retirement drops the burst", func(t *testing.T) {
+		hh, own := reactHarness(t, nil)
+		before := hh.promptCount()
+		hh.h.Handle(context.Background(), reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+		if _, _, existed, err := hh.j.Retire(journal.Channel(4, "t")); err != nil || !existed {
+			t.Fatalf("Retire: existed=%v err=%v", existed, err)
+		}
+		select {
+		case hh.timer <- time.Now():
+		case <-time.After(10 * time.Second):
+			t.Fatal("no reaction flush was armed")
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for hh.pendingReactions() != 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the buffer outlived the conversation")
+			}
+			runtime.Gosched()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := hh.h.WaitIdle(ctx); err != nil {
+			t.Fatalf("handler did not go idle: %v", err)
+		}
+		if got := hh.promptCount(); got != before {
+			t.Fatalf("a retired conversation answered a buffered reaction: %q", hh.lastPrompt())
+		}
+		if !hh.logged("is gone") {
+			t.Fatal("dropping a burst whose conversation vanished must be logged")
+		}
+	})
+}
+
+// TestBufferedReactionTurnGetsAFullTimeout: the debounce, and the wait
+// for a busy conversation, must not be charged to the turn they queue.
+//
+// Getting this wrong is not a slow turn but a WRONG MESSAGE: a
+// conversation busy for longer than PromptTimeout — exactly when
+// reactions pile up — would start the reaction turn already expired and
+// post "*error: context deadline exceeded*" into the topic, caused by
+// nothing but an emoji.
+func TestBufferedReactionTurnGetsAFullTimeout(t *testing.T) {
+	agent := newAgent("answer")
+	waited := make(chan time.Time, 4)
+	hh := newHarness(t, agent, func(c *Config) {
+		c.Reactions = true
+		c.PromptTimeout = 5 * time.Second
+		c.OnWaitForConv = func(string) {
+			select {
+			case waited <- time.Now():
+			default:
+			}
+		}
+	})
+	hh.deliver(t, "t", mention("hi"))
+	own := hh.z.lastID()
+
+	for len(agent.entered) > 0 {
+		<-agent.entered
+	}
+	agent.mu.Lock()
+	agent.block = make(chan struct{})
+	block := agent.block
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), channelEvent(humanID, "t", "keep going"))
+	<-agent.entered
+
+	hh.h.Handle(context.Background(), reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	select {
+	case hh.timer <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reaction flush was armed")
+	}
+	// The instant the flush parked on the busy conversation. Anything
+	// timed BEFORE the claim — the old shape — necessarily has a
+	// deadline older than this.
+	parked := <-waited
+	close(block)
+	select {
+	case <-hh.batches:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the buffered reaction was never delivered")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("turn did not finish: %v", err)
+	}
+	// The clock starts when the conversation is claimed, so the
+	// deadline is strictly later than one measured from the moment the
+	// reaction was buffered.
+	if got := agent.lastDeadline(t); !got.After(parked.Add(5 * time.Second)) {
+		t.Fatalf("reaction turn deadline %v was charged for the wait (parked at %v)", got, parked)
+	}
+	if body := hh.z.lastBody(); strings.Contains(body, "deadline exceeded") {
+		t.Fatalf("an emoji produced an error message: %q", body)
+	}
+}
+
+// TestDropPendingReactionsOnShutdown: when polling stops, a reaction
+// still waiting out its debounce is abandoned — and the flush that
+// wakes to an empty buffer releases the conversation instead of
+// prompting the agent with nothing.
+func TestDropPendingReactionsOnShutdown(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	before := hh.promptCount()
+	hh.h.Handle(context.Background(), reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	hh.h.Handle(context.Background(), reactionEvent(4242, own, "+1", zulipproto.ReactionAdd))
+
+	if n := hh.h.DropPendingReactions(); n != 2 {
+		t.Fatalf("DropPendingReactions() = %d, want 2", n)
+	}
+	if n := hh.h.DropPendingReactions(); n != 0 {
+		t.Fatalf("a second drop found %d reactions", n)
+	}
+	// The armed flush still fires; it must find nothing and do nothing.
+	select {
+	case hh.timer <- time.Now():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reaction flush was armed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("handler did not go idle: %v", err)
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("an empty batch prompted the agent: %q", hh.lastPrompt())
+	}
+	// And the conversation is free for the next real turn.
+	hh.deliver(t, "t", mention("still there?"))
+	if got := hh.promptCount(); got != before+1 {
+		t.Fatalf("the released conversation did not accept a new turn (%d prompts)", got)
 	}
 }
