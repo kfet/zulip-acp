@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The injected system prompt now sets the reaction norm explicitly.** Which
+  reactions deserve a reply is the agent's judgement and never a relay-side
+  heuristic — the relay delivers every gate-passing reaction faithfully — so the
+  built-in block spells out the posture instead of hinting at it: a reaction is
+  ambient signal and not a request, most deserve no reply at all, emitting the
+  silent sentinel is the normal and expected outcome rather than a failure, a
+  reply is warranted only when the reaction plainly changes something or plainly
+  asks for something (a rejection on a proposal just made, an agreed trigger
+  emoji), and a "thanks!"-style acknowledgement is never sent. With no sentinel
+  configured the agent cannot decline, so the instruction asks for the shortest
+  possible reply instead of demanding something impossible.
+
 ## [0.17.0] - 2026-09-06
 
 ### Added
