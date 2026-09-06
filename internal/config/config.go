@@ -157,6 +157,17 @@ type Config struct {
 	// is refused).
 	RepostOnClose *bool `json:"repost_on_close,omitempty"`
 
+	// Reactions delivers Zulip emoji reactions to the agent as a
+	// synthetic user turn ("[reaction] Ada added :tada: to …").
+	//
+	// Unset = TRUE. It is on by default because it only ever fires in
+	// a conversation the relay is ALREADY engaged in, for a reaction
+	// added by a user the allowlist already permits — a deliberate
+	// signal from someone mid-conversation, not a new way in. It never
+	// creates a conversation or a session. Set it to false if you do
+	// not want a stray :+1: to cost an agent turn.
+	Reactions *bool `json:"reactions,omitempty"`
+
 	// RelayMCP enables the agent→relay loopback: the relay hosts an
 	// MCP server on a private unix socket and advertises it to the
 	// agent, so the agent can read its own status, switch model, post
@@ -346,6 +357,12 @@ func (c *Config) GetAckEmoji() string {
 // answer. Unset means true.
 func (c *Config) GetRepostOnClose() bool {
 	return c.RepostOnClose == nil || *c.RepostOnClose
+}
+
+// GetReactions reports whether emoji reactions are delivered to the
+// agent. Unset means true.
+func (c *Config) GetReactions() bool {
+	return c.Reactions == nil || *c.Reactions
 }
 
 // GetAgentCmd returns the configured agent argv or the default.

@@ -306,6 +306,22 @@ func (c *Client) Users(ctx context.Context) ([]User, error) {
 	return resp.Members, nil
 }
 
+// UserByID returns one user record.
+//
+// It exists for the reaction path: a reaction event carries the
+// reacting user's id and nothing else, and "[reaction] user 8 added
+// :tada:" is not something to hand a human-facing agent. Callers must
+// cache it — this is one HTTP round-trip per call.
+func (c *Client) UserByID(ctx context.Context, id int64) (User, error) {
+	var resp struct {
+		User User `json:"user"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/users/"+strconv.FormatInt(id, 10), nil, nil, &resp); err != nil {
+		return User{}, err
+	}
+	return resp.User, nil
+}
+
 // Subscriptions lists the channels the bot is SUBSCRIBED to, which is
 // a subset of what Streams reports. It is the boot-time snapshot for
 // the "*" (follow-subscriptions) channel set; runtime changes arrive
@@ -695,15 +711,29 @@ type Event struct {
 	// OrigTopic is the topic the message was in before the rename.
 	OrigTopic string `json:"orig_subject"`
 
-	// Op discriminates subscription and stream events:
+	// Op discriminates subscription, stream and reaction events:
 	// "add"/"remove"/"peer_add"/… for subscription,
-	// "create"/"delete"/"update" for stream.
+	// "create"/"delete"/"update" for stream,
+	// "add"/"remove" for reaction.
 	Op string `json:"op"`
 	// Subscriptions carries the channels added to, or removed from,
 	// the BOT's own subscriptions (subscription op add/remove).
 	Subscriptions []Stream `json:"subscriptions"`
 	// Streams carries the channels of a stream create/delete event.
 	Streams []Stream `json:"streams"`
+	// UserID is the user who added or removed a reaction (reaction
+	// events). A reaction event carries NOTHING else about them — no
+	// name, no email — so a relay that wants to name the reactor must
+	// resolve the id itself; see UserByID.
+	UserID int64 `json:"user_id"`
+	// EmojiName is the bare Zulip emoji name, e.g. "wastebasket".
+	EmojiName string `json:"emoji_name"`
+	// EmojiCode is Zulip's code for the emoji ("1f5d1" for a unicode
+	// emoji, a realm-emoji id otherwise).
+	EmojiCode string `json:"emoji_code"`
+	// ReactionType is "unicode_emoji", "realm_emoji" or "zulip_extra_emoji".
+	ReactionType string `json:"reaction_type"`
+
 	// Property and Value describe a stream op=update. Value is left
 	// raw on purpose: Zulip sends a string, a bool or a number
 	// depending on the property, and a typed field would fail to
@@ -732,7 +762,25 @@ const (
 	EventUpdateMessage = "update_message"
 	EventSubscription  = "subscription"
 	EventStream        = "stream"
-	EventHeartbeat     = "heartbeat"
+	// EventReaction is an emoji reaction being added to, or removed
+	// from, any message the queue's owner receives.
+	//
+	// ⚠️ The /register narrow does NOT filter these. Measured on
+	// Zulip 12.2: a queue narrowed to one channel still delivered a
+	// reaction event for a message in a different channel. A reaction
+	// event also carries NO stream id and NO topic — only
+	// message_id — so a relay cannot even tell where it happened
+	// without fetching the message. Gate reaction events on your own
+	// allowlists, and bound whatever lookups you do: a busy realm can
+	// produce them faster than you would ever want to ask about them.
+	EventReaction  = "reaction"
+	EventHeartbeat = "heartbeat"
+)
+
+// Reaction event ops.
+const (
+	ReactionAdd    = "add"
+	ReactionRemove = "remove"
 )
 
 // GetEvents long-polls the queue for events newer than lastEventID.

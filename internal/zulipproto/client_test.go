@@ -817,3 +817,60 @@ func TestSubscriptionEventDecodes(t *testing.T) {
 		t.Fatalf("subscription = %+v", s)
 	}
 }
+
+// TestReactionEventDecode pins the exact payload Zulip 12.2 sends for
+// an emoji reaction, captured live against a self-hosted realm. Note
+// what is NOT in it: no stream id, no topic, no message body and no
+// user name — only ids.
+func TestReactionEventDecode(t *testing.T) {
+	const raw = `{"type":"reaction","op":"add","user_id":8,"message_id":692,` +
+		`"emoji_name":"wastebasket","emoji_code":"1f5d1","reaction_type":"unicode_emoji","id":1}`
+	var ev Event
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ev.Type != EventReaction || ev.Op != ReactionAdd {
+		t.Fatalf("event = %+v", ev)
+	}
+	if ev.UserID != 8 || ev.MessageID != 692 || ev.ID != 1 {
+		t.Fatalf("ids = %+v", ev)
+	}
+	if ev.EmojiName != "wastebasket" || ev.EmojiCode != "1f5d1" || ev.ReactionType != "unicode_emoji" {
+		t.Fatalf("emoji = %+v", ev)
+	}
+	if ev.StreamID != 0 || ev.Topic != "" || ev.Message != nil {
+		t.Fatalf("a reaction event carries no location: %+v", ev)
+	}
+	// A removal differs only in op, which is the whole v1 gate.
+	var rem Event
+	if err := json.Unmarshal([]byte(strings.Replace(raw, `"op":"add"`, `"op":"remove"`, 1)), &rem); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rem.Op != ReactionRemove {
+		t.Fatalf("op = %q", rem.Op)
+	}
+	// It must not be mistaken for a stream rename.
+	if _, ok := ev.RenamedTo(); ok {
+		t.Fatal("a reaction event is not a channel rename")
+	}
+}
+
+func TestUserByID(t *testing.T) {
+	ts := newServer(t, func(r recordedReq) (int, string) {
+		if strings.HasSuffix(r.path, "/users/8") {
+			return 200, okJSON(`"user":{"user_id":8,"full_name":"Ada Lovelace","is_bot":false}`)
+		}
+		return 400, `{"result":"error","msg":"No such user","code":"BAD_REQUEST"}`
+	})
+	c := newClient(t, ts)
+	u, err := c.UserByID(context.Background(), 8)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if u.UserID != 8 || u.FullName != "Ada Lovelace" || u.IsBot {
+		t.Fatalf("user = %+v", u)
+	}
+	if _, err := c.UserByID(context.Background(), 99999); err == nil {
+		t.Fatal("want an error for an unknown user")
+	}
+}

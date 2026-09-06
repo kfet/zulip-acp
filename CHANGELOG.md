@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Emoji reactions reach the agent** (`"reactions"`, default **on**). A
+  reaction on a message in a conversation the relay is already engaged in is
+  delivered as one compact ambient turn — `[reaction] Ada Lovelace added
+  :tada: to your own message 1234 ("…")` — which the agent may decline with the
+  silent sentinel, and the built-in system prompt says silence is the normal
+  answer. Gating, in order and all mandatory: `op` must be `add`; the relay's
+  own reactions (`ack_emoji`, the `!opts` tick) and other bots' are dropped
+  before any allowlist; `allowed_user_ids` applies; the message must resolve to
+  an **already-engaged** conversation, so a reaction can never create one or
+  summon the bot. Resolution is an in-memory index of the relay's own messages
+  first (no API call), then the journal's recorded ids, then one
+  rate-limited, negatively-cached `GET /messages/{id}` — because Zulip's
+  `/register` narrow does **not** filter `reaction` events (measured: a queue
+  narrowed to one channel still receives reactions from every channel the bot
+  can see). A reaction never supersedes a running turn, and a bot that
+  appeared after startup is caught by the same user lookup that names the
+  reactor.
+- `zulipproto`: the `reaction` event type and its fields (`op`, `user_id`,
+  `message_id`, `emoji_name`, `emoji_code`, `reaction_type`), plus
+  `Client.UserByID` — a reaction event carries only ids, so naming the reactor
+  needs a lookup. Both documented with the live-measured payload in
+  `docs/zulip-protocol-reference.md`.
+
+### Fixed
+
+- A `Runner` with `Handoff` armed now waits for its watcher goroutine before
+  returning. Whether that goroutine ever reached its `pollCtx.Done()` branch
+  was previously a scheduling race, which made the 100% coverage gate fail at
+  random; it is now deterministic, and the goroutine can no longer outlive
+  `Run`.
+
 ## [0.16.3] - 2026-09-06
 
 ### Fixed

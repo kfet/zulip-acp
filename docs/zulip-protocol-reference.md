@@ -219,9 +219,41 @@ is not there fails with `REACTION_DOES_NOT_EXIST`, both HTTP 400. For a relay
 that uses a reaction as a transient ack, both mean "already in the state you
 asked for" — `zulipproto` treats them as success.
 
-A reaction produces a `reaction` event on the queue. The relay registers only
-for `message` and `update_message`, and its event dispatch switches on the
-event type, so its own ack cannot be re-ingested.
+A reaction produces a `reaction` event on the queue, which the relay registers
+for whenever `"reactions"` is on (the default). Its own ack is filtered by user
+id, before anything else, so it cannot be re-ingested.
+
+### The `reaction` event, measured
+
+```json
+{"id":1,"type":"reaction","op":"add","user_id":8,"message_id":692,
+ "emoji_name":"wastebasket","emoji_code":"1f5d1","reaction_type":"unicode_emoji"}
+```
+
+`op` is `add` or `remove`. Note what is **not** there: no `stream_id`, no
+`subject`, no message body, and no user name — only ids. Naming the reactor
+costs a `GET /users/{id}`; locating the message costs a `GET /messages/{id}`.
+
+### ⚠️ Trap: the `/register` narrow does NOT filter reaction events
+
+Measured on Zulip 12.2 with two queues registered for
+`event_types=["message","reaction"]`, one narrowed to `[["channel",
+"zulip-acp-tests"]]` and one unnarrowed. A message was posted in
+`zulip-acp-tests` and reactions were added to it **and** to a message in
+`ask-fir`:
+
+| queue | message in narrowed channel | reaction there | reaction elsewhere |
+|---|---|---|---|
+| narrowed | ✅ delivered | ✅ delivered | ✅ **delivered** |
+| unnarrowed | ✅ delivered | ✅ delivered | ✅ delivered |
+
+The narrow filters *message* events only. Subscribing to `reaction` therefore
+subscribes to the reaction traffic of **everything the bot can see**, and a busy
+realm can produce far more of it than a relay would ever want to ask about. The
+relay's answer is in `internal/handler/reaction.go`: free gates first (op, own
+user id, other bots, the user allowlist), then an in-memory index of the
+messages it posted itself, and only then one rate-limited, negatively-cached
+`GET /messages/{id}`.
 
 ## Events: `/register` + `/events`
 

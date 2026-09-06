@@ -280,6 +280,14 @@ func main() {
 	}
 
 	eventTypes := []string{zulipproto.EventMessage, zulipproto.EventUpdateMessage}
+	if cfg.GetReactions() {
+		// Reaction events are NOT filtered by the queue's narrow and
+		// carry no channel or topic, so this subscribes to the whole
+		// realm's reaction traffic; the handler's gates are what make
+		// that affordable. See internal/handler/reaction.go.
+		eventTypes = append(eventTypes, zulipproto.EventReaction)
+		log.Printf("zulip-acp: emoji reactions are delivered to the agent as ambient turns (set \"reactions\": false to disable)")
+	}
 	var onRegister func(context.Context)
 	if follow {
 		// Subscription changes are what move the served set, and
@@ -423,6 +431,7 @@ func main() {
 		HideThinking:       cfg.HideThinking,
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
+		Reactions:          cfg.GetReactions(),
 		Logf:               log.Printf,
 	})
 	if err != nil {

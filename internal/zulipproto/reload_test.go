@@ -243,3 +243,29 @@ func TestNewRunnerIgnoresAnEmptyResume(t *testing.T) {
 		t.Fatalf("Cursor() = %q, %d; want \"\", -1", q, last)
 	}
 }
+
+// TestRunWithHandoffArmedButNeverFired: the ordinary life of a
+// reload-capable relay is that the reload never comes. The watcher
+// goroutine must then exit on the poll context instead of outliving
+// Run — which is also what makes that branch deterministically
+// covered, rather than won or lost by the scheduler in the
+// shutdown-race test above.
+func TestRunWithHandoffArmedButNeverFired(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ss := newScript(t,
+		registerOK("q-quiet", 1),
+		func(*http.Request) (int, string) {
+			cancel()
+			return 200, `{"result":"success","msg":"","events":[]}`
+		},
+	)
+	h := newHarness(t, ss, func(context.Context, Event) {},
+		func(cfg *RunnerConfig) { cfg.Handoff = make(chan struct{}) })
+
+	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() = %v, want context.Canceled", err)
+	}
+	if !hasDelete(ss.calls()) {
+		t.Fatalf("shutdown did not delete the queue: %v", ss.calls())
+	}
+}

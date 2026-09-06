@@ -168,7 +168,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	pollCtx, cancelPoll := context.WithCancel(ctx)
 	defer cancelPoll()
 	if r.cfg.Handoff != nil {
+		// Run waits for the watcher before returning. That is not
+		// tidiness: without it, whether the watcher ever reaches its
+		// pollCtx.Done() branch is a scheduling race, which makes the
+		// 100% coverage gate fail at random. The loop below exits only
+		// once pollCtx is done, so this can never block.
+		watchDone := make(chan struct{})
+		defer func() { <-watchDone }()
 		go func() {
+			defer close(watchDone)
 			select {
 			case <-r.cfg.Handoff:
 				cancelPoll()

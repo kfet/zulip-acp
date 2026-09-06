@@ -283,6 +283,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
+| `reactions` | `true` | deliver emoji reactions into the owning conversation as an ambient turn. See below |
 | `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
@@ -333,6 +334,35 @@ carries the real answer. Notes:
   closed delete window), the **first** refused delete disables reposting for the
   rest of the process and logs loudly, instead of doubling every topic forever.
   Set `"repost_on_close": false` to turn the feature off outright.
+
+### Emoji reactions (`reactions`)
+
+With `"reactions": true` (the default) an emoji reaction reaches the agent as
+one compact ambient turn:
+
+```
+[reaction] Ada Lovelace added :tada: to your own message 1234 ("the first few words…")
+```
+
+It is deliberately narrow, because Zulip's `reaction` events are **not** limited
+by the event queue's narrow — the relay sees reactions on everything the bot can
+see. In order:
+
+- removals are ignored; only `add` is delivered;
+- the relay's own reactions (the `ack_emoji`, the `!opts` tick) and any other
+  bot's are dropped before anything else, so it can never loop on itself;
+- `allowed_user_ids` applies exactly as it does to messages;
+- the reacted-to message must resolve to a conversation the relay is **already
+  engaged in**. A reaction never creates a conversation or a session: it cannot
+  summon the bot;
+- a reaction never supersedes a running turn, and unresolved lookups are
+  rate-limited and cached, so realm-wide reaction traffic cannot drive the
+  relay's API usage.
+
+It is delivered on the **ambient** path, so the agent may decline it with
+`silent_sentinel` — and the built-in system prompt tells it that staying silent
+is the normal response to a reaction. Set `"reactions": false` if you would
+rather a stray `:+1:` never cost a turn.
 
 ### The agent→relay loopback (`relay_mcp`)
 
