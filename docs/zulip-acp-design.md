@@ -237,10 +237,42 @@ first, and the order is load-bearing:
 
 Two further rules fall out of what a reaction *is*. It is delivered on the
 **ambient** path, never the addressed one, so the agent may answer with the
-silent sentinel — and `internal/sysprompt` tells it that silence is the normal
-response to a reaction. And it never supersedes a running turn: a message
-cancels the turn in flight because the human changed their mind, but cancelling
-someone's answer because a third party tapped an emoji would be pure loss.
+silent sentinel. And it never supersedes a running turn: a message cancels the
+turn in flight because the human changed their mind, but cancelling someone's
+answer because a third party tapped an emoji would be pure loss.
+
+#### Who decides a reaction deserves a reply
+
+The agent, and only the agent. The relay delivers **every** reaction that
+passes the gates above, faithfully and without interpretation — there is no
+"interesting emoji" list, no heuristic about which reactions matter, and there
+will not be one. A relay-side guess would be wrong in both directions at once:
+it would swallow the reaction that actually meant something and let through the
+ones that did not, and neither failure would be visible to anyone.
+
+So the posture is set where the judgement lives, in the injected system prompt
+(`internal/sysprompt.reactionInstruction`), and it is written as a norm rather
+than a suggestion:
+
+- a reaction is ambient **signal, not a request**, and most deserve no reply at
+  all — the default posture is silence;
+- emitting the silent sentinel is the **normal, expected** outcome of a reaction
+  turn, not a failure and not a cop-out;
+- reply only when the reaction plainly changes something or plainly asks for
+  something — a rejection on a proposal just made, a correction, an emoji the
+  user has agreed is a trigger;
+- **never** acknowledge a reaction with "thanks!", an emoji, or anything else
+  whose only content is that it was noticed;
+- when in doubt, it does not need a reply.
+
+The instruction names the configured sentinel, because "stay silent" is not
+actionable without the mechanism — and when no sentinel is configured the agent
+*cannot* decline, so the text changes shape and asks for the shortest possible
+reply instead of demanding something impossible.
+
+The worst failure this feature has is not a missed reply; it is a tap on an
+emoji turning into a message in somebody's topic. Everything above is aimed at
+that.
 
 `handler.reactionTrigger` is the seam for the planned relay-side action —
 react with a specific emoji on the relay's last message to archive the topic.

@@ -359,10 +359,16 @@ see. In order:
   rate-limited and cached, so realm-wide reaction traffic cannot drive the
   relay's API usage.
 
-It is delivered on the **ambient** path, so the agent may decline it with
-`silent_sentinel` — and the built-in system prompt tells it that staying silent
-is the normal response to a reaction. Set `"reactions": false` if you would
-rather a stray `:+1:` never cost a turn.
+It is delivered on the **ambient** path, so the agent can decline it with
+`silent_sentinel`. Which reactions deserve a reply is the **agent's** judgement,
+never a relay-side heuristic: the relay delivers every reaction that passes the
+gates above and makes no attempt to guess which ones are interesting. The
+built-in system prompt therefore sets the norm — a reaction is signal, not a
+request; most deserve no reply at all; answering with the sentinel is the
+expected outcome, not a failure; reply only when the reaction plainly changes
+something or plainly asks for something; and never send a "thanks!"-style
+acknowledgement. Set `"reactions": false` if you would rather a stray `:+1:`
+never cost a turn.
 
 ### The agent→relay loopback (`relay_mcp`)
 
