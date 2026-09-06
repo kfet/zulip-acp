@@ -158,14 +158,17 @@ type Config struct {
 	RepostOnClose *bool `json:"repost_on_close,omitempty"`
 
 	// Reactions delivers Zulip emoji reactions to the agent as a
-	// synthetic user turn ("[reaction] Ada added :tada: to …").
+	// synthetic user turn ("[reaction] Ada added :tada: to …"),
+	// additions and removals alike.
 	//
-	// Unset = TRUE. It is on by default because it only ever fires in
-	// a conversation the relay is ALREADY engaged in, for a reaction
-	// added by a user the allowlist already permits — a deliberate
-	// signal from someone mid-conversation, not a new way in. It never
-	// creates a conversation or a session. Set it to false if you do
-	// not want a stray :+1: to cost an agent turn.
+	// Unset = TRUE, and opting OUT is the deliberate act. It only ever
+	// fires in a conversation the relay is ALREADY engaged in, for a
+	// user the allowlist already permits — a deliberate signal from
+	// someone mid-conversation, not a new way in — it never creates a
+	// conversation or a session, and a burst of reactions is coalesced
+	// into ONE turn, so a pile-on costs what a single reaction costs.
+	// Set it to false if you do not want a stray :+1: to cost a turn
+	// at all.
 	Reactions *bool `json:"reactions,omitempty"`
 
 	// RelayMCP enables the agent→relay loopback: the relay hosts an

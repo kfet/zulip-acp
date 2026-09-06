@@ -192,18 +192,25 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 		return fmt.Errorf("%w: no conversation in %s", schedule.ErrGone, h.describe(key))
 	}
 
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
-	defer cancel()
+	// Cancellable now, timed AFTER the claim below: a scheduled turn
+	// that waited out a long human one must still get its full
+	// PromptTimeout, not the remainder. Charging it for the wait would
+	// start it already expired and report a deadline error the user
+	// can do nothing about.
+	turnCtx, cancelTurn := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelTurn()
 	// A human turn must never be superseded by a scheduled one, so wait
 	// for the conversation to go idle instead of cancelling what is
 	// running — and claim it in the same critical section, so a message
 	// arriving in the gap cannot have its own turn silently displaced.
 	// The store fires each item in its own goroutine, so waiting here
 	// holds nothing else up.
-	entry := &inflightEntry{cancel: cancel}
+	entry := &inflightEntry{cancel: cancelTurn}
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
 		return err
 	}
+	pctx, cancel := context.WithTimeout(turnCtx, h.cfg.PromptTimeout)
+	defer cancel()
 	// See handleMessage: endTurn runs after the turn has left the
 	// inflight map, never before.
 	defer h.endTurn(conv)

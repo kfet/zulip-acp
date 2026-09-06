@@ -66,6 +66,8 @@ func TestReactionInstruction(t *testing.T) {
 	// judgement of its own, so silence has to be established here as
 	// the expected outcome rather than as a permitted one.
 	for _, want := range []string{
+		"removed :tada: from",
+		"[reactions] N in this conversation:",
 		"ambient SIGNAL, not a request",
 		"MOST reactions deserve no reply at all",
 		"The default posture is silence",

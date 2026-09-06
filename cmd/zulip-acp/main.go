@@ -493,6 +493,14 @@ func main() {
 	runErr := runner.Run(ctx)
 	reloading := errors.Is(runErr, zulipproto.ErrHandoff)
 
+	// Polling has stopped, so nothing new is coming in — and a reaction
+	// still sitting in its coalescing buffer is not a turn anybody is
+	// waiting on. Drop those before the drain, or a debounce could
+	// expire mid-drain and start a turn that the re-exec then kills.
+	if n := h.DropPendingReactions(); n > 0 {
+		log.Printf("zulip-acp: dropped %d buffered reaction(s) on shutdown", n)
+	}
+
 	// Let in-flight turns finish posting before the agent is closed. On
 	// a reload this is the step that makes an agent's own reply survive
 	// its own `systemctl --user reload`: the signal has already been

@@ -283,7 +283,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
-| `reactions` | `true` | deliver emoji reactions into the owning conversation as an ambient turn. See below |
+| `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
@@ -337,27 +337,45 @@ carries the real answer. Notes:
 
 ### Emoji reactions (`reactions`)
 
-With `"reactions": true` (the default) an emoji reaction reaches the agent as
-one compact ambient turn:
+With `"reactions": true` (the default — opting out is the deliberate act) an
+emoji reaction reaches the agent as one compact ambient turn:
 
 ```
 [reaction] Ada Lovelace added :tada: to your own message 1234 ("the first few words…")
 ```
 
-It is deliberately narrow, because Zulip's `reaction` events are **not** limited
-by the event queue's narrow — the relay sees reactions on everything the bot can
-see. In order:
+Taking a reaction back is delivered too — `removed :tada: from …` — because
+un-reacting is real signal: an approval withdrawn, a trigger retracted.
 
-- removals are ignored; only `add` is delivered;
+**A burst is one turn.** Reactions are buffered per conversation for a few
+seconds and delivered together:
+
+```
+[reactions] 3 in this conversation:
+- Ada Lovelace added :tada: to your own message 1234 ("…")
+- Bob Miller added :+1: to your own message 1234 ("…")
+- Carol removed :eyes: from message 1200 by Dave ("…")
+```
+
+Ten people reacting to the same message costs one turn, not ten — which is what
+makes the default affordable. A reaction that arrives while a turn is running is
+folded into the same buffer rather than cancelling it or being dropped, and a
+burst larger than 20 is still one turn (the rest are counted, not listed).
+Buffering applies to reactions only: inbound human messages are never delayed.
+
+The gating is deliberately narrow, because Zulip's `reaction` events are **not**
+limited by the event queue's narrow — the relay sees reactions on everything the
+bot can see. In order:
+
+- only `add` and `remove` ops (anything else is a shape we do not understand);
 - the relay's own reactions (the `ack_emoji`, the `!opts` tick) and any other
   bot's are dropped before anything else, so it can never loop on itself;
 - `allowed_user_ids` applies exactly as it does to messages;
 - the reacted-to message must resolve to a conversation the relay is **already
   engaged in**. A reaction never creates a conversation or a session: it cannot
   summon the bot;
-- a reaction never supersedes a running turn, and unresolved lookups are
-  rate-limited and cached, so realm-wide reaction traffic cannot drive the
-  relay's API usage.
+- unresolved lookups are rate-limited and cached, so realm-wide reaction traffic
+  cannot drive the relay's API usage.
 
 It is delivered on the **ambient** path, so the agent can decline it with
 `silent_sentinel`. Which reactions deserve a reply is the **agent's** judgement,

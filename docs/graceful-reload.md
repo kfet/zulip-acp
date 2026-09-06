@@ -54,7 +54,12 @@ the state directory.
    `last_event_id` are kept. The schedule store's context is cancelled too, so
    no timer can start a *new* turn and extend the drain indefinitely; an
    overdue item is simply claimed by the successor image on its next tick
-   (`schedule.Store.due` takes everything whose time has come).
+   (`schedule.Store.due` takes everything whose time has come). Reactions
+   waiting out their coalescing debounce are dropped for the same reason
+   (`Handler.DropPendingReactions`): a buffered emoji is not a turn anybody is
+   waiting on, and letting its timer expire mid-drain would start a turn the
+   re-exec then kills. A reaction burst whose turn has already begun is an
+   in-flight turn like any other and is drained at step 3.
 3. `reload.Drain` blocks on `handler.WaitIdle` until every in-flight turn has
    finished posting, bounded by `-reload-drain-deadline` (30m).
 4. `cleanup()` closes the ACP agent, the session manager and the MCP host.

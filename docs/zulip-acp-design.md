@@ -216,8 +216,10 @@ So the naive version answers realm-wide traffic with an unbounded stream of
 `GET /messages/{id}`. `internal/handler/reaction.go` orders the gates cheapest
 first, and the order is load-bearing:
 
-1. `op` must be `add`. A removal is not a prompt — and the relay retracts its
-   own ack reaction at the end of every turn.
+1. `op` must be `add` or `remove`. Un-reacting is delivered too: withdrawing an
+   approval or retracting a trigger is signal, and it is no more expensive than
+   an add because bursts are coalesced (below). The relay's own ack retraction
+   is kept out by the user-id guard, not by the op.
 2. Drop the relay's own `user_id` **before any allowlist**, exactly as the
    message path does. The relay reacts on every message it accepts
    (`ack_emoji`) and on every `!opts` change; re-ingesting either is a
@@ -235,11 +237,51 @@ first, and the order is load-bearing:
    it cannot summon the bot — and a channel that has since left the served set,
    or a conversation retired by `!new`, does not count as engagement.
 
-Two further rules fall out of what a reaction *is*. It is delivered on the
-**ambient** path, never the addressed one, so the agent may answer with the
-silent sentinel. And it never supersedes a running turn: a message cancels the
-turn in flight because the human changed their mind, but cancelling someone's
-answer because a third party tapped an emoji would be pure loss.
+It is delivered on the **ambient** path, never the addressed one, so the agent
+may answer with the silent sentinel.
+
+#### Coalescing, and why the default can be "on"
+
+A reaction is the cheapest thing a human can do in a chat client, and they come
+in piles: ten people tap the same message and that is **one** conversational
+fact — "ten people reacted" — not ten requests. Delivered one turn each it would
+be a token pump that any popular message could start, and the honest default
+would then have to be off.
+
+So reactions are buffered per conversation for `reactionDebounce` (4s) and
+delivered as one synthetic turn:
+
+```
+[reactions] 3 in this conversation:
+- Ada Lovelace added :tada: to your own message 1234 ("…")
+- Bob Miller added :+1: to your own message 1234 ("…")
+- Carol removed :eyes: from message 1200 by Dave ("…")
+```
+
+Four seconds comes from both sides of the wire: a pile-on lands over a couple of
+seconds as people read the message, and Zulip delivers one long poll's events
+together, so a burst is usually inside a single window — while a longer window
+would start answering something the conversation has already moved past.
+`reactionBatchMax` (20) bounds the prompt itself; beyond it the burst is still
+one turn and the agent is told how many it did not see, so a pile-on cannot grow
+the context window either.
+
+The flush waits for the conversation and then takes the buffer — in that order,
+which is the entire subtlety. A reaction that arrives while a turn is running,
+or while the flush is waiting for it, is folded into the same delivery instead
+of racing it. `claimConvIdle` (shared with scheduled prompts) makes the wait and
+the claim one critical section, so nothing can slip between them. A reaction
+therefore never supersedes a running turn — a message cancels the turn in flight
+because the human changed their mind, but cancelling someone's answer because a
+third party tapped an emoji would be pure loss — and it is never silently
+dropped either.
+
+**This applies to reactions only.** Inbound human messages are not debounced and
+must not be: that would add latency to every reply, and a burst of messages is
+already handled by the in-flight/follow-up path, where each new message
+deliberately supersedes the turn before it. The two shapes want opposite
+behaviour — a message burst means "no, this instead", a reaction burst means
+"all of these at once".
 
 #### Who decides a reaction deserves a reply
 
