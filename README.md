@@ -545,7 +545,8 @@ Without it, the mobile app only updates while it is open.
 Canonical layout (mirrors `poe-acp`):
 
 ```
-~/.local/bin/zulip-acp                    # binary (make deploy / brew)
+~/.local/bin/zulip-acp                    # binary (first install: make deploy /
+                                          # brew; upgrades: zulip-acp update)
 ~/.config/zulip-acp/config.json           # see docs/config.example.json
 ~/.config/zulip-acp/env                   # ZULIP_API_KEY=...  (mode 0600)
 ~/.config/zulip-acp/state/                # per-conversation state + journal.json
@@ -558,6 +559,28 @@ bare `./zulip-acp` out of a checkout or a home-root folder.
 The relay **dials out** (long-polls `GET /api/v1/events`) — no inbound listener,
 no port to open, no Tailscale Funnel. It therefore works against a tailnet-only
 Zulip.
+
+### Upgrading
+
+```bash
+zulip-acp update                 # verify sha256, swap the binary atomically
+systemctl --user reload zulip-acp   # drain in-flight turns, re-exec in place
+```
+
+`zulip-acp update` resolves the release over the GitHub API (so it works while
+this repo is private, given `GITHUB_TOKEN`/`GH_TOKEN`/a logged-in `gh`),
+verifies the asset against `checksums.txt`, and renames it over the running
+binary — the `ETXTBSY`-safe swap. `--check` reports without installing,
+`--version vX.Y.Z` pins, `--restart-cmd` recycles afterwards, and it refuses to
+touch a package-manager-managed install. **Never hand-place a binary.**
+
+Hosts with a spec in `bots/` are converged instead, from `dist.lock`:
+
+```bash
+scripts/converge.sh --tot            # resolve latest-of-everything into dist.lock
+scripts/converge.sh <bot>            # dry run
+scripts/converge.sh <bot> --apply    # binary + fir + exts + config + unit + recycle
+```
 
 Full procedures: `skills/deploy/SKILL.md` and
 `internal/skills/bundle/update/SKILL.md`.

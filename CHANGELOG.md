@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`zulip-acp update` — self-update.** Resolves the latest (or a pinned)
+  release through the GitHub **API**, verifies the asset against
+  `checksums.txt`, and renames it over the running binary from a temp dir
+  beside it: the `ETXTBSY`-safe atomic swap, in the binary, where it belongs.
+  `--check` reports without installing, `--version` pins, `--repo` overrides
+  the source, `--restart-cmd` recycles afterwards (prefer
+  `systemctl --user reload zulip-acp`). It refuses to replace a
+  package-manager-managed install and names the command to use instead. The
+  API path matters here specifically: while `kfet/zulip-acp` is private the
+  plain release-download URL and `brew install` both 404 on the asset, but the
+  API serves it to a token (`GITHUB_TOKEN`, `GH_TOKEN`, or a logged-in `gh`).
+  It also refuses an install directory owned by another user — the swap needs
+  to write there, and a distro-packaged binary is not ours to move. New
+  `internal/selfupdate`.
+- **`scripts/converge.sh` + `dist.lock` + `bots/<name>.json` — fleet
+  convergence**, ported from `poe-acp` and adapted to this relay's shape.
+  `--tot` resolves latest-of-everything into the lock (and never converges);
+  `<bot> --apply` makes one host match the lock: binary, `fir`, fir
+  extensions, `config.json`, the systemd unit, then the recycle. **Converge is
+  the only sanctioned way to touch a fleet host.** It reads the version of the
+  image the RUNNING process executes (`/proc/<MainPID>/exe`), not the on-disk
+  file, so a binary swapped but never recycled is reported as stale; it selects
+  the graceful reload only when that live image can actually handle SIGHUP
+  (>= 0.12.0, unit has `ExecReload`, unit unchanged, service up) and otherwise
+  says why it must hard-restart. On the host it drives `zulip-acp update`
+  rather than fetching the asset itself. poe-acp's master/worker supervisor
+  model is deliberately NOT ported: a reload here holds the PID and re-execs in
+  place, so the verification is "pid held, running image moved", and a reload
+  still draining an in-flight turn is reported as pending, not as a failure.
+  Offline tests in `test/converge_render.sh` (`make test-scripts`, part of
+  `make all`) cover the renderers, the recycle matrix, and both mechanisms
+  against a stubbed systemd and `/proc`. `--apply` refuses a host whose
+  `EnvironmentFile` is missing before it writes anything, and says out loud
+  that a hard restart drops in-flight turns and the messages behind them.
+
+### Changed
+
+- **The bundled `update` skill no longer tells anyone to hand-place a binary.**
+  The documented order is now: converge for a host with a `bots/` spec →
+  `zulip-acp update` everywhere else → `make deploy` / `brew` as fallbacks for
+  an unreleased build or a brew-managed install. The stage-and-`mv -f` dance
+  (and its matching pitfall bullet) is gone; `Text file busy` now points at the
+  subcommand that solves it. `skills/deploy/SKILL.md`, `README.md` and
+  `AGENTS.md` say the same thing.
+
 ## [0.18.1] - 2026-09-06
 
 ### Fixed

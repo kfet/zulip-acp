@@ -1,0 +1,1 @@
+%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json --agent-cmd "fir --mode acp"

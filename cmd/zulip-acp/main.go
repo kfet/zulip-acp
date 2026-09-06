@@ -33,6 +33,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/reload"
+	"github.com/kfet/zulip-acp/internal/selfupdate"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -40,6 +41,15 @@ import (
 var version = "dev"
 
 func main() {
+	// `update` is the canonical way to move this binary to a new
+	// release: it verifies a checksum and swaps the file atomically
+	// under the running process (ETXTBSY-safe), so nobody has to
+	// hand-place a binary. Dispatched before flag parsing, like every
+	// other subcommand.
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		os.Exit(selfupdate.Main(os.Args[2:], version, selfupdate.Options{}))
+	}
+
 	// The redirector subcommand must be intercepted before anything
 	// else: the agent spawns THIS binary as the MCP stdio server, and
 	// that process must not parse flags, read config or start a relay.
