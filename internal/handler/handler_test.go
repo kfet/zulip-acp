@@ -2346,7 +2346,18 @@ func (c *capturingSink) OnUpdate(_ context.Context, n acp.SessionNotification) e
 // working, not only when it finishes.
 func TestAmbientPlaceholderGoesUpBeforeTheTurnEnds(t *testing.T) {
 	agent := newAgent("first")
-	hh := newHarness(t, agent, nil)
+	// The placeholder and the tail record are two steps, and the Zulip
+	// surface only witnesses the first — so wait for the step that
+	// finishes both rather than racing it.
+	placed := make(chan struct{}, 4)
+	hh := newHarness(t, agent, func(c *Config) {
+		c.OnEarlyPlaceholder = func(string) {
+			select {
+			case placed <- struct{}{}:
+			default:
+			}
+		}
+	})
 	hh.deliver(t, "t", mention("hi"))
 
 	agent.mu.Lock()
@@ -2361,13 +2372,13 @@ func TestAmbientPlaceholderGoesUpBeforeTheTurnEnds(t *testing.T) {
 			StreamID: 4, Topic: "t", Type: "stream",
 		},
 	})
-	deadline := time.After(10 * time.Second)
-	for hh.z.count() < 2 {
-		select {
-		case <-hh.z.posted:
-		case <-deadline:
-			t.Fatal("no placeholder posted while the ambient turn was still running")
-		}
+	select {
+	case <-placed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no placeholder posted while the ambient turn was still running")
+	}
+	if hh.z.count() < 2 {
+		t.Fatalf("the early placeholder was not posted: %d messages", hh.z.count())
 	}
 	if body := hh.z.lastBody(); !strings.Contains(body, "Thinking") {
 		t.Fatalf("placeholder body = %q", body)
