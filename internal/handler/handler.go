@@ -262,6 +262,17 @@ type Config struct {
 	// nothing but signal. Anything that touches the Handler deadlocks.
 	OnWaitForConv func(convID string)
 
+	// OnEarlyPlaceholder, if set, is called once the ambient path has
+	// posted its placeholder AND recorded the tail for it.
+	//
+	// It exists because those are two steps, and the surface only
+	// witnesses the first: a test that watched for the posted message
+	// and then asserted on the journal was racing the goroutine that
+	// records it — which is exactly the kind of nearly-always-passing
+	// test that fails once in CI and teaches nobody anything. Nil in
+	// production; it must only signal.
+	OnEarlyPlaceholder func(convID string)
+
 	// OnTurnEnd, if set, is called once a completed turn's deferred
 	// loopback actions have been applied — i.e. at the very last
 	// instant the turn's goroutine touches anything.
@@ -678,6 +689,9 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 			}
 			h.trackTail(conv.ID, split)
 			go spinner(wctx, split, sink, spinnerInterval)
+			if h.cfg.OnEarlyPlaceholder != nil {
+				h.cfg.OnEarlyPlaceholder(conv.ID)
+			}
 		}}
 	}
 	sess, err = h.cfg.Sessions.GetOrCreate(ctx, conv.ID, sinkFor)

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A latent test race turned into a CI failure.**
+  `TestAmbientPlaceholderGoesUpBeforeTheTurnEnds` watched the Zulip surface for
+  the ambient placeholder and then asserted the journal tail, but posting and
+  recording the tail are two steps and only the first is observable there. The
+  window widened in 0.18.0 (`trackTail` now also indexes the message id for the
+  reaction path), and CI caught it. The handler gained an `OnEarlyPlaceholder`
+  test hook that fires once BOTH steps are done, so the assertion no longer
+  races the goroutine it is about.
+
 ## [0.18.0] - 2026-09-06
 
 ### Added
