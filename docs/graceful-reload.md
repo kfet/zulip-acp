@@ -69,11 +69,34 @@ the state directory.
 6. The new image reads that cursor and **resumes** `GetEvents` on the same
    queue instead of registering — *provided* the queue was registered with the
    event types and narrow this image wants. No gap and no double delivery. If
-   the registration differs, the inherited queue is deleted and a fresh one
-   registered; see *When the queue cannot be resumed* below.
+   the registration differs, the inherited queue is *swapped*: a replacement
+   is registered while the old queue is still buffering, the old one is drained
+   and dispatched, and only then deleted — still no gap, and the overlap both
+   queues saw is de-duplicated. See *When the queue cannot be resumed* below.
 
 The PID never moves, so systemd never sees the service stop: `Type=simple` is
 correct and no readiness handshake is needed.
+
+### Holding the queue open across a long drain
+
+Step 3 can legitimately take half an hour (`-reload-drain-deadline`), and a
+Zulip queue is **garbage-collected once nothing has touched it for the queue's
+lifespan** — ten minutes by default. A long turn would therefore cost the very
+queue the handoff exists to preserve, and the successor would register fresh
+and skip everything posted during the reload.
+
+Nothing the client does afterwards can prevent that. Zulip refreshes
+`last_connection_time` only in `connect_handler`, which runs only when a poll
+actually *blocks* — so a `dont_block` fetch does not count, and neither does a
+blocking poll on a queue that already holds events, because it returns
+immediately. The only lever is at registration: `/register` takes
+**`queue_lifespan_secs`** (capped server-side at 7 days), so the relay
+registers its queue with `-reload-drain-deadline + 5m`.
+
+An older server takes the request and **ignores** the parameter, reporting it
+in `ignored_parameters_unsupported` — Zulip does not fail such a request — so
+the runner checks that list and warns once, rather than believing a guarantee
+it did not get.
 
 ## Why the cursor handoff is exact
 
@@ -109,13 +132,14 @@ correct, and the queue could not carry the events.
 So the registration travels with the cursor, as a fingerprint — the canonical
 JSON of the sorted `event_types` and `narrow`
 (`zulipproto.RegistrationFingerprint`) — and the successor **refuses to resume**
-a queue whose fingerprint is not the one it wants. It deletes the stale queue
-(best-effort) and registers fresh, naming the difference:
+a queue whose fingerprint is not the one it wants. It **swaps** it, naming the
+difference:
 
 ```
-zulip: WARN registration changed (event types +reaction); inherited queue
-05db1c49… discarded, registering fresh — messages posted during the gap are
-not delivered
+zulip: registration changed (event types +reaction); inherited queue 05db1c49…
+cannot carry this image's events — registering a replacement, then draining it
+zulip: drained 3 event(s) from inherited queue 05db1c49… — nothing posted
+during the reload is lost
 ```
 
 **A missing fingerprint counts as different.** An upgrade *from* an image that
@@ -123,19 +147,105 @@ never recorded one leaves it unset, and unset means *unknown*, not *matching* �
 otherwise the very reload that installs this check would resume the broken
 queue and preserve the defect it exists to end.
 
-### The cost, honestly
+### The swap is lossless, and the order is the design
 
-This qualifies the "nothing posted in the window is lost" claim above, in this
-one case. `/register` hands back the server's **current** `last_event_id`, so
-anything posted before that instant is already behind the cursor and is never
-delivered. A fresh registration therefore loses whatever was posted between the
-predecessor's last poll and the successor's `/register` — sub-second in a
-normal reload, but real.
+A queue that cannot be resumed still **holds messages** — everything posted
+while the predecessor was draining and exec'ing. Deleting it and calling
+`/register`, which is what v0.19.1 did, loses all of them: `/register` hands
+back the server's *current* `last_event_id`, so anything posted before that
+instant is behind the new cursor forever.
 
-That loss is bounded, one-off (it happens only on the reload where the
-registration actually changed), and strictly smaller than what it replaces:
-silently polling a queue that can never carry the events the running image
-asked for, indefinitely. The log line says so rather than pretending otherwise.
+Carrying the old cursor across is not available either. Zulip event ids are
+**per-queue** and monotonic only within a queue; the old queue's
+`last_event_id` is meaningless to a new one.
+
+What *is* available is **overlap**. `Runner.swapQueue`
+(`internal/zulipproto/events.go`) does, in this order:
+
+1. **Register the replacement first**, while the old queue is still alive and
+   still buffering server-side. From that instant nothing new can be missed by
+   both queues.
+2. **Drain the old queue**: poll `GET /events` on it from the inherited cursor,
+   repeatedly, until it yields nothing.
+3. **Dispatch** what it held, in order, through the normal handler path —
+   before the replacement is polled at all, so ordering is preserved.
+4. **Delete** the old queue, then start polling the replacement.
+
+Step 2 needs a stopping rule. `GET /events` takes no server-side *timeout*
+parameter (Zulip 12.2 reports `timeout` in `ignored_parameters_unsupported`),
+but it does take **`dont_block=true`**, which returns whatever the queue holds
+immediately — including an empty list. That is the drain primitive
+(`Client.DrainEvents`), and it matters: with a blocking poll, "empty" could
+only be *guessed* from a timeout, and a server slow to answer a **non-empty**
+batch would be misread as drained, deleting a queue that still held messages.
+So an empty result is the server's own statement and ends the drain; a timeout
+is a fault and is reported as one. A dead queue (`BAD_EVENT_QUEUE_ID`) is a
+completed drain — it has nothing left to give — and a poll whose events do not
+advance the cursor ends it too, rather than spinning.
+
+### The overlap, and the dedup window
+
+Everything posted between step 1 and step 4 lands in **both** queues, so it
+would otherwise be delivered twice. Per-queue event ids cannot match the two
+sightings, but **message ids are realm-global and stable**, so identity is
+derived from the event's content (`internal/zulipproto/dedup.go`):
+
+| event | identity |
+| --- | --- |
+| `message` | `message:<message id>` |
+| `update_message` | `update:<message id>:<edit timestamp>` |
+| `reaction` | `reaction:<message id>:<user id>:<emoji>:<op>` |
+
+`subscription` and `stream` events have no identity of their own and are
+dispatched unconditionally: they are `add`/`remove`/`update` ops applied to a
+set idempotently, so a second sighting changes nothing.
+
+The runner keeps a **bounded FIFO** of the last `DefaultDedupWindow` (512)
+dispatched identities and drops a second sighting. It evicts oldest-first, so
+it cannot grow with uptime.
+
+It is **armed only for the swap**, and retired after the first completed poll
+of the replacement queue. That is deliberate, and the window is exactly right
+in both directions:
+
+- One poll is enough, because every event that reached both queues was posted
+  *before* the old queue was deleted — so it was already buffered in the new
+  queue when that poll was issued, and `GET /events` returns everything a queue
+  is holding.
+- One poll is also the most that is safe. An event identity can legitimately
+  **recur**: a user who adds a reaction, removes it and adds it again produces
+  the same `(message, user, emoji, op)` twice, and a permanently armed dedup
+  set would silently swallow the second one. A duplicate *delivery* is only
+  possible during a swap, so that is the only window the check runs in.
+
+One known limit inside the window: `edit_timestamp` has one-second resolution,
+so two edits of the *same* message within the *same second* and inside the
+overlap would collapse into one. That is a far smaller error than dropping the
+message entirely, which is what it replaces.
+
+### Where a gap is still possible
+
+Two bounded cases remain, and both log a `WARN` naming the queue rather than
+passing in silence:
+
+- **`/register` fails five times during the swap.** There is nothing to swap
+  *to*; the unusable queue is dropped and the loop retries a fresh
+  registration. A single 5xx does not cost the messages the old queue holds —
+  the swap retries under the ordinary backoff first — but a server that will
+  not register at all leaves no alternative.
+- **The drain exceeds `DrainBudget` (60s)**, or fails on a fault that is not a
+  dead queue. The replacement is already registered and is used regardless — a
+  swap must never hang startup — so whatever the old queue still held is lost,
+  and said so.
+
+A **reload signal landing mid-drain** is not one of those cases. The old queue
+still holds everything the drain never reached, while the replacement holds
+only the overlap, so the swap is abandoned in the *other* direction: the
+replacement is deleted and the **old** queue is handed to the successor, at the
+cursor the drain reached, together with **its own** registration fingerprint.
+The successor simply redoes the swap. Handing on this image's fingerprint
+instead would tell the successor that an unresumable queue is resumable — the
+exact defect this machinery exists to end.
 
 A corollary for operators: **a relay already running a pre-fix image needs one
 hard `systemctl --user restart`** to escape a queue registered under the old
@@ -188,8 +298,7 @@ pid stable at 833097/854272 throughout):
   SIGHUP mid-flight. The journal shows `SIGHUP — graceful reload` at T+0,
   `re-exec with queue … at event 58` at T+40s once the turn finished, and the
   topic holds exactly **one** complete reply — not truncated, not duplicated.
-- **Nothing posted in the window is lost** (when the queue is resumed — see
-  *When the queue cannot be resumed*). A message posted to a second topic
+- **Nothing posted in the window is lost.** A message posted to a second topic
   *while the relay was not polling* was dispatched 30s later by the new image,
   immediately after `resuming inherited event queue …`.
 - **The agent can reload itself, inline.** A turn that ran `kill -HUP <relay>`
@@ -206,7 +315,7 @@ pid stable at 833097/854272 throughout):
 | Drain deadline expires with turns still running | Exec happens anyway; the successor's `handler.MarkInterrupted` annotates the half-streamed messages. Same as a hard restart — the worst case here, not the normal one. |
 | The inherited queue died (server restarted during the exec) | `BAD_EVENT_QUEUE_ID` is routine: the runner registers fresh and carries on. Messages in the window are lost, as with a hard restart. |
 | `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID` half-set or malformed | Neither is honoured. Register fresh, log a WARN. Half a cursor would silently skip or replay events, which is worse than a logged gap. |
-| The new image wants different `event_types` or a different `narrow` | The inherited queue **cannot** carry them (both are frozen at `/register`). It is deleted and a fresh one registered, with a WARN naming the difference. Messages posted in the gap are lost — see *When the queue cannot be resumed*. |
+| The new image wants different `event_types` or a different `narrow` | The inherited queue **cannot** carry them (both are frozen at `/register`). It is swapped: a replacement is registered while it is still buffering, it is drained and dispatched, then deleted — nothing lost, overlap de-duplicated. See *When the queue cannot be resumed*. |
 | `ZULIP_ACP_QUEUE_REGISTRATION` absent (upgrade from an image predating it) | Treated as *unknown, therefore different*: re-register rather than resume. Resuming on a guess is the defect this check exists to end. |
 | `syscall.Exec` fails (binary removed mid-reload) | `log.Fatalf`, exit non-zero, `Restart=on-failure` brings the relay back cold. The orphaned queue is named in the log line. |
 | Binary replaced by an atomic `mv` before the reload | `os.Executable` reads `/proc/self/exe`, which names the now-unlinked inode as `"<path> (deleted)"`. `reload.SelfPath` strips that marker, re-stats, and falls back to `os.Args[0]` through `PATH`. Getting this wrong would fail the exec *after* the agent had already been shut down. |

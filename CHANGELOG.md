@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Replacing an unresumable event queue is now lossless.** v0.19.1 refused to
+  resume a queue whose registration changed — correctly — but then *deleted it
+  and called `/register`*, which hands back the server's **current**
+  `last_event_id`: everything posted between the predecessor's last poll and
+  that instant was behind the new cursor and never delivered. The swap now
+  overlaps instead. The replacement queue is registered **first**, while the old
+  one is still alive and still buffering; the old queue is then drained (`GET
+  /events` from the inherited cursor until it yields nothing, bounded per poll
+  and overall) and its events dispatched in order; only then is it deleted and
+  the replacement polled. Event ids are per-queue, so the window both queues saw
+  is de-duplicated on event **identity** — message id, `(message id, edit
+  timestamp)`, `(message id, user, emoji, op)` — through a bounded 512-entry
+  FIFO, armed only for the swap and retired after the first poll of the
+  replacement queue (an identity can legitimately recur — a reaction removed
+  and re-added — so a permanent dedup set would swallow it). The drain polls
+  with **`dont_block=true`** (`Client.DrainEvents`), so "the queue is empty" is
+  the server's answer rather than a timeout guess that a slow server would make
+  wrong. A reload signal landing mid-drain abandons the swap the *other* way —
+  the replacement is deleted and the **old** queue handed to the successor with
+  its own registration fingerprint, because it still holds what the drain never
+  reached. Only five consecutive `/register` failures, or a drain that exceeds
+  its budget, fall back to the old lossy behaviour, and both log the gap
+  loudly. See `docs/graceful-reload.md`.
+
+- **A long reload drain no longer loses the event queue to the server's
+  garbage collector.** `-reload-drain-deadline` is 30 minutes and a Zulip queue
+  is collected after ~10 minutes untouched, so a long turn silently cost the
+  handoff its queue. The relay now registers with `queue_lifespan_secs` =
+  drain deadline + 5m. Polling cannot substitute for this: Zulip refreshes a
+  queue's clock only in `connect_handler`, which runs only when a poll actually
+  blocks. A server that ignores the parameter says so in
+  `ignored_parameters_unsupported`, and that is now warned about instead of
+  assumed away.
+
 ## [0.20.0] - 2026-09-06
 
 ### Added

@@ -253,7 +253,7 @@ func TestUploadRoundTripIsByteIdentical(t *testing.T) {
 func TestEventsIgnoresTimeoutParameter(t *testing.T) {
 	c, _ := liveClient(t)
 	ctx := context.Background()
-	res, err := c.Register(ctx, []string{zulipproto.EventMessage}, nil)
+	res, err := c.Register(ctx, []string{zulipproto.EventMessage}, nil, 0)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}

@@ -42,12 +42,11 @@
 //     new image wants. Then there is no gap (nothing posted in the
 //     window is skipped) and no double delivery (the cursor is exact).
 //     If the registration differs, or was not recorded at all, the
-//     inherited queue is deleted and a fresh one registered: a
-//     /register takes the server's CURRENT last_event_id, so anything
-//     posted before that instant is behind the cursor and is never
-//     delivered. That loss is real; it is strictly smaller than
-//     polling a queue that can never carry the events this image
-//     asked for.
+//     inherited queue is SWAPPED rather than dropped: the successor
+//     registers a replacement while the old queue is still buffering,
+//     drains the old one and dispatches what it held, and only then
+//     deletes it. Nothing posted across the change is lost, and the
+//     window both queues saw is de-duplicated on message identity.
 //
 // If the drain deadline expires with turns still running, the exec
 // happens anyway and the successor's handler.MarkInterrupted annotates

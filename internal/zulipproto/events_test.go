@@ -45,6 +45,15 @@ func newScript(t *testing.T, steps ...func(r *http.Request) (int, string)) *scri
 	return ss
 }
 
+// replace swaps in a new single-step script and resets the step
+// counter, so a test can drive a second phase against the same server.
+func (ss *scriptServer) replace(step func(r *http.Request) (int, string)) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.steps = []func(r *http.Request) (int, string){step}
+	ss.n = 0
+}
+
 func (ss *scriptServer) calls() []string {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
