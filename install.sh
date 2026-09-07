@@ -99,6 +99,16 @@ OS="${OS:-$(detect_os)}"
 ARCH="${ARCH:-$(detect_arch)}"
 
 # ---- resolve version ------------------------------------------------------
+# VERSION is pasted into a URL path twice — the API's /releases/tags/<tag> and
+# the download host's /releases/download/<tag>/ — so a value carrying a slash
+# or whitespace would fetch from a path nobody meant, and the checksum
+# manifest would come from that same wrong place and agree with itself. A
+# typo'd tag also gets a straight answer here instead of a puzzling 404 later.
+case "$VERSION" in
+	latest) ;;
+	''|-*|*[!A-Za-z0-9._+-]*) die "bad VERSION '$VERSION': want a release tag, e.g. v0.21.0" ;;
+esac
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -117,23 +127,29 @@ api_hint="a private repo needs GITHUB_TOKEN; so does a spent unauthenticated API
 # `curl … | sh` must not fail for that. The API remains the fallback here and
 # the only path that works for a private repo.
 #
-# The result is used only when it looks like a tag: a GITHUB_HOST test double
-# that does not redirect yields the literal "latest" (or nothing), and that
-# has to fall through to the API rather than be installed as a version.
+# Both branches capture what follows /releases/tag/ rather than the last path
+# segment, so a tag containing a slash ("release/v1") stays whole and is then
+# rejected by the guard below instead of being silently truncated to "v1" —
+# which can name a DIFFERENT existing tag, and would install the wrong binary
+# without ever failing. A GITHUB_HOST test double that does not redirect
+# matches nothing here and falls through to the API, as it must.
 resolve_latest_redirect() {
 	_loc="${GITHUB_HOST:-https://github.com}/$REPO/releases/latest"
 	if have curl; then
 		curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$_loc" 2>/dev/null \
-			| sed 's|.*/||'
+			| sed -n 's|.*/releases/tag/\(.*\)|\1|p'
 	elif have wget; then
 		wget -q -S --spider --max-redirect=0 "$_loc" 2>&1 \
-			| sed -n 's|^[[:space:]]*Location:[[:space:]]*[^[:space:]]*/tag/\([^[:space:]]*\).*|\1|p' \
+			| sed -n 's|^[[:space:]]*Location:[[:space:]]*[^[:space:]]*/releases/tag/\([^[:space:]]*\).*|\1|p' \
 			| head -n1
 	fi
 }
 
-if [ "$VERSION" = latest ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+if [ "$VERSION" = latest ]; then
 	log "resolving latest release for $REPO"
+fi
+
+if [ "$VERSION" = latest ] && [ -z "${GITHUB_TOKEN:-}" ]; then
 	_tag="$(resolve_latest_redirect || true)"
 	case "$_tag" in
 		''|latest|*[!A-Za-z0-9._+-]*) ;;
@@ -142,7 +158,6 @@ if [ "$VERSION" = latest ] && [ -z "${GITHUB_TOKEN:-}" ]; then
 fi
 
 if [ "$VERSION" = latest ]; then
-	log "resolving latest release for $REPO"
 	download "$api/latest" "$tmpdir/release.json" || die "cannot read the latest release of $REPO: $api_hint"
 elif [ -n "${GITHUB_TOKEN:-}" ]; then
 	download "$api/tags/$VERSION" "$tmpdir/release.json" || die "cannot read release $VERSION of $REPO: $api_hint"
