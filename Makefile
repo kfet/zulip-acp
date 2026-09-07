@@ -113,6 +113,7 @@ test-race-cover: | $(BINDIR)
 # systemd and /proc. No network, no ssh, no real service.
 test-scripts:
 	$(call RUN,test (scripts),./test/converge_render.sh)
+	$(call RUN,test (install.sh),./test/installsh_guard.sh)
 
 # Human-friendly per-function coverage summary (no gate).
 test-cover: | $(BINDIR)
