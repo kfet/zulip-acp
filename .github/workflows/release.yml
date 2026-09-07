@@ -28,6 +28,18 @@ jobs:
       - name: Build and test
         run: make all
 
+      # make all regenerates THIRD_PARTY_NOTICES.md (and install.sh). A dirty
+      # tree here means the tagged tree carries generated files for a different
+      # dependency set than the one being released — and GoReleaser is about to
+      # upload THIRD_PARTY_NOTICES.md as a release asset.
+      - name: Check tree is clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Working tree is dirty after 'make all'; the tagged tree carries stale generated files."
+            git diff
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
         with:
