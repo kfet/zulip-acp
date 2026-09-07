@@ -289,6 +289,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `edit_interval_ms` | `300` | streaming edit coalescing |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
+| `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
 | `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
@@ -392,6 +393,44 @@ expected outcome, not a failure; reply only when the reaction plainly changes
 something or plainly asks for something; and never send a "thanks!"-style
 acknowledgement. Set `"reactions": false` if you would rather a stray `:+1:`
 never cost a turn.
+
+### Archiving a topic (`archive_channel`)
+
+A finished conversation can be got out of the way with one gesture: react
+`:wastebasket:` to the relay's **last** message in the topic — or type
+`!archive` (`!arch`) — and the relay posts a warning. React `:wastebasket:` **to
+that warning** and the topic is moved, whole, to `archive_channel`.
+
+Nothing is deleted. The messages travel with the topic, and the conversation's
+`state/convs/<id>/` working directory stays exactly where it is. What ends is the
+conversation: the in-flight turn is cancelled, the ACP session stops, the journal
+entry is retired, and only then is the move issued — in that order, because the
+move arrives back as the same `update_message` event a rename does, and a session
+that migrated with it would follow the topic into the archive instead of ending.
+
+The destination must be a channel the relay does **not** serve. That is what
+makes an archive final: an unserved channel is outside the allowlist by
+construction, so an archived topic cannot re-engage the relay, and recovery is
+one move back. What accumulates there is a retention-policy question, not the
+relay's.
+
+Only the confirmation counts, and only on the warning message: another emoji does
+nothing, a `:wastebasket:` somewhere else does nothing, un-reacting does nothing.
+An unconfirmed arming simply **expires** after two minutes and is logged; a later
+tap is never a late confirmation — it starts a fresh cycle with a fresh warning.
+The same `allowed_user_ids` gate that governs messages governs the gesture.
+
+The relay settles at **startup** whether any of this can work — the channel
+exists, it is not served, and realm policy
+(`can_move_messages_between_channels_group`) lets the bot move messages between
+channels — and silently disables the control with an explanatory log line if not.
+Nobody should discover a missing permission by tapping the emoji. Zulip 12.0+ is
+needed to answer that permission question about a *bot* user; on an older server
+the control stays off.
+
+A topic a human moves out of the served set by hand is treated the same way: the
+conversation is retired rather than allowed to follow the topic somewhere the
+relay does not answer.
 
 ### The agent→relay loopback (`relay_mcp`)
 

@@ -503,3 +503,37 @@ func TestWidgetMessageCannotBeEdited(t *testing.T) {
 			"the relay falls back to leaving a stale panel", err)
 	}
 }
+
+// TestMovePermissionIsReadable is evidence about the SERVER for the
+// archive control: that `can_move_messages_between_channels_group` is
+// readable at all through POST /register, and that this bot's
+// membership of it can be resolved.
+//
+// Read-only — it posts nothing. The one side effect is the throwaway
+// event queue /register mints, which the client deletes again.
+//
+// A FAILURE here is not necessarily a bug in us: querying a bot user's
+// group membership needs Zulip 12.0 (feature level 458), and the relay
+// deliberately treats "cannot tell" as "archiving is off". The test
+// logs the answer either way, which is the point — it is how an
+// operator finds out why the control did not come up.
+func TestMovePermissionIsReadable(t *testing.T) {
+	c, _ := liveClient(t)
+	ctx := context.Background()
+	gs, err := c.RealmGroupSetting(ctx, zulipproto.RealmMoveBetweenChannels)
+	if err != nil {
+		t.Fatalf("this server does not report %s: %v", zulipproto.RealmMoveBetweenChannels, err)
+	}
+	t.Logf("%s = group %d, direct members %v, subgroups %v",
+		zulipproto.RealmMoveBetweenChannels, gs.GroupID, gs.DirectMembers, gs.DirectSubgroups)
+
+	me, err := c.Me(ctx)
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	allowed, err := c.CanMoveMessagesBetweenChannels(ctx, me.UserID)
+	if err != nil {
+		t.Fatalf("cannot resolve this bot's membership (Zulip 12.0+ is needed for a bot user): %v", err)
+	}
+	t.Logf("bot %d (%s) may move messages between channels: %v", me.UserID, me.FullName, allowed)
+}

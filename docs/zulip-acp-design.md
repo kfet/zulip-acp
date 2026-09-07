@@ -316,12 +316,96 @@ The worst failure this feature has is not a missed reply; it is a tap on an
 emoji turning into a message in somebody's topic. Everything above is aimed at
 that.
 
-`handler.reactionTrigger` is the seam for the planned relay-side action —
-react with a specific emoji on the relay's last message to archive the topic.
-It sees the resolved conversation and message before the agent is involved and
-reports whether it consumed the reaction; today it always returns false. That
-is a *relay* action, not an agent turn, which is why it belongs there and not
-in a prompt.
+`handler.reactionTrigger` is the seam for relay-side actions on a reaction. It
+sees the resolved conversation and message before the agent is involved and
+reports whether it consumed the reaction. In production it is wired to
+`Handler.ArchiveReaction` (below). That is a *relay* action, not an agent turn,
+which is why it belongs there and not in a prompt: a destructive control must
+never depend on the model choosing to call a tool.
+
+### Archiving a topic (`archive_channel`)
+
+The gesture: react `:wastebasket:` to the relay's **last** message in a topic,
+or type `!archive` (`!arch`). Either arms a confirmation and posts a warning;
+the **only** confirmation is `:wastebasket:` on that warning message. Both
+entry points arm the same state and run the same code — there is one
+destructive path, not two.
+
+#### Why a move, and why to a channel we do not serve
+
+Archiving is `PATCH /messages/{id}` with `stream_id` and
+`propagate_mode=change_all`: one request, the whole topic, every message intact.
+The alternatives were both worse. `delete_topic` is org-admin only, and a relay
+bot must not hold realm admin for a convenience feature. Per-message deletion is
+O(n) API calls with a partial-failure state in the middle, and it destroys
+content the user only asked to *file away*.
+
+The destination is a channel the relay does **not** serve. That is the whole
+mechanism: an unserved channel is outside the allowlist *by construction*, so an
+archived topic cannot re-engage the relay, no matter what is posted in it, and
+recovery is one move back. Junk accumulating there is then a retention-policy
+problem for the realm, not a correctness problem for the relay.
+
+Nothing is deleted, including on disk: `Journal.Retire` keeps the old conv-id
+and its `state/convs/<id>/` directory and mints a **new** id for the key, so a
+later topic of the same name cannot reach the old session's memory. The state
+survives without being reachable.
+
+#### The ordering is the feature
+
+`handleUpdate` migrates a conversation when its topic moves — and a
+cross-channel move arrives as *that same* `update_message` event. So the steps
+are, strictly:
+
+1. post the closing message (before anything else, so the audit trail travels
+   with the topic and is the first thing anyone reads in the archive — it is
+   also the anchor the move is addressed to);
+2. cancel the in-flight turn;
+3. stop the ACP session;
+4. `Journal.Retire` the conversation;
+5. **only then** issue the move.
+
+Move first and the session *follows* the topic into the archive instead of
+ending. Retiring first means the echoed event finds nothing of ours to migrate.
+Every failure short-circuits the rest and says so in the topic: a half-done
+archive that stayed quiet would be the worst outcome available.
+
+#### The confirmation, and what expiry means
+
+The arm records the message id of the warning, not merely a deadline: a
+`:wastebasket:` anywhere else — including on a *newer* message of ours — is not
+a confirmation. An unconfirmed arm expires after two minutes, is forgotten, and
+is **logged**, because "somebody started this and walked away" is exactly the
+thing an operator cannot otherwise see. A later tap is never a late
+confirmation; it starts a fresh cycle and posts a fresh warning. An expired
+decision must never authorise a destructive act.
+
+`!purge` is deliberately not a synonym. The action is an archive — nothing is
+destroyed — and a destructive-sounding name for a reversible move is a lie in
+the direction that matters.
+
+#### Checked at startup, not on the tap
+
+Three things must hold, and all three are settled before the relay starts
+listening: the channel exists and is visible to the bot; it is **not** in the
+served set; and realm policy
+(`can_move_messages_between_channels_group`) permits this bot to move messages
+between channels. Any "no" — including "cannot tell", which is what an older
+server answers, since querying a *bot's* group membership needs Zulip 12.0 —
+disables the control with an explanatory log line. Discovering a missing
+permission at the moment somebody taps the emoji would mean a warning posted
+for an action that cannot happen. What startup cannot settle is
+`move_messages_between_streams_limit_seconds`, a per-message age limit; that
+one fails loudly at the time, and the relay reports it in the topic.
+
+#### The latent bug this exposed
+
+A topic moved out of the served set *by a human* had the same problem and was
+already broken: the conversation either orphaned its session or produced a
+ghost, depending on which stream id the guard saw. `handleUpdate` now **retires**
+rather than follows whenever the destination channel is unserved, and
+`Journal.Move` (of which `Rename` is the same-channel case) migrates a
+conversation across channels when the destination *is* served.
 
 ### The end-of-turn repost (`repost_on_close`)
 Zulip generates a mobile push notification when a message is **created**, and

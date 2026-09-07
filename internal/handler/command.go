@@ -128,6 +128,17 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		return "", true
 	}
 
+	// `!archive` is this relay's own for the same reason `!opts` is:
+	// it moves a TOPIC between Zulip channels, which is not a thing
+	// poe-acp has. It arms exactly what the :wastebasket: reaction
+	// arms — one destructive path, two ways to start it (archive.go).
+	// Like `!opts` it runs ahead of the pending-login path: a pasted
+	// redirect URL never carries a sigil.
+	if isArchiveCommand(text) {
+		h.archiveCommand(ctx, key, senderName(m))
+		return "", true
+	}
+
 	// A knob CHANGE is applied here rather than being rendered as
 	// prose: it goes through the broker's exported action exactly as
 	// `!model` does, but is acknowledged with a reaction and a
@@ -196,6 +207,13 @@ func (h *Handler) decorate(text, out string) string {
 	if !ok || !strings.EqualFold(strings.TrimSpace(body), "help") || out == "" {
 		return out
 	}
+	extra := optsHelpLine
+	if h.archiveEnabled() {
+		// Advertised only when it can actually work: a help entry for
+		// a command that answers "not configured here" teaches the
+		// wrong thing.
+		extra += archiveHelp
+	}
 	// Inserted right after the `!help` bullet rather than appended:
 	// the broker's help ends with an optional "Agent commands:"
 	// section, and a relay command filed under that heading would be a
@@ -203,14 +221,14 @@ func (h *Handler) decorate(text, out string) string {
 	const anchor = "- `" + command.DisplaySigil + "help`"
 	i := strings.Index(out, anchor)
 	if i < 0 {
-		return strings.TrimRight(out, "\n") + "\n" + optsHelpLine
+		return strings.TrimRight(out, "\n") + "\n" + extra
 	}
 	j := strings.IndexByte(out[i:], '\n')
 	if j < 0 {
-		return strings.TrimRight(out, "\n") + "\n" + optsHelpLine
+		return strings.TrimRight(out, "\n") + "\n" + extra
 	}
 	cut := i + j + 1
-	return out[:cut] + optsHelpLine + out[cut:]
+	return out[:cut] + extra + out[cut:]
 }
 
 // doubleSigil is the escape a human types to send prose beginning with

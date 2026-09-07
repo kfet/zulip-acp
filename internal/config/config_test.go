@@ -537,3 +537,50 @@ func TestReactions(t *testing.T) {
 		})
 	}
 }
+
+// TestArchiveChannel covers the three states of `archive_channel`:
+// unset (the documented default), explicitly disabled, and named.
+func TestArchiveChannel(t *testing.T) {
+	available := []zulipproto.Stream{
+		{StreamID: 4, Name: "fleet"},
+		{StreamID: 12, Name: "archive"},
+	}
+	off, named := "", "  fleet  "
+	cases := []struct {
+		name    string
+		cfg     *Config
+		want    string
+		wantID  int64
+		resolve bool
+	}{
+		{name: "unset means the default", cfg: &Config{}, want: DefaultArchiveChannel, wantID: 12, resolve: true},
+		{name: "explicitly off", cfg: &Config{ArchiveChannel: &off}},
+		{name: "named, trimmed", cfg: &Config{ArchiveChannel: &named}, want: "fleet", wantID: 4, resolve: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.GetArchiveChannel(); got != tc.want {
+				t.Fatalf("GetArchiveChannel = %q, want %q", got, tc.want)
+			}
+			s, ok := tc.cfg.ResolveArchiveChannel(available)
+			if ok != tc.resolve {
+				t.Fatalf("resolved = %v, want %v", ok, tc.resolve)
+			}
+			if ok && s.StreamID != tc.wantID {
+				t.Fatalf("stream = %+v, want id %d", s, tc.wantID)
+			}
+		})
+	}
+
+	// By numeric id, and the two ways resolution comes back empty.
+	byID, missingID, missingName := "12", "77", "nope"
+	if s, ok := (&Config{ArchiveChannel: &byID}).ResolveArchiveChannel(available); !ok || s.StreamID != 12 {
+		t.Fatalf("by id: %+v ok=%v", s, ok)
+	}
+	if _, ok := (&Config{ArchiveChannel: &missingID}).ResolveArchiveChannel(available); ok {
+		t.Fatal("an id nobody has must not resolve")
+	}
+	if _, ok := (&Config{ArchiveChannel: &missingName}).ResolveArchiveChannel(available); ok {
+		t.Fatal("a name nobody has must not resolve")
+	}
+}

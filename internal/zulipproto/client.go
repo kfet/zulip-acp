@@ -471,6 +471,47 @@ func (c *Client) MoveMessage(ctx context.Context, id int64, topic, propagateMode
 	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
 }
 
+// MoveMessageToChannel moves a message — and, with
+// propagate_mode=change_all, the whole topic it is in — to ANOTHER
+// channel.
+//
+// Same endpoint as MoveMessage: Zulip models a channel move as a
+// message edit carrying `stream_id`. `content` and `stream_id` are
+// mutually exclusive server-side, so this call can never change a body;
+// `topic` is sent only when the caller wants the topic renamed on the
+// way, which the relay never does — the topic is what identifies the
+// conversation in the archive.
+//
+// Whether the bot may do this at all is a REALM POLICY
+// (can_move_messages_between_channels_group, itself bounded by
+// move_messages_between_streams_limit_seconds). It is a policy a relay
+// should check at STARTUP rather than discover mid-action; see
+// CanMoveMessagesBetweenChannels.
+func (c *Client) MoveMessageToChannel(ctx context.Context, id, streamID int64, topic, propagateMode string) error {
+	if streamID <= 0 {
+		return fmt.Errorf("zulip: move message %d: no destination channel", id)
+	}
+	form := url.Values{
+		"stream_id":      {strconv.FormatInt(streamID, 10)},
+		"propagate_mode": {propagateMode},
+		// Both notices are Notification Bot messages the relay does
+		// not need: the destination is a channel nobody is reading for
+		// conversation, and the source topic is EMPTY after a
+		// change_all move, so a notice there would resurrect the very
+		// topic that was just archived — as a fresh, one-message topic
+		// the relay would then have to ignore.
+		"send_notification_to_old_thread": {"false"},
+		"send_notification_to_new_thread": {"false"},
+	}
+	if topic != "" {
+		if n := utf8.RuneCountInString(topic); n > MaxTopicLength {
+			return fmt.Errorf("zulip: topic is %d code points, over MAX_TOPIC_LENGTH %d — Zulip would truncate it silently", n, MaxTopicLength)
+		}
+		form.Set("topic", topic)
+	}
+	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
+}
+
 // DeleteMessage removes a message the bot posted.
 //
 // It exists for exactly one caller: retiring a superseded `!opts`
@@ -725,6 +766,12 @@ type Event struct {
 	Message   *Message `json:"message"`
 	MessageID int64    `json:"message_id"`
 	StreamID  int64    `json:"stream_id"`
+	// NewStreamID is the DESTINATION channel of an update_message that
+	// moved a message (or a whole topic) to another channel. Zero on
+	// every other edit, including a plain topic rename — StreamID
+	// always carries the ORIGINAL channel, so the pair is what
+	// distinguishes "renamed here" from "moved away".
+	NewStreamID int64 `json:"new_stream_id"`
 	// Topic is the NEW topic on an update_message rename.
 	Topic string `json:"subject"`
 	// OrigTopic is the topic the message was in before the rename.

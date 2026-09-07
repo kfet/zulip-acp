@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **React-to-archive: end a conversation and file its topic away.** React
+  `:wastebasket:` to the relay's last message in a topic — or type `!archive`
+  (`!arch`) — and the relay posts a warning; a second `:wastebasket:` **on that
+  warning** moves the whole topic to `archive_channel` (default `archive`) with
+  `propagate_mode=change_all`. Nothing is deleted: the messages travel with the
+  topic and the conversation's `state/convs/<id>/` directory stays on disk,
+  unreachable because `Journal.Retire` mints a fresh conv-id for the key. The
+  destination must be a channel the relay does **not** serve — that is what
+  makes an archived topic unable to re-engage it, and recovery one move back.
+  The order is load-bearing and not an implementation detail: closing message,
+  cancel the turn, stop the ACP session, retire the journal entry, and only
+  *then* move — a cross-channel move arrives as the same `update_message` event
+  a rename does, so moving first would make the session follow the topic into
+  the archive instead of ending. An unconfirmed arming expires after two
+  minutes and is logged; a later tap is never a late confirmation, it starts a
+  fresh cycle. The trigger runs on the relay's own reaction seam
+  (`Config.ReactionTrigger`), ahead of the agent: a destructive control must
+  never depend on the model choosing to call a tool. Asking twice does not
+  re-post the warning or park a second timer, and a tap on a warning the
+  conversation has since moved past archives nothing and arms nothing.
+  `!purge` is deliberately not a synonym — nothing is purged.
+
+- **Archiving is proved possible at startup, not on the tap.** The relay
+  resolves `archive_channel`, refuses it if it is in the served set, and checks
+  the realm's `can_move_messages_between_channels_group` (via `POST /register`
+  with `fetch_event_types` plus a user-group membership lookup) before it starts
+  listening. Any "no" — including "cannot tell", which is what a server older
+  than Zulip 12.0 answers about a *bot's* group membership — disables the
+  control with an explanatory log line, rather than posting a warning for an
+  action that cannot happen.
+
+### Fixed
+
+- **A topic moved out of the served set no longer orphans its session.**
+  `handleUpdate` previously treated every `update_message` as a rename within
+  one channel, so a cross-channel move either left the conversation running
+  under a key the allowlist refuses or created a ghost, depending on which
+  stream id the guard saw. It now reads `new_stream_id`: a destination the relay
+  serves migrates the conversation across channels (`Journal.Move`, of which
+  `Journal.Rename` is now the same-channel case), and a destination it does not
+  serve **retires** the conversation — files untouched — instead of following
+  it. This was a real defect independent of archiving; archiving just made it
+  impossible to ignore.
+
 ## [0.20.1] - 2026-09-06
 
 ### Fixed
