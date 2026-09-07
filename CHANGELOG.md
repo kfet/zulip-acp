@@ -7,15 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`test/installsh_guard.sh`** — offline tests that run the checked-in
-  `install.sh` with traversing, whitespace-bearing and shell-metacharacter
-  `VERSION` values and assert each is refused before any download, while real
-  tags (including prereleases and `+build` metadata) still pass. `make
-  check-installsh` proves the file matches its generator; this proves the
-  generator still emits the guard, so a downgrade of the `distkit` pin fails
-  the build rather than the fleet. Wired into `make test-scripts`.
+## [0.22.3] - 2026-09-07
 
 ### Fixed
 
@@ -28,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[A-Za-z0-9._+-]+` up front, before any download, and the `releases/latest`
   redirect parse captures the whole tag rather than the last path segment so a
   tag containing a slash cannot be silently truncated into a different real
-  tag.
+  tag. `test/installsh_guard.sh` (new, wired into `make test-scripts`) runs the
+  checked-in installer with traversing, whitespace-bearing and
+  shell-metacharacter tags and asserts each is refused before any download:
+  `make check-installsh` proves the file matches its generator, this proves the
+  generator still emits the guard.
 - **`zulip-acp update` no longer spends GitHub API quota when anonymous.**
   From `distkit` v0.1.5: v0.1.4 fixed only the shell half, so on a NAT'd fleet
   (60 requests/hour per IP) the Go path failed with a 403 that read like a
