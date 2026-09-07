@@ -64,14 +64,19 @@ internal/handler/       event → ACP prompt; streaming sink; topic poster; comm
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
-internal/selfupdate/    `zulip-acp update`: GitHub API release fetch, sha256
-                        verify, ETXTBSY-safe atomic swap (NO Zulip imports)
 internal/statusline/    Zulip-markdown status-line renderer (live spinner +
                         italic footer under the finished answer)
 internal/sysprompt/     built-in Zulip-formatting system prompt
+internal/updater/       the four strings that name THIS binary for
+                        `zulip-acp update`; the mechanism (GitHub API fetch,
+                        sha256 verify, ETXTBSY-safe atomic swap, brew keg
+                        hand-off) is github.com/kfet/distkit
 internal/zulipmcp/      self-hosted MCP server identity (socket, env, subcommand)
 internal/zulipproto/    HTTP Basic client + /events long-poll runner; zform.go is
                         the only coupling to Zulip's widget subsystem
+install.sh              GENERATED from distkit's template + install.sh.json;
+                        `make install.sh` rewrites it, `make check-installsh`
+                        fails the build when the checked-in copy has drifted
 scripts/converge.sh     the ONLY sanctioned way to change a fleet host
 test/                   live-server integration tests (ZULIP_LIVE=1);
                         converge_render.sh = offline tests for converge.sh
@@ -79,10 +84,13 @@ test/                   live-server integration tests (ZULIP_LIVE=1);
 
 ## Updating a host
 
-**Never hand-place a binary** — no `cp`/`scp`/`mv` into `~/.local/bin` after
-the first install. `zulip-acp update` performs the checksum-verified, atomic,
-`ETXTBSY`-safe swap; `scripts/converge.sh <bot> --apply` is the only sanctioned
-way to touch a host that has a spec in `bots/`. See
+**Never hand-place a binary** — no `cp`/`scp`/`mv` into `~/.local/bin`, the
+first install included. `zulip-acp update` performs the checksum-verified,
+atomic, `ETXTBSY`-safe swap; `scripts/converge.sh <bot> --apply` is the only
+sanctioned way to touch a host that has a spec in `bots/`; the root
+`install.sh` (generated — see below) is the first install. There is
+deliberately **no `make deploy`**: it skipped the checksum, was not an atomic
+swap, and left a version `dist.lock` could not see. See
 `internal/skills/bundle/update/SKILL.md`.
 
 ## Think before you specialise
@@ -100,6 +108,12 @@ Zulip wire protocol it stays here.
 
 - Zulip protocol concerns (events, queues, message shapes, uploads) →
   `zulipproto`. **Never** push these to acp-kit.
+- Distribution concerns (self-update, release assets, checksum verification,
+  the atomic swap, `install.sh`) → `github.com/kfet/distkit`. It is
+  stdlib-only on purpose, so `fir`, `harb` and `mintick` can import it too —
+  which is exactly why this does NOT live in the ACP-coupled acp-kit. Do not
+  re-implement any of it here: `internal/updater` may hold only the strings
+  that name this binary.
 - Agent-process concerns (spawn, stdio, ACP framing) → `acp-kit/client`.
 - Session lifecycle (cwd, GC, resume) → `acp-kit/state`.
 - **`internal/rollover` must never import anything Zulip-specific.** It is a

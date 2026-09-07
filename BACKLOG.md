@@ -11,18 +11,24 @@ Things deliberately not done in v1, with the reason.
 > reason about them from memory. The entry below was written on the
 > assumption that no second consumer existed; one had for months.
 
-- **`internal/selfupdate` → `acp-kit/selfupdate`.** `zulip-acp update` is
-  written with zero Zulip imports for exactly this reason: only `DefaultRepo`,
-  the asset stem and the restart hint name this relay, and all three are one
-  parameter away from generic. It is not promoted yet because promoting it
-  properly means migrating `poe-acp`'s own copy
-  (`poe-acp/internal/selfupdate`, the source of this port) in the same change
-  and giving `slack-acp` — which has no self-update at all — the wiring;
-  otherwise the family gains a third copy instead of losing one. Do that as
-  one cross-repo change, not as a drive-by: cut `acp-kit`, delete both
-  `internal/selfupdate` trees, keep each relay's wiring to a single `Main`
-  call. The GitHub-API-with-token path (needed while a repo is private) is the
-  part poe-acp's copy lacks and must not be lost in the merge.
+> **Done, v0.22.0 — and NOT into acp-kit.** `internal/selfupdate` is gone;
+> `zulip-acp update` is now `github.com/kfet/distkit`, a standalone
+> stdlib-only module, wired up by `internal/updater` (four strings: repo,
+> binary, asset stem, restart hint). The entry that stood here proposed
+> `acp-kit/selfupdate`; that was the wrong home, and the decision was
+> reversed rather than merely deferred. acp-kit is ACP-coupled — it carries
+> the ACP client, session state and prompt machinery — so `fir`, `harb` and
+> `mintick` could never
+> import it, and they have the same problem. A self-update module that only
+> the relays can use would have left the family with two shared
+> implementations instead of one. distkit depends on nothing but the
+> standard library, and it also owns the generated `install.sh` (see
+> `install.sh.json` and `make check-installsh`), which acp-kit had no
+> business owning either. The GitHub-API-with-token path this repo
+> contributed — the part poe-acp's copy lacked — is distkit's default and
+> only path. Remaining work is in the sibling repos, not here: `poe-acp`
+> still has its own `internal/selfupdate` to delete, and `slack-acp` still
+> has no self-update at all.
 
 - **`internal/rollover` → `acp-kit/chunker`.** The splitter is written with
   zero Zulip imports precisely so it can move. It is not promoted in v1: a

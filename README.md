@@ -33,11 +33,32 @@ shared in [`acp-kit`](https://github.com/kfet/acp-kit).
 brew install kfet/ai/zulip-acp
 ```
 
-or grab a binary from [releases](https://github.com/kfet/zulip-acp/releases), or:
+or, on a Linux host (Raspberry Pi included):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kfet/zulip-acp/main/install.sh \
+  | BIN_DIR=$HOME/.local/bin sh
+```
+
+`install.sh` resolves the release over the GitHub API, verifies the asset's
+sha256 against `checksums.txt`, and installs atomically. `BIN_DIR=` picks the
+destination — pass it: the default is `/usr/local/bin` when that is writable,
+while the systemd unit and `scripts/converge.sh` both expect
+`~/.local/bin/zulip-acp`. `VERSION=vX.Y.Z` pins a release, and `GITHUB_TOKEN=`
+raises GitHub's unauthenticated API rate limit (a shared NAT exhausts it
+quickly) — the repo itself is public, so no token is required. It is generated
+from
+[distkit](https://github.com/kfet/distkit)'s canonical template — do not edit
+it by hand; run `make install.sh`.
+
+Or grab a binary from [releases](https://github.com/kfet/zulip-acp/releases),
+or:
 
 ```bash
 go install github.com/kfet/zulip-acp/cmd/zulip-acp@latest
 ```
+
+Upgrades are never a hand-placed binary: `zulip-acp update` (below).
 
 ## Quick start
 
@@ -597,7 +618,7 @@ Without it, the mobile app only updates while it is open.
 Canonical layout (mirrors `poe-acp`):
 
 ```
-~/.local/bin/zulip-acp                    # binary (first install: make deploy /
+~/.local/bin/zulip-acp                    # binary (first install: install.sh /
                                           # brew; upgrades: zulip-acp update)
 ~/.config/zulip-acp/config.json           # see docs/config.example.json
 ~/.config/zulip-acp/env                   # ZULIP_API_KEY=...  (mode 0600)
@@ -619,12 +640,23 @@ zulip-acp update                 # verify sha256, swap the binary atomically
 systemctl --user reload zulip-acp   # drain in-flight turns, re-exec in place
 ```
 
-`zulip-acp update` resolves the release over the GitHub API (so it works while
-this repo is private, given `GITHUB_TOKEN`/`GH_TOKEN`/a logged-in `gh`),
+`zulip-acp update` resolves the release over the GitHub API — asset bytes
+included, which is what let it work while this repo was private and still
+works unauthenticated now (`GITHUB_TOKEN`/`GH_TOKEN`/a logged-in `gh` is used
+when present, and is worth having behind a shared IP for the rate limit) —
 verifies the asset against `checksums.txt`, and renames it over the running
-binary — the `ETXTBSY`-safe swap. `--check` reports without installing,
-`--version vX.Y.Z` pins, `--restart-cmd` recycles afterwards, and it refuses to
-touch a package-manager-managed install. **Never hand-place a binary.**
+binary — the `ETXTBSY`-safe swap. `--check` reports without installing and
+exits **3** when an update exists, `--version vX.Y.Z` pins, `--restart-cmd`
+recycles afterwards. A Homebrew install is handed to `brew upgrade` rather
+than swapped underneath the package manager; a package-manager prefix
+(`/usr/bin`, `/sbin`, the brew trees) is refused even when you are root, and
+an install directory you do not own is refused with the command to use
+instead. **Never hand-place a
+binary** — there is deliberately no `make deploy`.
+
+The whole mechanism is [distkit](https://github.com/kfet/distkit), shared with
+`fir`, `harb`, `mintick` and the sibling relays; `internal/updater` is just
+the four strings that name this binary.
 
 Hosts with a spec in `bots/` are converged instead, from `dist.lock`:
 

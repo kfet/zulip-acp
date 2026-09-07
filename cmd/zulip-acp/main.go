@@ -33,7 +33,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/reload"
-	"github.com/kfet/zulip-acp/internal/selfupdate"
+	"github.com/kfet/zulip-acp/internal/updater"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -47,7 +47,7 @@ func main() {
 	// hand-place a binary. Dispatched before flag parsing, like every
 	// other subcommand.
 	if len(os.Args) > 1 && os.Args[1] == "update" {
-		os.Exit(selfupdate.Main(os.Args[2:], version, selfupdate.Options{}))
+		os.Exit(updater.Main(os.Args[2:], version, os.Stdout, os.Stderr))
 	}
 
 	// The redirector subcommand must be intercepted before anything

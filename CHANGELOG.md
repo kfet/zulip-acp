@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A root `install.sh`, generated rather than written.** `curl … | sh` installs
+  the binary with the same asset naming and the same sha256 verification the
+  self-update uses. It is produced from `install.sh.json` and distkit's
+  canonical template (`make install.sh`); `make check-installsh` is part of
+  `make all` and fails the build when the checked-in copy has drifted, so a
+  stale installer is caught by a developer rather than by a user piping it into
+  a shell.
+
+### Changed
+
+- **`zulip-acp update` is now `github.com/kfet/distkit`.**
+  `internal/selfupdate` is deleted; `internal/updater` holds only the four
+  strings that name this binary (repo, binary, asset stem, restart hint). The
+  mechanism is unchanged where it was already right — GitHub REST API for the
+  release *and* the asset bytes with a discovered token (`GITHUB_TOKEN` →
+  `GH_TOKEN` → `gh auth token`), sha256 against `checksums.txt` hashed inline,
+  ETXTBSY-safe atomic rename of a sibling temp file — and gains what a single
+  relay's copy never had: a **Homebrew keg is upgraded through `brew upgrade`**
+  instead of refused (a self-updated keg is silently reverted by the next brew
+  upgrade), a **stall timeout** that abandons a download making no progress for
+  two minutes instead of wedging a systemd timer forever, an explicit refusal
+  of `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin` (the ownership check alone passes
+  them when run as root), a `sudo zulip-acp update` hint for a root-owned
+  install dir, and a refusal to update a **dev build** over a developer's own
+  binary. `update -check` now exits **3** when an update is available (0 = up
+  to date), so a fleet sweep can act on the exit code without parsing stdout.
+  The decision recorded in `BACKLOG.md` — promote this into `acp-kit` — was
+  reversed: acp-kit is ACP-coupled, so `fir`, `harb` and `mintick` could never
+  import it, and the family would have kept two implementations instead of one.
+
+### Fixed
+
+- **A spent GitHub rate limit no longer reads as a permissions failure.** The
+  unauthenticated API limit is per *IP address*, so a fleet behind one NAT
+  exhausts it between them and every host's `update` fails with a 403 that
+  looks like "you cannot read this repo". Fixed upstream in distkit v0.1.2 (a
+  403/429 without a token now names the rate limit, and `install.sh` — where
+  `set -e` used to abort on curl's bare `error: 22` before anything could be
+  explained — now says the same; distkit v0.1.3). The stale "while this repo
+  is private" advice in the README, both skills and `scripts/converge.sh` is
+  corrected with it: `kfet/zulip-acp` has been public since v0.12.1, so no
+  token is required for either install path.
+
+### Removed
+
+- **`make deploy`.** Cross-building and `scp`-ing a binary into `~/.local/bin`
+  is not how a host is updated: it skips the checksum, is not an atomic swap,
+  and leaves a version invisible to `dist.lock` so the next converge disagrees
+  with the host. The verbs are `zulip-acp update`, `scripts/converge.sh <bot>
+  --apply` for a host with a spec in `bots/`, and `install.sh` for a first
+  install. Stripped from the README, both skills and the fleet notes with it.
+
 ## [0.21.0] - 2026-09-07
 
 ### Added

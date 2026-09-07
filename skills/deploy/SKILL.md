@@ -23,7 +23,7 @@ conversations — you must restart the service to pick it up.
 
 ```
 ~/.local/bin/zulip-acp                        # binary, on PATH; first install from
-                                              # `make deploy`/brew, upgrades via
+                                              # install.sh/brew, upgrades via
                                               # `zulip-acp update` or converge
 ~/.config/zulip-acp/config.json               # site, bot_email, channels, agent_cmd, state_dir
 ~/.config/zulip-acp/env                        # ZULIP_API_KEY=...   (mode 0600)
@@ -55,24 +55,42 @@ poe-acp's multi-bot layout.
 
 ### 1. Ship the binary
 
-A **first** install is the one moment a binary is placed by hand — there is
-nothing on the host yet to update itself. From the repo, cross-build +
-arch-detect + scp to `~/.local/bin/zulip-acp`:
+A **first** install is the one moment there is nothing on the host yet to
+update itself. It is still not a hand-placed binary: `install.sh` resolves the
+release over the GitHub API, verifies its sha256 against `checksums.txt`, and
+installs it atomically — the same asset, the same verification, the same
+naming as `zulip-acp update`.
 
 ```bash
-make deploy HOST=<host>
+ssh <host> 'curl -fsSL https://raw.githubusercontent.com/kfet/zulip-acp/main/install.sh \
+              | BIN_DIR=$HOME/.local/bin sh'
 ```
 
-Or, once the repo is public and the tap carries it:
+**Pass `BIN_DIR` explicitly.** The script defaults to `/usr/local/bin` when
+that is writable, and everything else here — the unit's `ExecStart`, converge's
+path resolution, the update skill's version probe — is hard-wired to
+`~/.local/bin/zulip-acp`. `VERSION=vX.Y.Z` pins a release.
+
+On macOS, prefer the tap:
 
 ```bash
 ssh <host> 'brew install kfet/ai/zulip-acp'
 ```
 
-> **Private repo caveat:** while `kfet/zulip-acp` is private, `brew install`
-> 404s on the release asset (the tap is public but the asset is not). Use
-> `make deploy`, or `gh release download <tag> --repo kfet/zulip-acp`, for the
-> first install. Recorded in the repo BACKLOG.
+> **Rate limits, not permissions.** `kfet/zulip-acp` is public — both
+> `install.sh` and `brew install` work with no token. But GitHub's
+> *unauthenticated* API limit is per IP address, so a fleet behind one NAT can
+> exhaust it and get a **403 that reads like an auth failure**. With `gh`
+> logged in on the host, `$(gh auth token)` inside the single quotes expands
+> there:
+>
+> ```bash
+> ssh <host> 'curl -fsSL https://raw.githubusercontent.com/kfet/zulip-acp/main/install.sh \
+>               | GITHUB_TOKEN=$(gh auth token) BIN_DIR=$HOME/.local/bin sh'
+> ```
+>
+> With `gh` only on **your** machine, expand it locally and send it in:
+> `TOK=$(gh auth token); ssh <host> "curl -fsSL … | GITHUB_TOKEN=$TOK BIN_DIR=\$HOME/.local/bin sh"`.
 
 **Every subsequent upgrade is `zulip-acp update` on the host, or converge for
 a fleet host with a `bots/<name>.json` spec — never another hand-placed
