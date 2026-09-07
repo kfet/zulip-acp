@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `curl: (22) … 403`. Also picked up from distkit: a spent rate limit is
   reported as such rather than as a permissions failure, a failed release
   lookup explains itself instead of surfacing curl's bare exit 22, and
-  `installsh.Write` chmods an existing non-executable file.
+  `installsh.Write` chmods an existing non-executable file. README and the
+  update skill are corrected to match.
 - **`make install.sh` now depends on `go.mod`.** The template lives in distkit,
   so a version bump left make reporting "up to date" on an installer that
   `make check-installsh` then rejected.

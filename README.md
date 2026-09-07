@@ -40,14 +40,16 @@ curl -fsSL https://raw.githubusercontent.com/kfet/zulip-acp/main/install.sh \
   | BIN_DIR=$HOME/.local/bin sh
 ```
 
-`install.sh` resolves the release over the GitHub API, verifies the asset's
-sha256 against `checksums.txt`, and installs atomically. `BIN_DIR=` picks the
-destination — pass it: the default is `/usr/local/bin` when that is writable,
-while the systemd unit and `scripts/converge.sh` both expect
-`~/.local/bin/zulip-acp`. `VERSION=vX.Y.Z` pins a release, and `GITHUB_TOKEN=`
-raises GitHub's unauthenticated API rate limit (a shared NAT exhausts it
-quickly) — the repo itself is public, so no token is required. It is generated
-from
+`install.sh` verifies the asset's sha256 against `checksums.txt` and installs
+atomically. `BIN_DIR=` picks the destination — pass it: the default is
+`/usr/local/bin` when that is writable, while the systemd unit and
+`scripts/converge.sh` both expect `~/.local/bin/zulip-acp`. `VERSION=vX.Y.Z`
+pins a release. With no token the latest release is resolved from the
+`releases/latest` redirect, which spends **no** GitHub API quota — that matters
+because the unauthenticated REST limit is 60 requests/hour *per IP*, so a NAT'd
+fleet used to exhaust it partway through and leave every later host failing.
+`GITHUB_TOKEN=` is needed only for a private repo; this one is public. It is
+generated from
 [distkit](https://github.com/kfet/distkit)'s canonical template — do not edit
 it by hand; run `make install.sh`.
 

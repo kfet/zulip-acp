@@ -76,6 +76,12 @@ Use **restart** — a hard, destructive restart — only for:
                  | BIN_DIR=$HOME/.local/bin sh'
    ```
 
+   Sweeping the whole fleet this way is safe without a token: anonymous
+   `install.sh` resolves the version from the `releases/latest` redirect and
+   spends no GitHub API quota. Before distkit v0.1.4 it used the REST API,
+   whose unauthenticated limit is 60 requests/hour *per IP*, so hosts behind
+   one NAT exhausted it partway through the sweep and the rest died on a 403.
+
 There is no fourth option. A build that is not released yet is not a thing to
 ship to a host: **cut the release** and then `zulip-acp update`. A
 brew-managed install needs nothing special either — `zulip-acp update` detects
