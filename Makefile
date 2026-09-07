@@ -146,7 +146,10 @@ check-licenses:
 # is generated-and-verified. The check target is dev-only: it fails the build
 # when the checked-in copy has drifted from the template, so a stale
 # installer is caught here rather than by a user piping it into sh.
-install.sh: install.sh.json
+# The template itself lives in distkit, so the pinned version is a real
+# prerequisite: without go.mod here a distkit bump leaves make reporting
+# "up to date" on an install.sh that check-installsh then rejects.
+install.sh: install.sh.json go.mod
 	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@)
 
 check-installsh:

@@ -4,5 +4,5 @@ github.com/kfet/acp-kit v0.10.0 h1:39JkLPDfcT4nZiFJhKR7WA4Ei2YBPJcdt3C/LEPGpbY=
 github.com/kfet/acp-kit v0.10.0/go.mod h1:3o2kYL9t3coGVqP3FLQ0l8CKCtQHR7VIoy33LQwVwgM=
 github.com/kfet/covgate v0.1.2 h1:29q7vN+GJ8cJeXdDwohaqAT02cCZA4HlEkzjVq0MuAA=
 github.com/kfet/covgate v0.1.2/go.mod h1:M1BHQum2HvbavZoKfnIm8qBUjPDsOb0QLFtkF0OLzlM=
-github.com/kfet/distkit v0.1.3 h1:RLL6vH5G4iYxV2dfZ+sy+oc5Fi/X1GA99wi/upviYvg=
-github.com/kfet/distkit v0.1.3/go.mod h1:If052OZSCfi8X0bwThHutUPM5hBbN/WuD8e+zZPXsw8=
+github.com/kfet/distkit v0.1.4 h1:DQgsIYNEvWzkUTg9P6rDVTt/RuGrNn0TyBVEY0yUIkQ=
+github.com/kfet/distkit v0.1.4/go.mod h1:If052OZSCfi8X0bwThHutUPM5hBbN/WuD8e+zZPXsw8=
