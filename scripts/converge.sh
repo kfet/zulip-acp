@@ -405,14 +405,14 @@ install_binary() { # <binary-spec-path> <current-version> <want-version> <platfo
   fi
   os=${platform%%/*}; arch=${platform##*/}
   if rsh "command -v gh >/dev/null 2>&1"; then
-    note "fetching zulip-acp-$os-$arch v$want with gh (repo is private)"
+    note "fetching zulip-acp-$os-$arch v$want with gh (no self-update in $cur)"
     rsh "set -e; b=\"$b\"; t=\$(mktemp); \
          gh release download v$want --repo $ZULIP_ACP_REPO \
             --pattern 'zulip-acp-$os-$arch' --output \"\$t\" --clobber; \
          chmod +x \"\$t\"; [ -f \"\$b\" ] && cp -p \"\$b\" \"\$b.bak-$STAMP\"; mv \"\$t\" \"\$b\""
     return 0
   fi
-  die "no way to install v$want on $HOST: the installed binary (${cur:-missing}) predates \`zulip-acp update\` (>= $SELFUPDATE_MIN) and there is no \`gh\` on the host. Install gh, or copy one release binary over by hand ONCE and let it self-update from then on."
+  die "no way to install v$want on $HOST: the installed binary (${cur:-missing}) predates \`zulip-acp update\` (>= $SELFUPDATE_MIN) and there is no \`gh\` on the host. Install gh, or bootstrap once with install.sh (\`curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want sh\`) and let it self-update from then on."
 }
 
 # ---------------------------------------------------------------------------
@@ -694,8 +694,9 @@ latest_tag_git() { # <repo-url>
 }
 
 latest_tag_zulip_acp() {
-  # The repo is private, so an unauthenticated git ls-remote cannot see it.
-  # gh carries the token; fall back to git for a public future.
+  # gh first: it carries a token, and GitHub's unauthenticated API limit is
+  # per IP, so a NAT'd fleet exhausts it. Plain git ls-remote is the fallback
+  # (the repo is public), and it is also what runs when gh is absent.
   local tag=""
   if command -v gh >/dev/null 2>&1; then
     # Capture before stripping: a pipeline's status is the LAST command's,
@@ -726,7 +727,7 @@ tot() {
   new_za=$(latest_tag_zulip_acp)
   new_fir=$(latest_tag_git "$FIR_DIST_REPO")
   new_ext=$(head_rev "https://github.com/kfet/fir-exts")
-  [ -n "$new_za" ]  || die "could not resolve latest zulip-acp release (private repo: is gh logged in?)"
+  [ -n "$new_za" ]  || die "could not resolve latest zulip-acp release (rate-limited? is gh logged in?)"
   [ -n "$new_fir" ] || die "could not resolve latest fir-dist tag"
   [ -n "$new_ext" ] || die "could not resolve fir-exts HEAD"
 

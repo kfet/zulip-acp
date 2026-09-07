@@ -43,7 +43,7 @@ endif
 
 .PHONY: all _parallel build build-all install fmt tidy vet \
         test test-race-cover test-scripts test-cover open-coverage \
-        clean notices check-licenses publish deploy FORCE
+        clean notices check-licenses check-installsh publish FORCE
 
 # Used as a prereq to force pattern-rule recipes to run every invocation
 # (.PHONY would short-circuit pattern-rule matching for the target itself).
@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover test-scripts build build-all check-licenses
+_parallel: vet test-race-cover test-scripts build build-all check-licenses check-installsh
 
 fmt:
 	@gofmt -s -w .
@@ -139,7 +139,21 @@ check-licenses:
 	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/zulip-acp --disallowed_types=forbidden,restricted 2>/dev/null)
 
 # ---------------------------------------------------------------------------
-# Release / deploy
+# install.sh
+#
+# The root install.sh is GENERATED from distkit's canonical template plus
+# install.sh.json — shell cannot be imported, so the honest form of "shared"
+# is generated-and-verified. The check target is dev-only: it fails the build
+# when the checked-in copy has drifted from the template, so a stale
+# installer is caught here rather than by a user piping it into sh.
+install.sh: install.sh.json
+	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@)
+
+check-installsh:
+	$(call RUN,check install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -check)
+
+# ---------------------------------------------------------------------------
+# Release
 # ---------------------------------------------------------------------------
 
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
@@ -190,20 +204,9 @@ publish: build notices
 	git push --atomic origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
 
-# Cross-build, detect remote OS/arch via ssh, scp the matching binary.
-deploy: build-all
-	@if [ -z "$(HOST)" ]; then echo "Usage: make deploy HOST=<hostname>"; exit 1; fi
-	@INFO=$$(ssh -o ConnectTimeout=5 $(HOST) "uname -s -m") || { echo "Cannot reach $(HOST)"; exit 1; }; \
-	OS=$$(echo "$$INFO" | awk '{print $$1}'); \
-	ARCH=$$(echo "$$INFO" | awk '{print $$2}'); \
-	case "$$OS-$$ARCH" in \
-		Linux-aarch64|Linux-arm64)   BIN=$(BINARY)-linux-arm64 ;; \
-		Linux-armv6l|Linux-armv7l)   BIN=$(BINARY)-linux-armv6 ;; \
-		Linux-x86_64)                BIN=$(BINARY)-linux-amd64 ;; \
-		Darwin-arm64)                BIN=$(BINARY)-darwin-arm64 ;; \
-		Darwin-x86_64)               BIN=$(BINARY)-darwin-amd64 ;; \
-		*) echo "Unsupported platform: $$OS $$ARCH"; exit 1 ;; \
-	esac; \
-	echo "Deploying to $(HOST) ($$OS/$$ARCH → $$BIN)..."; \
-	scp -q $$BIN $(HOST):~/.local/bin/zulip-acp && \
-	ssh $(HOST) "chmod +x ~/.local/bin/zulip-acp && ~/.local/bin/zulip-acp --version"
+# There is deliberately NO `deploy` target. Hand-placing a binary over ssh
+# was how a host ended up running something nobody could name: no checksum,
+# no atomic swap, no record. The verbs are `zulip-acp update` (checksum-
+# verified, ETXTBSY-safe, in place) for a host that already runs the relay,
+# `scripts/converge.sh <bot> --apply` for a host with a spec in bots/, and
+# install.sh for a first install.

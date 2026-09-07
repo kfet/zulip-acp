@@ -1,0 +1,14 @@
+{
+  "repo": "kfet/zulip-acp",
+  "binary": "zulip-acp",
+  "brew_formula": "kfet/ai/zulip-acp",
+  "version_flag": "--version",
+  "example_tag": "v0.21.0",
+  "next_steps": [
+    "zulip-acp --print-paths                      # resolved config, state dir and agent command",
+    "install ~/.config/zulip-acp/config.json      # see docs/config.example.json",
+    "install ~/.config/zulip-acp/env  (mode 0600) # ZULIP_API_KEY=...",
+    "systemctl --user enable --now zulip-acp      # packaging/systemd/zulip-acp.service",
+    "upgrades are zulip-acp update, never a hand-placed binary"
+  ]
+}

@@ -65,16 +65,29 @@ Use **restart** — a hard, destructive restart — only for:
    resolves the release over the GitHub API, verifies the sha256 against
    `checksums.txt`, and swaps the file atomically underneath the running
    process. This is what converge itself runs on the host.
-3. **Fallbacks only when neither fits:** `make deploy HOST=<host>` from the
-   repo (a build that is not released yet), or `brew upgrade zulip-acp` for a
-   brew-managed install (`zulip-acp update` refuses to touch one and tells you
-   so).
+3. **Nothing installed yet → `install.sh`.** It places the first binary,
+   checksum-verified, with the same asset naming as the self-update; after
+   that the host updates itself. Pass `BIN_DIR` — the unit, converge and the
+   version probe all expect `~/.local/bin/zulip-acp`, while the script
+   defaults to `/usr/local/bin` when that is writable:
+
+   ```bash
+   ssh <host> 'curl -fsSL https://raw.githubusercontent.com/kfet/zulip-acp/main/install.sh \
+                 | BIN_DIR=$HOME/.local/bin sh'
+   ```
+
+There is no fourth option. A build that is not released yet is not a thing to
+ship to a host: **cut the release** and then `zulip-acp update`. A
+brew-managed install needs nothing special either — `zulip-acp update` detects
+the keg and runs `brew upgrade` for you.
 
 **Never hand-place a binary.** No `cp`/`mv` into `~/.local/bin`, no staged
-`.new` file, no `scp` of a locally built binary onto a fleet host. The atomic,
-`ETXTBSY`-safe swap lives *inside* the binary (`internal/selfupdate`) precisely
-so nobody has to reproduce it by hand — and a hand-placed binary is invisible
-to `dist.lock`, so the next converge silently disagrees with the host.
+`.new` file, no `scp` of a locally built binary onto a fleet host. There is
+deliberately no `make deploy` target for this reason. The atomic,
+`ETXTBSY`-safe swap lives *inside* the binary (`github.com/kfet/distkit`,
+wired up in `internal/updater`) precisely so nobody has to reproduce it by
+hand — and a hand-placed binary is invisible to `dist.lock`, so the next
+converge silently disagrees with the host.
 
 ## Inputs
 
@@ -145,34 +158,37 @@ ssh <host> 'zulip-acp update --restart-cmd "systemctl --user reload zulip-acp"'
 ssh <host> 'systemctl --user reload zulip-acp'       # if no --restart-cmd
 ```
 
-> **`kfet/zulip-acp` is private**, so the plain release-download URL and
-> `brew install` both 404 on the asset. `zulip-acp update` goes through the
-> GitHub **API**, which serves a private asset to a token: it uses
-> `GITHUB_TOKEN`, `GH_TOKEN`, or a logged-in `gh` on the host, in that order.
-> If it reports a 404 with a token hint, run `gh auth login` on that host.
+> **Everything goes through the GitHub API**, asset bytes included. That is
+> what made this work while `kfet/zulip-acp` was private, and it is unchanged
+> now that the repo is public: a token (`GITHUB_TOKEN`, `GH_TOKEN`, then a
+> logged-in `gh`, in that order) is used when present and is not required.
+> Keep `gh` logged in on a host behind a shared IP anyway — the
+> **unauthenticated API rate limit** is per-address, and a 403 from a sweep of
+> hosts looks exactly like a permissions failure.
 
-`zulip-acp update` refuses a Homebrew install (`/opt/homebrew`, `…/Cellar`,
-linuxbrew) with a `brew upgrade zulip-acp` hint, and refuses any install
-directory not owned by you (a distro package, `/usr/bin`, a shared `/opt`
-tree) — it would have to write there to swap the file. Both refusals are
-deliberate: use the package manager that owns the install, or put the binary
-under your own home. Do not work around it by hand.
+`zulip-acp update` handles a **Homebrew** install by upgrading it through brew
+(`brew update && brew upgrade <formula>`) rather than swapping the keg
+underneath the package manager — a self-updated keg is silently reverted by
+the next `brew upgrade`, leaving a host that reports one version and runs
+another. It **refuses** an install directory not owned by you (a distro
+package, `/usr/bin`, a shared `/opt` tree): it would have to write there to
+swap the file. The refusal is deliberate and names the command to use
+instead — a root-owned `/usr/local/bin` says `sudo zulip-acp update`. Do not
+work around it by hand.
 
-**Unreleased build (hotfix from a working tree):**
-```bash
-make deploy HOST=<host>                      # scp new binary to ~/.local/bin/zulip-acp
-ssh <host> 'systemctl --user reload zulip-acp'
-```
+`--check` exits **3** when a newer release exists, 0 when up to date, so a
+sweep across hosts can act on the exit code without parsing stdout.
 
-Build from a **clean tree at the tag**. A stale `bin/` from before the release
-commit yields a `-dev+…dirty` binary that installs happily and reports the
-wrong version. Prefer cutting a release and using `zulip-acp update`.
+**Unreleased build (hotfix from a working tree):** there is no supported path
+for this, and no `make deploy` — cut the release (see the release flow), then
+`zulip-acp update`. A binary built from a working tree reports
+`X.Y.Z-dev+<sha>.dirty`, is invisible to `dist.lock`, and the next converge
+silently disagrees with the host.
 
-**Brew-managed (once the repo is public):**
-```bash
-ssh <host> 'brew update && brew upgrade zulip-acp'
-ssh <host> 'systemctl --user reload zulip-acp'
-```
+**Brew-managed host:** the verb is still `zulip-acp update`. It detects the keg
+and runs `brew update && brew upgrade kfet/ai/zulip-acp` itself — the
+fully-qualified formula out of the keg's install receipt, so a same-named
+formula from another tap cannot bind. Recycle afterwards as usual.
 
 `daemon-reload` is only needed when the **unit file itself** changed, and that
 is one of the cases that needs a hard restart:
