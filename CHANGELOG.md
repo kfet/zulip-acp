@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tagged tree now carries current `THIRD_PARTY_NOTICES.md`.** `make
+  publish` used to regenerate and commit the notices *after* the release commit
+  was tagged, so whenever the dependency set changed the tag and the uploaded
+  release asset both carried the previous revision — main alone ended up
+  correct. Regeneration now happens in `make all`, before the release commit is
+  created, and `publish` only verifies: it refuses to push when the notices are
+  stale in `HEAD` or when the release tag does not point at `HEAD`, printing the
+  amend-and-re-tag recipe. A no-op regeneration commits nothing, because publish
+  no longer commits at all. Notices regeneration is unconditional rather than
+  keyed on `go.mod` mtimes, `make clean` no longer deletes the checked-in file,
+  and `release.yml` fails the release when `make all` leaves the tagged tree
+  dirty. `make publish` additionally refuses a dirty working tree, so what is
+  pushed is always the tree that was verified.
+
 ## [0.22.1] - 2026-09-07
 
 ### Fixed

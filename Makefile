@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover test-scripts build build-all check-licenses check-installsh
+_parallel: vet test-race-cover test-scripts build build-all notices check-licenses check-installsh
 
 fmt:
 	@gofmt -s -w .
@@ -124,15 +124,22 @@ open-coverage:
 
 clean:
 	rm -rf $(BINDIR) dist
-	rm -f $(NOTICE_FILE)
 
 # ---------------------------------------------------------------------------
 # Third-party license notices
 # ---------------------------------------------------------------------------
 
-notices: $(NOTICE_FILE)
-
-$(NOTICE_FILE): go.mod go.sum
+# `make all` regenerates the notices, so a dependency change lands in the
+# working tree BEFORE the release commit is created — the release commit
+# therefore carries correct notices and so does the tag it gets. `publish`
+# only VERIFIES; it must never commit, because by the time it runs the tag
+# already exists and anything it commits is outside the tagged tree.
+#
+# Regeneration is unconditional rather than mtime-driven: a fresh clone or a
+# CI checkout gives every file the same timestamp, so a file rule keyed on
+# go.mod/go.sum can report "up to date" over notices that are stale for the
+# tree being released. It costs ~2s and runs in parallel with the builds.
+notices:
 	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/zulip-acp > $(NOTICE_FILE) 2>/dev/null)
 
 check-licenses:
@@ -162,8 +169,36 @@ check-installsh:
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
 
 publish: build notices
-	@if ! git diff --quiet -- $(NOTICE_FILE); then \
-		git add $(NOTICE_FILE) && git commit -m "chore: refresh THIRD_PARTY_NOTICES.md for $(RELEASE_TAG)"; \
+	@echo "Verifying $(NOTICE_FILE) is current and in the release commit..."
+	@if ! git diff --quiet HEAD -- $(NOTICE_FILE); then \
+		echo "ABORT: $(NOTICE_FILE) is stale in the release commit."; \
+		echo "The dependency set changed, so the tagged tree would carry the"; \
+		echo "previous revision of the notices. The refreshed file is now in"; \
+		echo "your working tree; fold it into the release commit and re-tag:"; \
+		echo "  git add $(NOTICE_FILE)"; \
+		echo "  GIT_EDITOR=true git commit --amend --no-edit"; \
+		echo "  git tag -f -a $(RELEASE_TAG) -m 'release: $(RELEASE_TAG)'"; \
+		echo "  make publish"; \
+		exit 1; \
+	fi; \
+	echo "  $(NOTICE_FILE) matches HEAD - OK"
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "ABORT: working tree is dirty; the tagged tree is not what you have."; \
+		git status --short; \
+		exit 1; \
+	fi
+	@TAGGED=$$(git rev-parse -q --verify refs/tags/$(RELEASE_TAG)^{commit}); \
+	if [ -z "$$TAGGED" ]; then \
+		echo "ABORT: local tag $(RELEASE_TAG) does not exist; cut the release first."; \
+		exit 1; \
+	fi; \
+	if [ "$$TAGGED" != "$$(git rev-parse HEAD)" ]; then \
+		echo "ABORT: $(RELEASE_TAG) does not point at HEAD."; \
+		echo "  tag:  $$TAGGED"; \
+		echo "  HEAD: $$(git rev-parse HEAD)"; \
+		echo "The tagged tree is not the tree that was verified. Re-tag:"; \
+		echo "  git tag -f -a $(RELEASE_TAG) -m 'release: $(RELEASE_TAG)'"; \
+		exit 1; \
 	fi
 	@echo "Preflight $(RELEASE_TAG)..."
 	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
