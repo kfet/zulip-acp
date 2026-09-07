@@ -79,7 +79,9 @@ install.sh              GENERATED from distkit's template + install.sh.json;
                         fails the build when the checked-in copy has drifted
 scripts/converge.sh     the ONLY sanctioned way to change a fleet host
 test/                   live-server integration tests (ZULIP_LIVE=1);
-                        converge_render.sh = offline tests for converge.sh
+                        converge_render.sh = offline tests for converge.sh;
+                        installsh_guard.sh = offline tests for the generated
+                        install.sh's VERSION guard
 ```
 
 ## Updating a host

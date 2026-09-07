@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`test/installsh_guard.sh`** — offline tests that run the checked-in
+  `install.sh` with traversing, whitespace-bearing and shell-metacharacter
+  `VERSION` values and assert each is refused before any download, while real
+  tags (including prereleases and `+build` metadata) still pass. `make
+  check-installsh` proves the file matches its generator; this proves the
+  generator still emits the guard, so a downgrade of the `distkit` pin fails
+  the build rather than the fleet. Wired into `make test-scripts`.
+
 ### Fixed
 
-- **`install.sh` refused a `VERSION` that walks out of this repo.** Security
+- **`install.sh` now refuses a `VERSION` that walks out of this repo.** Security
   fix, from `distkit` v0.1.6: the release tag was pasted into two URL paths
   with no validation, so `VERSION=../../other/repo/releases/download/v1`
   installed another project's binary — and since `checksums.txt` came from
