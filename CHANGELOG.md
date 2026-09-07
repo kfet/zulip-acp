@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install.sh` refused a `VERSION` that walks out of this repo.** Security
+  fix, from `distkit` v0.1.6: the release tag was pasted into two URL paths
+  with no validation, so `VERSION=../../other/repo/releases/download/v1`
+  installed another project's binary — and since `checksums.txt` came from
+  that same traversed location it verified against itself and printed
+  "checksum ok". The generated installer now rejects anything but
+  `[A-Za-z0-9._+-]+` up front, before any download, and the `releases/latest`
+  redirect parse captures the whole tag rather than the last path segment so a
+  tag containing a slash cannot be silently truncated into a different real
+  tag.
+- **`zulip-acp update` no longer spends GitHub API quota when anonymous.**
+  From `distkit` v0.1.5: v0.1.4 fixed only the shell half, so on a NAT'd fleet
+  (60 requests/hour per IP) the Go path failed with a 403 that read like a
+  permissions error on a public repo. A pinned tag needs no lookup, `latest`
+  comes from the `releases/latest` redirect, and assets are named under
+  `/releases/download/<tag>/`. Checksums are still verified and the
+  private-repo token path is unchanged.
+- **`update` on a developer's own build is refused again.** From `distkit`
+  v0.1.7: the dev-build guard matched only bare placeholders (`dev`,
+  `(devel)`), so a working tree compiled as `<tag>-dev` sailed past it and had
+  a release binary renamed over it. Prerelease tags (`-rc1`, `-beta.2`) are
+  real releases and still update.
+
 ## [0.22.2] - 2026-09-07
 
 ### Fixed
