@@ -254,6 +254,27 @@ func (z *fakeZulip) moved() []string {
 	return append([]string(nil), z.moves...)
 }
 
+// MoveMessageToChannel models the cross-channel move the archive
+// control makes. Recorded in the same list as a topic move, with the
+// destination channel in place of the topic, so a test can assert the
+// ORDER of a move against everything else the relay did.
+func (z *fakeZulip) MoveMessageToChannel(_ context.Context, id, streamID int64, topic, mode string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.moveHook != nil {
+		z.moveHook()
+	}
+	if z.moveErr != nil {
+		return z.moveErr
+	}
+	z.moves = append(z.moves, fmt.Sprintf("%d:->%d:%s:%s", id, streamID, topic, mode))
+	if m, ok := z.messages[id]; ok {
+		m.StreamID = streamID
+		z.messages[id] = m
+	}
+	return nil
+}
+
 func (z *fakeZulip) DeleteMessage(_ context.Context, id int64) error {
 	z.mu.Lock()
 	defer z.mu.Unlock()
@@ -603,6 +624,15 @@ type harness struct {
 	// burst at the instant its turn is claimed.
 	timer   chan time.Time
 	batches chan int
+	// atimer is the archive-confirmation expiry, fired by hand like
+	// timer. It is a SEPARATE channel because both waits go through
+	// Config.After: sharing one would let a reaction flush consume the
+	// archive's expiry, or the other way round, and the test would
+	// hang on whichever lost.
+	atimer chan time.Time
+	// expired carries the conv-id of each armed archive confirmation
+	// that lapsed. Set by archiveHarness; nil elsewhere.
+	expired chan string
 }
 
 // breakJournal makes every subsequent journal write fail, by removing
@@ -626,7 +656,7 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 		t.Fatalf("journal: %v", err)
 	}
 	hh := &harness{z: z, a: agent, s: sess, j: j, jdir: jdir,
-		timer: make(chan time.Time), batches: make(chan int, 16)}
+		timer: make(chan time.Time), atimer: make(chan time.Time), batches: make(chan int, 16)}
 	cfg := Config{
 		Client:         z,
 		Agent:          agent,
@@ -638,7 +668,12 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 		EditInterval:   time.Millisecond,
 		SilentSentinel: "<<SILENT>>",
 		RepostOnClose:  true,
-		After:          func(time.Duration) <-chan time.Time { return hh.timer },
+		After: func(d time.Duration) <-chan time.Time {
+			if d == archiveConfirmTTL {
+				return hh.atimer
+			}
+			return hh.timer
+		},
 		OnReactionBatch: func(_ string, n int) {
 			select {
 			case hh.batches <- n:
@@ -1407,7 +1442,7 @@ func TestRenameJournalErrorIsLogged(t *testing.T) {
 		Type: zulipproto.EventUpdateMessage, StreamID: 4,
 		OrigTopic: "topic", Topic: "renamed",
 	})
-	if !hh.logged("topic rename") {
+	if !hh.logged("topic move") {
 		t.Fatalf("expected a rename-failure log, got %v", hh.logs)
 	}
 }

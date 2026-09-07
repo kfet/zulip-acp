@@ -99,6 +99,45 @@ Editing is identical for both: `PATCH /messages/<id>` does not care how the
 message was addressed. `MAX_MESSAGE_LENGTH` and its silent truncation apply to
 DMs exactly as to channel messages.
 
+### Moving a topic to another channel
+
+A channel move is a message edit carrying `stream_id`:
+
+```bash
+curl -u ... -X PATCH https://zulip.example/api/v1/messages/42 \
+  -d stream_id=12 -d propagate_mode=change_all \
+  -d send_notification_to_old_thread=false \
+  -d send_notification_to_new_thread=false
+```
+
+`content` and `stream_id` are **mutually exclusive** — the server rejects a
+request carrying both — so a move can never change a body. `propagate_mode`
+selects how much travels: `change_one`, `change_later`, `change_all`.
+
+Suppress `send_notification_to_old_thread` when you move a whole topic: the
+source topic is *empty* afterwards, so the Notification Bot notice recreates it
+as a fresh one-message topic — the precise thing a topic archive was trying to
+get rid of.
+
+Permission is a realm policy, `can_move_messages_between_channels_group`
+(Zulip 10.0 / feature level 310, replacing `move_messages_between_streams_policy`).
+It is a **group-setting value**: either a group id, or an anonymous
+`{"direct_members":[…],"direct_subgroups":[…]}` object. Non-admins cannot
+`GET /realm`, so the only way to read it is `POST /register` with
+`fetch_event_types=["realm"]`, which returns it as
+`realm_can_move_messages_between_channels_group` (and creates a throwaway queue
+to delete). Membership is then
+`GET /user_groups/{group_id}/members/{user_id}?direct_member_only=false` →
+`is_user_group_member`.
+
+**⚠️ Querying a BOT's group membership needs Zulip 12.0 (feature level 458).**
+Older servers refuse, so a relay checking its own permission must treat "cannot
+tell" as "no" rather than guessing.
+
+The age limit `move_messages_between_streams_limit_seconds` applies separately
+and cannot be settled in advance: an old topic fails with
+`MOVE_MESSAGES_TIME_LIMIT_EXCEEDED` at the time.
+
 ### ⚠️ Trap: `display_recipient` is polymorphic
 
 The same field is a JSON **string** (the channel name) on a channel message and
@@ -369,6 +408,21 @@ A topic rename arrives as `update_message`:
 
 `orig_subject` → `subject` is the pair that keeps a renamed topic from orphaning
 its session.
+
+A move to **another channel** is the same event with `new_stream_id` alongside
+`stream_id` (which always carries the *original* channel). The topic pair may be
+absent on one side, because a channel move need not rename anything:
+
+```json
+{"id":4,"type":"update_message","message_id":33,"stream_id":4,
+ "new_stream_id":12,"orig_subject":"the topic","subject":"the topic",
+ "propagate_mode":"change_all"}
+```
+
+That is the same event a rename produces, which is why a relay that migrates a
+conversation on `update_message` must check the destination before following it:
+a topic moved out of the served set has to end the conversation, not carry it
+somewhere the allowlist refuses.
 
 ### ⚠️ Trap: system bots post into your topics
 

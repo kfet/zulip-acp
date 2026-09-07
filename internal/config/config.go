@@ -41,6 +41,12 @@ const (
 	// channel the bot is subscribed to, as that changes". It may stand
 	// alone or sit alongside explicit names and ids.
 	ChannelSentinel = "*"
+	// DefaultArchiveChannel is where `!archive` (and the :wastebasket:
+	// reaction) moves a topic when archive_channel is unset. The
+	// feature stays off unless a channel of this name actually exists
+	// and the bot may move messages into it — see
+	// Config.GetArchiveChannel.
+	DefaultArchiveChannel = "archive"
 )
 
 // Config is the operator-facing JSON config.
@@ -170,6 +176,27 @@ type Config struct {
 	// Set it to false if you do not want a stray :+1: to cost a turn
 	// at all.
 	Reactions *bool `json:"reactions,omitempty"`
+
+	// ArchiveChannel names the channel a topic is MOVED to when
+	// somebody archives it — by reacting :wastebasket: to the relay's
+	// last message, or by typing `!archive`.
+	//
+	// Unset = DefaultArchiveChannel ("archive"); an explicit "" turns
+	// the feature off. It is a pointer so those two cases stay
+	// distinguishable, exactly like AckEmoji.
+	//
+	// The destination MUST be a channel the relay does not serve. That
+	// is what makes an archive final: an unserved channel is outside
+	// the allowlist by construction, so the topic cannot re-engage the
+	// relay, and recovery is one move back. The relay checks this at
+	// startup — along with whether the channel exists and whether realm
+	// policy lets the bot move messages between channels — and disables
+	// the feature with a log line if any of it does not hold, rather
+	// than failing at the moment someone taps the emoji.
+	//
+	// Nothing is deleted: the topic and its messages travel intact, and
+	// the conversation's state/convs/<id>/ directory stays on disk.
+	ArchiveChannel *string `json:"archive_channel,omitempty"`
 
 	// RelayMCP enables the agent→relay loopback: the relay hosts an
 	// MCP server on a private unix socket and advertises it to the
@@ -366,6 +393,44 @@ func (c *Config) GetRepostOnClose() bool {
 // agent. Unset means true.
 func (c *Config) GetReactions() bool {
 	return c.Reactions == nil || *c.Reactions
+}
+
+// GetArchiveChannel returns the archive destination channel name: the
+// default when unset, or the configured value — including "" for
+// "archiving is disabled".
+func (c *Config) GetArchiveChannel() string {
+	if c.ArchiveChannel == nil {
+		return DefaultArchiveChannel
+	}
+	return strings.TrimSpace(*c.ArchiveChannel)
+}
+
+// ResolveArchiveChannel maps the configured archive channel onto a
+// Zulip channel, using the same name-or-id rules as ResolveChannels.
+//
+// It returns ok=false when archiving is disabled or the channel is not
+// visible to the bot. That is NOT an error: a missing archive channel
+// disables one convenience control, and refusing to start the relay
+// over it would be wildly out of proportion. The caller logs why.
+func (c *Config) ResolveArchiveChannel(available []zulipproto.Stream) (zulipproto.Stream, bool) {
+	want := c.GetArchiveChannel()
+	if want == "" {
+		return zulipproto.Stream{}, false
+	}
+	if id, err := strconv.ParseInt(want, 10, 64); err == nil {
+		for _, s := range available {
+			if s.StreamID == id {
+				return s, true
+			}
+		}
+		return zulipproto.Stream{}, false
+	}
+	for _, s := range available {
+		if s.Name == want {
+			return s, true
+		}
+	}
+	return zulipproto.Stream{}, false
 }
 
 // GetAgentCmd returns the configured agent argv or the default.

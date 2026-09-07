@@ -290,9 +290,29 @@ func (j *Journal) Ensure(k Key) (Conv, error) {
 // case the existing one wins and the stale alias is dropped. The topic
 // is truth: two conv-ids must never share a key.
 func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool, error) {
+	return j.Move(streamID, oldTopic, streamID, newTopic)
+}
+
+// Move is Rename generalised to a change of CHANNEL as well as topic,
+// which is what Zulip delivers when a topic is moved to another
+// channel: one update_message event carrying the old channel, the new
+// channel and both topics.
+//
+// It is the same migration in every other respect — the conv-id, its
+// ACP session and its working directory follow the conversation — and
+// the same two refusals apply: an unknown source is nothing to move,
+// and a destination that already has a conversation keeps it, because
+// two conv-ids must never answer to one key.
+//
+// Whether a moved-to channel is one the relay SERVES is not a question
+// for the journal; the caller decides that before calling (see
+// handler.handleUpdate, which retires rather than follows a
+// conversation out of the served set).
+func (j *Journal) Move(oldStreamID int64, oldTopic string, newStreamID int64, newTopic string) (Conv, bool, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	oldKey, newKey := Channel(streamID, oldTopic).index(), Channel(streamID, newTopic).index()
+	oldK, newK := Channel(oldStreamID, oldTopic), Channel(newStreamID, newTopic)
+	oldKey, newKey := oldK.index(), newK.index()
 	if oldKey == newKey {
 		return Conv{}, false, nil
 	}
@@ -302,9 +322,9 @@ func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool,
 	}
 	delete(j.byKey, oldKey)
 	if existing, clash := j.byKey[newKey]; clash {
-		// The destination topic already has a conversation. Keep it,
-		// and let the migrated one become unreachable rather than
-		// leaving two conv-ids answering to the same topic.
+		// The destination already has a conversation. Keep it, and let
+		// the migrated one become unreachable rather than leaving two
+		// conv-ids answering to the same key.
 		delete(j.byID, c.ID)
 		out := *existing
 		return out, false, j.commit(func() {
@@ -312,12 +332,12 @@ func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool,
 			j.byKey[oldKey] = c
 		})
 	}
-	c.Topic = newTopic
+	c.StreamID, c.Topic = newStreamID, newTopic
 	j.byKey[newKey] = c
 	out := *c
 	return out, true, j.commit(func() {
 		delete(j.byKey, newKey)
-		c.Topic = oldTopic
+		c.StreamID, c.Topic = oldStreamID, oldTopic
 		j.byKey[oldKey] = c
 	})
 }

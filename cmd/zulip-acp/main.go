@@ -321,6 +321,14 @@ func main() {
 		log.Fatalf("journal: %v", err)
 	}
 
+	// The archive control is resolved HERE, at startup, and left off
+	// unless every precondition holds: the channel exists, the relay
+	// does not serve it, and realm policy lets this bot move messages
+	// between channels. Discovering any of that at the moment somebody
+	// taps :wastebasket: would mean a warning posted for an action the
+	// relay cannot perform.
+	archiveID, archiveName := resolveArchive(ctx, cfg, zc, streams, served, me.UserID)
+
 	// Teardown is explicit rather than purely deferred: a graceful
 	// reload ends in syscall.Exec, which replaces the process image and
 	// runs no deferred functions. Everything that owns a child process
@@ -442,7 +450,16 @@ func main() {
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Reactions:          cfg.GetReactions(),
-		Logf:               log.Printf,
+		ArchiveStreamID:    archiveID,
+		ArchiveChannel:     archiveName,
+		// The reaction seam, wired to the archive control. Capturing h
+		// is the same trick the loopback uses: it is assigned below,
+		// before any event can arrive. ArchiveReaction is inert when
+		// the control is disabled, so this needs no condition.
+		ReactionTrigger: func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
+			return h.ArchiveReaction(ctx, conv, ev, m)
+		},
+		Logf: log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("handler: %v", err)

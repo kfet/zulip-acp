@@ -113,6 +113,11 @@ type Poster interface {
 	// it, to lift a general-chat message into a topic of its own; it
 	// may be refused by realm policy, so the caller degrades.
 	MoveMessage(ctx context.Context, id int64, topic, propagateMode string) error
+	// MoveMessageToChannel moves a message — with change_all, a whole
+	// topic — to ANOTHER channel. Only the archive control uses it,
+	// and only after startup has established that realm policy allows
+	// it; see archive.go.
+	MoveMessageToChannel(ctx context.Context, id, streamID int64, topic, propagateMode string) error
 	// DeleteMessage removes a message the bot posted. Used to retire a
 	// superseded `!opts` panel, which cannot be edited when it carries
 	// a widget, and to retract the placeholder-seeded streaming chain
@@ -201,10 +206,24 @@ type Config struct {
 	// consumed it — i.e. whether the relay itself acted on the
 	// reaction instead of handing it to the agent.
 	//
-	// Nil in production today. It is the seam for the planned
-	// react-to-archive control: that is a RELAY action, not an agent
-	// turn, so it belongs here rather than in a prompt.
+	// In production this is Handler.ArchiveReaction (see archive.go):
+	// archiving a topic is a RELAY action, not an agent turn, and a
+	// destructive control must never depend on the model choosing to
+	// call a tool.
 	ReactionTrigger func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool
+
+	// ArchiveStreamID and ArchiveChannel are the destination of the
+	// archive control: the channel a topic is MOVED to when someone
+	// reacts :wastebasket: to the relay's last message or types
+	// `!archive`. Zero disables the whole control.
+	//
+	// The destination must be a channel this relay does NOT serve —
+	// that is what makes an archived topic unable to re-engage it —
+	// and the bot must be permitted by realm policy to move messages
+	// between channels. Both are established at startup (see
+	// cmd/zulip-acp), so nothing here has to discover them mid-action.
+	ArchiveStreamID int64
+	ArchiveChannel  string
 
 	// After is the timer the reaction debounce waits on. Defaults to
 	// time.After.
@@ -285,6 +304,16 @@ type Config struct {
 	// own TempDir cleanup. Nil in production.
 	OnTurnEnd func(convID string)
 
+	// OnArchiveExpired, if set, is called after an armed archive
+	// confirmation has lapsed and been forgotten.
+	//
+	// Like the other On* hooks it exists so the test suite can prove
+	// the behaviour without racing a timer: the expiry is observable
+	// only as an absence, and asserting on an absence with a sleep is
+	// exactly the flaky test AGENTS.md forbids. Nil in production; it
+	// must only signal.
+	OnArchiveExpired func(convID string)
+
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
 }
@@ -347,6 +376,22 @@ type Handler struct {
 	badMsgs   *msgIndex
 	userNames *msgIndex
 
+	// lastOwn is the NEWEST message the relay has posted in each
+	// conversation. The archive control needs more than "this message
+	// is ours" (ownMsgs): reacting to an old answer from last week
+	// must not arm anything, so the gesture is defined on the last
+	// message and nothing else. One int per conversation, written
+	// wherever ownMsgs is — see rememberOwn.
+	lastOwnMu sync.Mutex
+	lastOwn   map[string]int64
+
+	// archivePending holds each conversation's armed archive
+	// confirmation. An entry exists only between the warning being
+	// posted and the confirmation, the expiry, or the end of the
+	// conversation — see archive.go.
+	archiveMu      sync.Mutex
+	archivePending map[string]*pendingArchive
+
 	// lookupMu, lookupStart, lookupCount and lookupWarned are the token
 	// bucket in front of the reaction path's GET /messages/{id}.
 	lookupMu     sync.Mutex
@@ -382,15 +427,17 @@ func New(cfg Config) (*Handler, error) {
 		cfg.Now = time.Now
 	}
 	h := &Handler{
-		cfg:          cfg,
-		inflight:     map[string]*inflightEntry{},
-		modelChoices: map[string]modelChoice{},
-		dmNames:      map[string][]string{},
-		ownMsgs:      newMsgIndex(reactionIndexSize),
-		badMsgs:      newMsgIndex(reactionIndexSize),
-		userNames:    newMsgIndex(reactionIndexSize),
-		reactPending: map[string]*reactionBatch{},
-		lookupStart:  cfg.Now(),
+		cfg:            cfg,
+		inflight:       map[string]*inflightEntry{},
+		modelChoices:   map[string]modelChoice{},
+		dmNames:        map[string][]string{},
+		ownMsgs:        newMsgIndex(reactionIndexSize),
+		badMsgs:        newMsgIndex(reactionIndexSize),
+		userNames:      newMsgIndex(reactionIndexSize),
+		lastOwn:        map[string]int64{},
+		archivePending: map[string]*pendingArchive{},
+		reactPending:   map[string]*reactionBatch{},
+		lookupStart:    cfg.Now(),
 	}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
 	// Wiring the Controller here rather than in the caller keeps the
@@ -417,38 +464,109 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 	}
 }
 
-// handleUpdate migrates a conversation when its topic is renamed.
-// Missing this costs a spurious duplicate session: the same agent
+// handleUpdate migrates a conversation when its topic moves, and ENDS
+// one when the topic leaves the served set.
+//
+// Missing the first costs a spurious duplicate session: the same agent
 // session would keep running under the old name while a fresh one was
 // created under the new one.
 //
+// The second is the cross-channel case, which arrives as the same
+// event carrying a new_stream_id. A conversation must never follow its
+// topic into a channel the relay does not serve: the session would go
+// on living, addressable by a key the allowlist refuses, and every
+// message in it would be dropped — a ghost. So it is retired, exactly
+// as `!new` retires one, and the state directory is left on disk.
+//
 // There is no DM analogue and this path must never touch one: a direct
 // message has no topic to rename, and its conv key lives in a disjoint
-// namespace, so Journal.Rename could not match one even if it were
+// namespace, so Journal.Move could not match one even if it were
 // called. The StreamID guard below makes that explicit rather than
 // incidental — Zulip sends no stream id on a DM update event.
 func (h *Handler) handleUpdate(ev zulipproto.Event) {
-	if ev.OrigTopic == "" || ev.Topic == "" || ev.OrigTopic == ev.Topic {
-		return
-	}
 	if ev.StreamID == 0 {
 		return
 	}
-	// A rename in a channel that has since left the served set is
+	moved := ev.NewStreamID != 0 && ev.NewStreamID != ev.StreamID
+	// A pure content edit carries no topic pair and moves nothing.
+	if !moved && (ev.OrigTopic == "" || ev.Topic == "" || ev.OrigTopic == ev.Topic) {
+		return
+	}
+	// A channel move need not rename anything, in which case Zulip
+	// sends the topic on one side only. The conversation is identified
+	// by where it WAS, so a missing half is filled from the other.
+	oldTopic, newTopic := ev.OrigTopic, ev.Topic
+	if oldTopic == "" {
+		oldTopic = newTopic
+	}
+	if newTopic == "" {
+		newTopic = oldTopic
+	}
+	if oldTopic == "" {
+		return
+	}
+	// A move in a channel that has since left the served set is
 	// dropped. The topic is truth and the journal is a cache, so the
 	// worst case is a stale entry the next message in the new topic
 	// supersedes.
 	if _, ok := h.cfg.Channels.Name(ev.StreamID); !ok {
 		return
 	}
-	c, moved, err := h.cfg.Journal.Rename(ev.StreamID, ev.OrigTopic, ev.Topic)
+	dest := ev.StreamID
+	if moved {
+		name, served := h.cfg.Channels.Name(ev.NewStreamID)
+		if !served {
+			h.retireMoved(journal.Channel(ev.StreamID, oldTopic), ev.NewStreamID)
+			return
+		}
+		h.cfg.Logf("handler: topic %q moved to #%s, which is also served", oldTopic, name)
+		dest = ev.NewStreamID
+	}
+	c, migrated, err := h.cfg.Journal.Move(ev.StreamID, oldTopic, dest, newTopic)
 	if err != nil {
-		h.cfg.Logf("handler: topic rename %q → %q: %v", ev.OrigTopic, ev.Topic, err)
+		h.cfg.Logf("handler: topic move %q → %q: %v", oldTopic, newTopic, err)
 		return
 	}
-	if moved {
-		h.cfg.Logf("handler: topic renamed %q → %q, session %s follows it", ev.OrigTopic, ev.Topic, c.ID)
+	if migrated {
+		h.cfg.Logf("handler: topic moved %q → %q, session %s follows it", oldTopic, newTopic, c.ID)
 	}
+}
+
+// retireMoved ends the conversation whose topic has just left the
+// served set — which is what the archive control does deliberately, and
+// what a human moving a topic to some other channel does incidentally.
+//
+// Nothing on disk is deleted: Retire keeps the old conv-id and its
+// state/convs/<id>/ directory and mints a fresh id for the key, so a
+// later topic of that name cannot reach the old session's memory.
+//
+// The archive control retires the conversation BEFORE it issues the
+// move, so by the time its own echoed event lands here the key belongs
+// to the empty conversation Retire minted. Retiring that one costs a
+// journal write and nothing else; it is the same fail-safe answer, not
+// a special case worth a flag that could go stale.
+func (h *Handler) retireMoved(key journal.Key, dest int64) {
+	// Retire is the single source of truth about whether there WAS a
+	// conversation here: a topic nobody engaged in moving away is
+	// ordinary traffic, not an event. The session is stopped after the
+	// journal write rather than before it, because the topic has
+	// ALREADY gone — unlike the archive path, there is no move left to
+	// race with, and retiring first means nothing can be handed the
+	// conversation in between.
+	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
+	if err != nil {
+		h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve, but retiring the conversation failed: %v", key.Topic, dest, err)
+		return
+	}
+	if !existed {
+		return
+	}
+	// context.Background: an event has no turn context to inherit, and
+	// ending a conversation must not be abandoned half-way because the
+	// poll loop moved on.
+	h.endSession(context.Background(), prev.ID)
+	h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve — %s is retired (its files are untouched); %s would answer if the topic came back",
+		key.Topic, dest, prev.ID, fresh.ID)
 }
 
 // handleMessage decides whether a message is ours to answer and, if
@@ -950,11 +1068,50 @@ func (h *Handler) repostForNotify(ctx context.Context, conv journal.Conv, split 
 // that remembers a FINISHED turn's message.
 func (h *Handler) trackTail(convID string, split *rollover.Splitter) {
 	if id := split.TailID(); id != 0 {
-		h.ownMsgs.put(id, convID)
+		h.rememberOwn(convID, id)
 		if err := h.cfg.Journal.SetTail(convID, id); err != nil {
 			h.cfg.Logf("handler: recording tail for %s: %v", convID, err)
 		}
 	}
+}
+
+// rememberOwn records a message the relay posted: which conversation
+// owns it, and whether it is that conversation's newest.
+//
+// The "newest" half is compared rather than assigned, because the two
+// writers are not ordered with respect to each other — a turn's tail
+// and an out-of-band post (an `!opts` panel, an archive warning) can
+// interleave. Zulip message ids are monotonic, so max is the answer.
+func (h *Handler) rememberOwn(convID string, msgID int64) {
+	h.ownMsgs.put(msgID, convID)
+	h.lastOwnMu.Lock()
+	defer h.lastOwnMu.Unlock()
+	if msgID > h.lastOwn[convID] {
+		h.lastOwn[convID] = msgID
+	}
+}
+
+// lastOwnMessage returns the newest message the relay has posted in a
+// conversation, or 0 if it has posted none since the process started.
+//
+// Zero is the honest answer after a restart, and it must stay one: the
+// archive gesture is "react to the message I just posted", and a relay
+// that has forgotten what it posted should arm nothing rather than
+// guess at a message id.
+func (h *Handler) lastOwnMessage(convID string) int64 {
+	h.lastOwnMu.Lock()
+	defer h.lastOwnMu.Unlock()
+	return h.lastOwn[convID]
+}
+
+// forgetOwn drops a conversation's last-message record. Called when the
+// conversation ends: the entry would otherwise outlive everything it
+// refers to, and a gesture on a message of a conversation that is over
+// must find nothing rather than something stale.
+func (h *Handler) forgetOwn(convID string) {
+	h.lastOwnMu.Lock()
+	defer h.lastOwnMu.Unlock()
+	delete(h.lastOwn, convID)
 }
 
 // clearTail forgets the tail message for a conversation, so a later

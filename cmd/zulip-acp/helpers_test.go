@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/skills"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 func swap[T any](p *T, v T) func() {
@@ -157,5 +159,67 @@ func writeSkill(t *testing.T, cfgDir, name, desc string) {
 	body := []byte("---\nname: " + name + "\ndescription: " + desc + "\n---\n")
 	if err := os.WriteFile(filepath.Join(d, "SKILL.md"), body, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeMoveProbe answers the one realm question resolveArchive asks.
+type fakeMoveProbe struct {
+	allowed bool
+	err     error
+	asked   int64
+}
+
+func (p *fakeMoveProbe) CanMoveMessagesBetweenChannels(_ context.Context, userID int64) (bool, error) {
+	p.asked = userID
+	return p.allowed, p.err
+}
+
+// fakeServed is the served-channel allowlist.
+type fakeServed map[int64]string
+
+func (s fakeServed) Name(id int64) (string, bool) { n, ok := s[id]; return n, ok }
+
+// TestResolveArchive: the control is enabled ONLY when the destination
+// exists, is outside the served set, and realm policy lets the bot move
+// messages between channels. Every other answer is off — a destructive
+// gesture must not be offered where it cannot work.
+func TestResolveArchive(t *testing.T) {
+	streams := []zulipproto.Stream{
+		{StreamID: 4, Name: "fleet"},
+		{StreamID: 12, Name: "archive"},
+	}
+	served := fakeServed{4: "fleet"}
+	off, servedName := "", "fleet"
+	cases := []struct {
+		name   string
+		cfg    *config.Config
+		probe  *fakeMoveProbe
+		served fakeServed
+		wantID int64
+	}{
+		{name: "on", cfg: &config.Config{}, probe: &fakeMoveProbe{allowed: true}, served: served, wantID: 12},
+		{name: "disabled in config", cfg: &config.Config{ArchiveChannel: &off}, probe: &fakeMoveProbe{allowed: true}, served: served},
+		{name: "no such channel", cfg: &config.Config{}, probe: &fakeMoveProbe{allowed: true}, served: served},
+		{name: "the destination is served", cfg: &config.Config{ArchiveChannel: &servedName}, probe: &fakeMoveProbe{allowed: true}, served: served},
+		{name: "realm policy says no", cfg: &config.Config{}, probe: &fakeMoveProbe{}, served: served},
+		{name: "cannot tell", cfg: &config.Config{}, probe: &fakeMoveProbe{err: errors.New("too old")}, served: served},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			avail := streams
+			if tc.name == "no such channel" {
+				avail = streams[:1]
+			}
+			id, name := resolveArchive(context.Background(), tc.cfg, tc.probe, avail, tc.served, 9)
+			if id != tc.wantID {
+				t.Fatalf("id = %d, want %d", id, tc.wantID)
+			}
+			if (name != "") != (tc.wantID != 0) {
+				t.Fatalf("name = %q with id %d", name, id)
+			}
+			if tc.wantID != 0 && tc.probe.asked != 9 {
+				t.Fatalf("the permission check asked about user %d", tc.probe.asked)
+			}
+		})
 	}
 }
