@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-07
+
 ### Fixed
 
 - **`curl … | sh` no longer needs GitHub API quota to find the latest
@@ -1029,7 +1031,8 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/kfet/zulip-acp/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/kfet/zulip-acp/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kfet/zulip-acp/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kfet/zulip-acp/compare/v0.19.1...v0.20.0
