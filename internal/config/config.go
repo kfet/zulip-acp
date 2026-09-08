@@ -238,6 +238,35 @@ type Config struct {
 	// the conversation's state/convs/<id>/ directory stays on disk.
 	ArchiveChannel *string `json:"archive_channel,omitempty"`
 
+	// InboundAttachments downloads the files a human attaches to a
+	// message into the conversation's working directory (`inbox/`) and
+	// tells the agent where they are — with images additionally sent
+	// as ACP image content blocks when the agent advertises support.
+	//
+	// Unset = TRUE. A Zulip message carries a LINK, never a file, and
+	// the bytes sit behind an authenticated endpoint, so without this
+	// an agent asked about an attached photo can only say it cannot
+	// see it. Set it to false to keep the relay from fetching anything
+	// a message points at.
+	//
+	// The files persist: they live in the conversation's state
+	// directory, like everything else the conversation owns, and
+	// nothing deletes them. `!new` mints a fresh conversation with a
+	// fresh directory, so the new session starts with an empty inbox
+	// while the old files stay on disk.
+	InboundAttachments *bool `json:"inbound_attachments,omitempty"`
+
+	// MaxAttachmentBytes caps ONE inbound attachment and
+	// MaxAttachmentTotalBytes caps a whole message's worth. 0 uses the
+	// handler defaults (20 MB and 60 MB).
+	//
+	// Anything over cap is SKIPPED and named in the prompt — the turn
+	// still happens, and the agent is told what it did not get, so it
+	// can ask for a smaller file instead of hallucinating about one it
+	// never saw.
+	MaxAttachmentBytes      int64 `json:"max_attachment_bytes,omitempty"`
+	MaxAttachmentTotalBytes int64 `json:"max_attachment_total_bytes,omitempty"`
+
 	// RelayMCP enables the agent→relay loopback: the relay hosts an
 	// MCP server on a private unix socket and advertises it to the
 	// agent, so the agent can read its own status, switch model, post
@@ -303,6 +332,17 @@ func (c *Config) Validate() error {
 	}
 	if c.MinScheduleIntervalSeconds < 0 {
 		return fmt.Errorf("min_schedule_interval_seconds must be >= 0")
+	}
+	if c.MaxAttachmentBytes < 0 || c.MaxAttachmentTotalBytes < 0 {
+		return fmt.Errorf("attachment size caps must be >= 0")
+	}
+	// A per-message total below the per-file cap is not an error but
+	// it is certainly a mistake: the first attachment would be capped
+	// at the total and every later one refused, which reads to the
+	// operator as "large attachments randomly fail".
+	if c.MaxAttachmentBytes > 0 && c.MaxAttachmentTotalBytes > 0 && c.MaxAttachmentTotalBytes < c.MaxAttachmentBytes {
+		return fmt.Errorf("max_attachment_total_bytes (%d) must be >= max_attachment_bytes (%d) — a message budget smaller than one file's cap would refuse files the per-file cap allows",
+			c.MaxAttachmentTotalBytes, c.MaxAttachmentBytes)
 	}
 	if c.MaxMessageChars > zulipproto.MaxMessageLength {
 		return fmt.Errorf("max_message_chars %d exceeds Zulip's MAX_MESSAGE_LENGTH of %d — Zulip would silently truncate every message at the limit and the relay would lose output",
@@ -470,6 +510,12 @@ func (c *Config) GetArchiveChannel() string {
 		return DefaultArchiveChannel
 	}
 	return strings.TrimSpace(*c.ArchiveChannel)
+}
+
+// GetInboundAttachments reports whether the relay downloads the files
+// a human attaches to a message. Unset means true.
+func (c *Config) GetInboundAttachments() bool {
+	return c.InboundAttachments == nil || *c.InboundAttachments
 }
 
 // ResolveArchiveChannel maps the configured archive channel onto a

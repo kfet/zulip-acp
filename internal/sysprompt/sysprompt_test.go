@@ -22,6 +22,11 @@ func TestResolve(t *testing.T) {
 	if !strings.Contains(got, "./outbox/") {
 		t.Fatal("system prompt must document the outbox convention")
 	}
+	// Nor the inbox one — an agent that goes curling the Zulip API for
+	// a file already sitting on its disk is exactly what this avoids.
+	if !strings.Contains(got, "./inbox/") {
+		t.Fatal("system prompt must document the inbox convention")
+	}
 
 	withExtra := Resolve("You are the ops bot.", false, "", "", false)
 	if !strings.Contains(withExtra, "You are the ops bot.") || !strings.Contains(withExtra, "Zulip") {

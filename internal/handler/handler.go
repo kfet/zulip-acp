@@ -70,6 +70,11 @@ type Agent interface {
 	// which gates the passthrough allowlist: the relay forwards
 	// `!reload` as `/reload` only when the agent actually offers it.
 	AvailableCommands() []client.CommandInfo
+	// Caps is the agent's advertised capability set. Inbound
+	// attachment ingestion consults promptCapabilities.image to decide
+	// whether an image may be sent as a content block or must be named
+	// on disk instead.
+	Caps() client.Caps
 }
 
 // Sessions is the subset of *state.Manager the handler uses.
@@ -138,6 +143,11 @@ type Poster interface {
 	// reaction path, which is handed an id and nothing else.
 	UserByID(ctx context.Context, id int64) (zulipproto.User, error)
 	Upload(ctx context.Context, filename, contentType string, r io.Reader) (string, error)
+	// DownloadUpload fetches an inbound attachment's bytes with the
+	// bot's credentials, capped at max bytes. See inbox.go: a Zulip
+	// message carries a link, never a file, so this is the only way
+	// the agent ever sees what a human attached.
+	DownloadUpload(ctx context.Context, uploadPath string, max int64) ([]byte, string, error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
 	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
 }
@@ -213,6 +223,25 @@ type Config struct {
 	// AckEmoji is the emoji reaction placed on the triggering message
 	// for the duration of a turn. Empty disables the acknowledgement.
 	AckEmoji string
+
+	// Site is the relay's own realm URL. Inbound attachment ingestion
+	// needs it to recognise an ABSOLUTE `https://<realm>/user_uploads/…`
+	// link as ours; an empty value restricts ingestion to relative
+	// paths, which is the safe direction to fail.
+	Site string
+
+	// InboundAttachments downloads the files a human attached to a
+	// message into <cwd>/inbox and puts their local paths (and, when
+	// the agent takes image blocks, the images themselves) in front of
+	// the agent. See inbox.go.
+	InboundAttachments bool
+	// MaxAttachmentBytes caps ONE inbound attachment and
+	// MaxAttachmentTotalBytes caps a whole message's worth. A file
+	// over either is skipped with a note in the prompt, never a failed
+	// turn. Both must be positive when InboundAttachments is set; New
+	// fills a zero with the default.
+	MaxAttachmentBytes      int64
+	MaxAttachmentTotalBytes int64
 
 	// Reactions delivers emoji reactions into the owning conversation
 	// as an ambient synthetic turn. See reaction.go for why every gate
@@ -457,6 +486,12 @@ func New(cfg Config) (*Handler, error) {
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
+	}
+	if cfg.MaxAttachmentBytes <= 0 {
+		cfg.MaxAttachmentBytes = DefaultMaxAttachmentBytes
+	}
+	if cfg.MaxAttachmentTotalBytes <= 0 {
+		cfg.MaxAttachmentTotalBytes = DefaultMaxAttachmentTotalBytes
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -930,7 +965,11 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
 		text = prefix + "\n\n" + text
 	}
-	blocks := []acp.ContentBlock{acp.TextBlock(text)}
+	// Inbound attachments are ingested here, and not at intake, for one
+	// reason: the files go in the conversation's working directory, and
+	// the session is what knows where that is. See inbox.go.
+	note, extra := h.ingestAttachments(ctx, sess.Cwd, text)
+	blocks := append([]acp.ContentBlock{acp.TextBlock(text + note)}, extra...)
 
 	if !h.cfg.BatchEdits {
 		go watchdog(wctx, split, h.cfg.EditInterval, func() { h.trackTail(conv.ID, split) })

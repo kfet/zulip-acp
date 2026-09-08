@@ -480,6 +480,11 @@ func main() {
 		Reactions:          cfg.GetReactions(),
 		ArchiveStreamID:    archiveID,
 		ArchiveChannel:     archiveName,
+
+		Site:                    cfg.Site,
+		InboundAttachments:      cfg.GetInboundAttachments(),
+		MaxAttachmentBytes:      cfg.MaxAttachmentBytes,
+		MaxAttachmentTotalBytes: cfg.MaxAttachmentTotalBytes,
 		// The reaction seam, wired to the archive control. Capturing h
 		// is the same trick the loopback uses: it is assigned below,
 		// before any event can arrive. ArchiveReaction is inert when

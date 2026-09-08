@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Inbound attachments.** A photo or file a human attaches to a message is now
+  downloaded into `inbox/` in the conversation's working directory and its local
+  path put in front of the agent — with the image itself sent as an ACP image
+  content block when the agent advertises `promptCapabilities.image`. Zulip
+  delivers a `/user_uploads/…` link and never the bytes, so until now an agent
+  asked about an attachment could only say it could not see it. The Zulip link
+  is kept alongside the local path; relative and own-realm absolute URLs are
+  both recognised and any other host is refused. On by default
+  (`"inbound_attachments": false` to disable), bounded by
+  `"max_attachment_bytes"` (20 MB) and `"max_attachment_total_bytes"` (60 MB),
+  and totally degrading: anything over cap or failing to download is skipped
+  with a stated reason in the prompt, never a failed turn. Files persist; `!new`
+  starts a fresh conversation with an empty inbox and leaves the old ones on
+  disk.
+
 ## [0.24.0] - 2026-09-08
 
 ### Added
