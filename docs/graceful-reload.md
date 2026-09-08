@@ -62,10 +62,18 @@ the state directory.
    in-flight turn like any other and is drained at step 3.
 3. `reload.Drain` blocks on `handler.WaitIdle` until every in-flight turn has
    finished posting, bounded by `-reload-drain-deadline` (30m).
-4. `cleanup()` closes the ACP agent, the session manager and the MCP host.
+4. The MCP loopback's session→token registry is read out
+   (`mcphost.Host.ExportTokens`), then `cleanup()` closes the ACP agent, the
+   session manager and the MCP host. The host is closed with `CloseForExec`,
+   which stops serving **without unlinking the socket file** — the agent's
+   redirector subprocesses are already redialling that exact path.
 5. `reload.Exec` `syscall.Exec`s the on-disk binary, passing the cursor in
    `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID` /
-   `ZULIP_ACP_QUEUE_REGISTRATION`.
+   `ZULIP_ACP_QUEUE_REGISTRATION`, and the token registry in
+   `ZULIP_ACP_MCP_TOKENS`. The registry is a bearer credential for every live
+   session: it goes in the successor's environment and nowhere else — never a
+   log line, never a file — and is scrubbed from the ACP agent's environment
+   like the bot API key (`reload.AgentEnvNames`).
 6. The new image reads that cursor and **resumes** `GetEvents` on the same
    queue instead of registering — *provided* the queue was registered with the
    event types and narrow this image wants. No gap and no double delivery. If
@@ -317,6 +325,7 @@ pid stable at 833097/854272 throughout):
 | `ZULIP_ACP_QUEUE_ID` / `ZULIP_ACP_LAST_EVENT_ID` half-set or malformed | Neither is honoured. Register fresh, log a WARN. Half a cursor would silently skip or replay events, which is worse than a logged gap. |
 | The new image wants different `event_types` or a different `narrow` | The inherited queue **cannot** carry them (both are frozen at `/register`). It is swapped: a replacement is registered while it is still buffering, it is drained and dispatched, then deleted — nothing lost, overlap de-duplicated. See *When the queue cannot be resumed*. |
 | `ZULIP_ACP_QUEUE_REGISTRATION` absent (upgrade from an image predating it) | Treated as *unknown, therefore different*: re-register rather than resume. Resuming on a guess is the defect this check exists to end. |
+| `ZULIP_ACP_MCP_TOKENS` malformed | Logged as a WARN; the relay comes up with an empty registry. Sessions predating the reload lose their `mcp__relay__*` tools until they are re-created; everything else works. Refusing to start would take every conversation down to protect the loopback of a few. |
 | `syscall.Exec` fails (binary removed mid-reload) | `log.Fatalf`, exit non-zero, `Restart=on-failure` brings the relay back cold. The orphaned queue is named in the log line. |
 | Binary replaced by an atomic `mv` before the reload | `os.Executable` reads `/proc/self/exe`, which names the now-unlinked inode as `"<path> (deleted)"`. `reload.SelfPath` strips that marker, re-stats, and falls back to `os.Args[0]` through `PATH`. Getting this wrong would fail the exec *after* the agent had already been shut down. |
 

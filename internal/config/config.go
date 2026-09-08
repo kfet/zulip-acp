@@ -576,11 +576,13 @@ func (c *Config) AllowedUsers() map[int64]struct{} {
 // people who are not the operator, and anything it can read it can
 // use to impersonate the relay.
 //
-// The graceful-reload cursor (reload.AgentEnvNames) is scrubbed for the
-// same reason. It is present only in a process that was re-exec'd, and
-// a live queue id is a relay capability: whoever holds it and a
-// credential can poll the relay's own event queue and take delivery of
-// its messages.
+// The graceful-reload cursor and the loopback MCP token registry
+// (reload.AgentEnvNames) are scrubbed for the same reason. Both are
+// present only in a process that was re-exec'd. A live queue id is a
+// relay capability: whoever holds it and a credential can poll the
+// relay's own event queue and take delivery of its messages. The token
+// registry is worse — it is every live session's bearer token, so an
+// agent holding it could speak for any conversation the relay serves.
 func (c *Config) AgentClientConfig(stderr io.Writer) client.Config {
 	return client.Config{
 		Command:        c.GetAgentCmd(),

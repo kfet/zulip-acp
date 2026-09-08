@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The agent no longer loses its `mcp__relay__*` tools when the relay
+  updates itself.** Observed live: a graceful reload re-execs the relay in
+  place mid-session, and from then on every loopback tool call came back
+  "tool not found" — so an agent that had just promised to schedule a
+  follow-up had no mechanism left behind the promise. Four causes, all fixed
+  in `acp-kit` v0.13.0 and adopted here: the socket now lives at the stable
+  `<state-dir>/mcp/mcp.sock` instead of a per-process temp dir; the reload
+  path closes the host with `CloseForExec`, which does not unlink the socket
+  the agent's redirector is redialling; the session→token registry crosses
+  the exec in a new environment variable `ZULIP_ACP_MCP_TOKENS`, so the
+  successor honours tokens it never minted; and the redirector reconnects and
+  replays `initialize`. The registry is a bearer credential for every live
+  session, so it travels only in the environment of the image being exec'd
+  into, is never logged or written to disk, and is scrubbed from the ACP
+  agent's environment alongside the bot API key.
+- **Builtin skill paths are stable and no longer leak.** The system prompt
+  tells the agent that skill body paths are absolute and stable for the
+  lifetime of the session; the bundle was extracted to `$TMPDIR`, so a
+  self-update moved the paths mid-session and left the old extraction behind
+  forever — one directory per released version. Builtins now extract under
+  `<state-dir>/skills/`, re-extraction is idempotent, and superseded
+  generations are removed there and in the legacy `$TMPDIR` location
+  (`acp-kit` v0.14.0 `skills.LoadBuiltinIn`). The `$TMPDIR` sweep assumes
+  one relay per host, which is what `bots/` and `converge.sh` deploy: a
+  second instance still running an older binary would have its extraction
+  collected underneath it.
+
+### Changed
+
+- `acp-kit` v0.10.0 → v0.14.0.
+
 ## [0.22.3] - 2026-09-07
 
 ### Fixed

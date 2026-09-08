@@ -117,13 +117,13 @@ func ptr(s string) *string { return &s }
 // the other would hand the relay's event queue to the child agent.
 func TestAgentEnvNamesCoversTheWholeContract(t *testing.T) {
 	got := AgentEnvNames()
-	want := []string{EnvQueueID, EnvLastEventID, EnvRegistration}
+	want := []string{EnvQueueID, EnvLastEventID, EnvRegistration, EnvMCPTokens}
 	if !slices.Equal(got, want) {
 		t.Fatalf("AgentEnvNames() = %q, want %q", got, want)
 	}
 	// Environ is the other half of the contract: anything it can SET
 	// must be something AgentEnvNames scrubs.
-	set := Environ(nil, Cursor{QueueID: "q", LastEventID: 1, Registration: "r"})
+	set := Environ(nil, Cursor{QueueID: "q", LastEventID: 1, Registration: "r"}, "tokenblob")
 	for _, kv := range set {
 		name, _, _ := strings.Cut(kv, "=")
 		if !slices.Contains(got, name) {
@@ -139,19 +139,45 @@ func TestEnvironStripsStaleCursorAndAppends(t *testing.T) {
 		"HOME=/home/x",
 		EnvLastEventID + "=999",
 		EnvRegistration + `={"event_types":["message"],"narrow":[]}`,
+		EnvMCPTokens + "=stale-blob",
 	}
 	reg := `{"event_types":["message","reaction"],"narrow":[]}`
-	got := Environ(base, Cursor{QueueID: "fresh", LastEventID: 12, Registration: reg})
+	got := Environ(base, Cursor{QueueID: "fresh", LastEventID: 12, Registration: reg}, "")
 	want := []string{"PATH=/bin", "HOME=/home/x", EnvQueueID + "=fresh", EnvLastEventID + "=12", EnvRegistration + "=" + reg}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Environ() = %q, want %q", got, want)
 	}
 	// An invalid cursor must leave the successor with NO cursor at all
 	// rather than a stale one: half a cursor silently skips events.
-	got = Environ(base, Cursor{})
+	got = Environ(base, Cursor{}, "")
 	want = []string{"PATH=/bin", "HOME=/home/x"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Environ(invalid) = %q, want %q", got, want)
+	}
+}
+
+// TestEnvironCarriesTheMCPTokenRegistry: the loopback token registry is
+// the OTHER thing that must cross the exec. Without it the successor
+// mints a fresh registry, rejects the token the agent's redirector is
+// still holding, and the agent loses every mcp__relay__* tool for the
+// rest of its session — the live bug this change exists to fix. A stale
+// blob must be stripped for the same reason a stale cursor is: it names
+// sessions this generation never handed out.
+func TestEnvironCarriesTheMCPTokenRegistry(t *testing.T) {
+	base := []string{"PATH=/bin", EnvMCPTokens + "=stale-blob"}
+
+	got := Environ(base, Cursor{}, "fresh-blob")
+	want := []string{"PATH=/bin", EnvMCPTokens + "=fresh-blob"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Environ(tokens) = %q, want %q", got, want)
+	}
+
+	// No loopback (relay_mcp off, or nothing to hand on) means the var
+	// is absent, not empty: an empty value would be a blob the
+	// successor's SeedTokens has to special-case.
+	got = Environ(base, Cursor{}, "")
+	if slices.ContainsFunc(got, func(kv string) bool { return strings.HasPrefix(kv, EnvMCPTokens+"=") }) {
+		t.Fatalf("Environ(no tokens) still sets %s: %q", EnvMCPTokens, got)
 	}
 }
 
@@ -166,7 +192,7 @@ func TestCursorRoundTripsThroughTheEnvironment(t *testing.T) {
 		LastEventID:  7966,
 		Registration: `{"event_types":["message","reaction","update_message"],"narrow":[["stream","fleet"]]}`,
 	}
-	for _, kv := range Environ(nil, want) {
+	for _, kv := range Environ(nil, want, "") {
 		name, value, _ := strings.Cut(kv, "=")
 		t.Setenv(name, value)
 	}
@@ -352,7 +378,7 @@ func TestExec(t *testing.T) {
 			gotPath, gotArgv, gotEnv = p, argv, env
 			return nil
 		})
-		if err := Exec(Cursor{QueueID: "q9", LastEventID: 5}); err != nil {
+		if err := Exec(Cursor{QueueID: "q9", LastEventID: 5}, "seed-blob"); err != nil {
 			t.Fatalf("Exec() = %v", err)
 		}
 		if gotPath != bin {
@@ -367,13 +393,19 @@ func TestExec(t *testing.T) {
 		if !slices.Contains(gotEnv, EnvQueueID+"=q9") || !slices.Contains(gotEnv, EnvLastEventID+"=5") {
 			t.Fatalf("env missing the cursor: %q", gotEnv)
 		}
+		// The loopback token registry rides along in the SAME place —
+		// the environment of the image we are becoming — and nowhere
+		// else.
+		if !slices.Contains(gotEnv, EnvMCPTokens+"=seed-blob") {
+			t.Fatalf("env missing the MCP token registry: %q", gotEnv)
+		}
 	})
 
 	t.Run("reports a failed exec", func(t *testing.T) {
 		stub(t, &osExecutable, func() (string, error) { return bin, nil })
 		withArgs(t, bin)
 		stub(t, &execFn, func(string, []string, []string) error { return syscall.ENOEXEC })
-		err := Exec(Cursor{QueueID: "q9"})
+		err := Exec(Cursor{QueueID: "q9"}, "")
 		if err == nil || !errors.Is(err, syscall.ENOEXEC) {
 			t.Fatalf("Exec() = %v, want ENOEXEC", err)
 		}
@@ -387,7 +419,7 @@ func TestExec(t *testing.T) {
 			t.Fatal("must not exec when the binary cannot be located")
 			return nil
 		})
-		if err := Exec(Cursor{}); err == nil {
+		if err := Exec(Cursor{}, ""); err == nil {
 			t.Fatal("Exec() = nil, want an error")
 		}
 	})

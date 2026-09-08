@@ -105,7 +105,7 @@ func execPhase1(t *testing.T) {
 		LastEventID:  res.LastEventID,
 		Registration: zulipproto.RegistrationFingerprint([]string{zulipproto.EventMessage}, nil),
 	}
-	env := reload.Environ(os.Environ(), cur)
+	env := reload.Environ(os.Environ(), cur, "")
 	env = append(env, "ZULIP_ACP_LIVE_EXEC_MARKER="+marker)
 	for i, kv := range env {
 		if strings.HasPrefix(kv, envExecPhase+"=") {

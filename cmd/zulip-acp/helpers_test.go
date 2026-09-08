@@ -21,7 +21,8 @@ func swap[T any](p *T, v T) func() {
 
 func TestBuildSkillsCatalog(t *testing.T) {
 	dir := t.TempDir()
-	builtin, err := skills.LoadBuiltin()
+	t.Setenv("TMPDIR", t.TempDir()) // contain the legacy-location sweep
+	builtin, err := skills.LoadBuiltin(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +76,13 @@ func TestBuildSkillsCatalog_HostLoaderError(t *testing.T) {
 }
 
 func TestSystemPromptProvider_BuiltinLoaderError(t *testing.T) {
-	defer swap(&loadBuiltinSkills, func() ([]skills.Skill, error) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) {
 		return nil, errors.New("builtin-fail")
 	})()
 	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 
 	// Builtin extraction failing must not cost us the operator prompt.
-	got := systemPromptProvider("", &config.Config{SystemPrompt: "operator-extra"})()
+	got := systemPromptProvider("", &config.Config{SystemPrompt: "operator-extra", StateDir: t.TempDir()})()
 	if !strings.Contains(got, "operator-extra") {
 		t.Fatalf("operator prompt dropped on builtin failure: %s", got)
 	}
@@ -90,17 +91,17 @@ func TestSystemPromptProvider_BuiltinLoaderError(t *testing.T) {
 	}
 }
 
-// The embedded bundle cannot change at runtime, and LoadBuiltin writes to
-// $TMPDIR non-atomically, so it must run once per process — not once per
-// session.
+// The embedded bundle cannot change at runtime, and LoadBuiltin writes
+// under the state dir non-atomically, so it must run once per process —
+// not once per session.
 func TestSystemPromptProvider_LoadsBuiltinsOnce(t *testing.T) {
 	calls := 0
-	defer swap(&loadBuiltinSkills, func() ([]skills.Skill, error) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) {
 		calls++
 		return []skills.Skill{{Name: "b", Description: "builtin", Path: "/b"}}, nil
 	})()
 
-	provider := systemPromptProvider(filepath.Join(t.TempDir(), "config.json"), &config.Config{})
+	provider := systemPromptProvider(filepath.Join(t.TempDir(), "config.json"), &config.Config{StateDir: t.TempDir()})
 	provider()
 	provider()
 	if calls != 1 {
@@ -113,7 +114,7 @@ func TestSystemPromptProvider_LoadsBuiltinsOnce(t *testing.T) {
 func TestSystemPromptProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
 	dir := t.TempDir()
 	provider := systemPromptProvider(filepath.Join(dir, "config.json"),
-		&config.Config{SystemPrompt: "operator-extra"})
+		&config.Config{SystemPrompt: "operator-extra", StateDir: t.TempDir()})
 
 	if got := provider(); strings.Contains(got, "host later") {
 		t.Fatalf("host skill appeared before it existed: %s", got)
@@ -132,7 +133,7 @@ func TestSystemPromptProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
 // disable_system_prompt must suppress everything and never read the
 // skill dirs at all.
 func TestSystemPromptProvider_Disabled(t *testing.T) {
-	defer swap(&loadBuiltinSkills, func() ([]skills.Skill, error) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) {
 		t.Fatal("LoadBuiltin called while disabled")
 		return nil, nil
 	})()
