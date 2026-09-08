@@ -876,7 +876,7 @@ func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prom
 	h.cancelInflight(ctx, conv.ID)
 	// Cancellable only. The turn's real bound is the progress-resetting
 	// liveness clock, armed inside run once the agent is about to be
-	// prompted (see startLiveness).
+	// prompted.
 	pctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: anchorID}}
 	h.setInflight(conv.ID, entry)
@@ -978,7 +978,10 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	// wrapped OUTERMOST so buffered paths (the abstain ValidatingSink)
 	// cannot make a streaming agent look silent — liveness sees every
 	// update as it lands, before anything downstream holds it back.
-	live, lctx, stopLive := h.startLiveness(ctx)
+	live, lctx, stopLive := client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
+		NoProgressTimeout: h.cfg.NoProgressTimeout,
+		MaxTurnDuration:   h.cfg.TurnCeiling,
+	})
 	defer stopLive()
 	sinkFor = live.Wrap(sinkFor)
 
@@ -1029,12 +1032,19 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 			return nil
 		}
 		stop = res.Stop
+		stopLive()
 	} else {
 		stop, err = h.cfg.Agent.Prompt(lctx, sess.SessionID, blocks)
 		wcancel()
 		if err != nil {
 			return h.failTurn(lctx, conv, split, err)
 		}
+		// The bound covers the prompt and nothing after it. Disarming
+		// here rather than only on the deferred path keeps the clock
+		// and the thing it measures the same length; the flush,
+		// upload and repost below run detached and must never be cut.
+		// It must come AFTER failTurn, which reads the cause.
+		stopLive()
 	}
 
 	fctx := context.WithoutCancel(ctx)
@@ -1125,17 +1135,6 @@ func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript strin
 	h.cfg.Logf("handler: posting failed (%v); rescued %d chars of output to %s", cause, len(transcript), url)
 }
 
-// startLiveness arms the bound on one turn: a progress-resetting
-// no-progress window plus the operator's opt-in absolute ceiling. The
-// returned context is what the prompt runs on, and its cause is how
-// failTurn tells a wedged turn from a superseded one.
-func (h *Handler) startLiveness(ctx context.Context) (*client.TurnLiveness, context.Context, context.CancelFunc) {
-	return client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
-		NoProgressTimeout: h.cfg.NoProgressTimeout,
-		MaxTurnDuration:   h.cfg.TurnCeiling,
-	})
-}
-
 // failTurn reports an agent error into the topic instead of leaving a
 // placeholder hanging forever.
 //
@@ -1163,7 +1162,7 @@ func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollov
 	case errors.Is(c, client.ErrTurnCeiling):
 		suffix = fmt.Sprintf("\n\n*(stopped: this turn hit the %s ceiling set by `prompt_timeout_seconds`)*",
 			h.cfg.TurnCeiling)
-	case errors.Is(c, context.Canceled), errors.Is(cause, context.Canceled):
+	case errors.Is(c, context.Canceled):
 		suffix = "\n\n*(superseded by your next message)*"
 	}
 	fctx := context.WithoutCancel(ctx)

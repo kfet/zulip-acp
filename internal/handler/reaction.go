@@ -281,7 +281,6 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 		h.takeReactions(conv.ID)
 		return
 	}
-	pctx, cancel := turnCtx, cancelTurn
 	lines, extra := h.takeReactions(conv.ID)
 	// Re-read the conversation: seconds have passed, and unlike a
 	// message turn — where this window is microseconds — the topic may
@@ -293,7 +292,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 	if !ok || fresh.Retired {
 		h.cfg.Logf("handler: dropping %d buffered reaction(s): %s is gone", len(lines)+extra, conv.ID)
 		h.clearInflight(conv.ID, entry)
-		cancel()
+		cancelTurn()
 		return
 	}
 	conv = fresh
@@ -302,7 +301,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 		// shutdown. Release the claim rather than running a turn with
 		// nothing in it.
 		h.clearInflight(conv.ID, entry)
-		cancel()
+		cancelTurn()
 		return
 	}
 	if h.cfg.OnReactionBatch != nil {
@@ -315,7 +314,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 	// silent sentinel. No ack reaction either (msgID 0) — reacting to
 	// a reaction is noise, and the message reacted to is often an old
 	// one nobody is looking at any more.
-	h.runTurn(pctx, cancel, conv, entry, reactionBatchPrompt(lines, extra), false, 0)
+	h.runTurn(turnCtx, cancelTurn, conv, entry, reactionBatchPrompt(lines, extra), false, 0)
 }
 
 // DropPendingReactions discards every buffered reaction burst and

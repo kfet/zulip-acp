@@ -33,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the bare `*error: context deadline exceeded*` that told the user
   nothing. The partial answer streamed so far is preserved either way.
 
+- **Cancelling a turn now actually reaches the agent.** Via acp-kit
+  v0.16.2: abandoning the `session/prompt` request only stopped the
+  relay waiting, so on every timeout path the agent ran on — the same
+  incident showed a file written a full minute after the relay had
+  reported the turn failed. `session/cancel` is now sent whenever the
+  prompt context is cancelled, not only on a superseding message.
+
+- Consequence worth stating: anything that waits for a conversation to
+  go idle — a buffered reaction batch, a scheduled prompt — can now wait
+  behind a progressing turn for as long as that turn runs, instead of at
+  most 10 minutes. The SIGHUP/SIGTERM drain deadlines still bound the
+  process, and `prompt_timeout_seconds` is there for an operator who
+  wants a hard cap.
+
 - Two relay-internal Zulip calls that borrowed `prompt_timeout` — the
   `post` loopback tool and the relay-MCP history/rename tools — now have
   their own 2-minute bound. They are HTTP requests, not turns, and must
