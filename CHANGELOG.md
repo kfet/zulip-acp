@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`stream_edits` and `spinner_interval_ms` — cut streaming-edit flicker.**
+  `"stream_edits": false` suppresses every intra-turn edit and publishes the
+  whole answer once at close; `"spinner_interval_ms"` sets the placeholder
+  animation period, and `0` disables it (no spinner goroutine at all). Unset,
+  the spinner follows the mode — 900ms while streaming, off in quiet mode — so
+  the obvious trap (a placeholder animating for the whole turn with nothing
+  streaming under it) cannot be configured by accident. `repost_on_close` is
+  unchanged, as are the defaults: 300ms edits + 900ms spinner.
+
 ## [0.23.0] - 2026-09-08
 
 ### Added

@@ -313,6 +313,8 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
+| `stream_edits` | `true` | publish the answer as it arrives. `false` = **quiet mode**: no intra-turn edits at all, the whole answer is published once when the turn closes. See below |
+| `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
@@ -348,6 +350,37 @@ extracted once per process. A missing or malformed skill dir is logged and
 skipped — it never blocks startup.
 
 `disable_system_prompt` suppresses the catalog too.
+
+### Quiet mode (`stream_edits`, `spinner_interval_ms`)
+
+Every edit re-renders the whole message — on the server, in the web/desktop
+client, and again on the phone. A long streamed turn therefore *flickers*. Two
+knobs cut how often the relay edits its own message:
+
+- `"stream_edits": false` — **quiet mode**. No intra-turn edits at all: the
+  placeholder goes up, the answer accumulates in memory, and the whole thing is
+  published once when the turn closes. You lose live streaming; you gain a
+  still screen.
+- `"spinner_interval_ms": 0` — post the `Thinking...` placeholder once and never
+  animate it. No spinner goroutine is started at all. Any positive value sets
+  the animation period instead (default `900`).
+
+The two are resolved together, because the obvious combination is a trap: the
+spinner only stops when the first streamed chunk *replaces* the placeholder, so
+quiet mode with an animated placeholder would spin for the entire turn — the
+worst of both. Leaving `spinner_interval_ms` unset in quiet mode therefore
+turns the spinner **off**. An explicit positive value is still honoured, which
+makes the spinner the only edit of the turn; that is a deliberate choice, so it
+is not overridden.
+
+Neither knob touches `repost_on_close`: the finished answer is still re-posted
+as a new message so the push notification carries it. `edit_interval_ms` stops
+mattering in quiet mode — there is no coalescing tick left to pace.
+
+The cost of quiet mode is that a relay restart mid-turn leaves nothing but the
+placeholder (marked `turn interrupted`): text that was never published cannot
+survive the process. An agent error or a superseded turn still publishes
+whatever was produced, because both close the message.
 
 ### Notifications and `repost_on_close`
 

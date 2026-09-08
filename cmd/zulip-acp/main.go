@@ -468,6 +468,8 @@ func main() {
 		DMs:                cfg.DMs,
 		PromptTimeout:      cfg.PromptTimeout(),
 		EditInterval:       cfg.EditInterval(),
+		BatchEdits:         !cfg.GetStreamEdits(),
+		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
 		Budget:             cfg.Budget(),
 		SealMarker:         cfg.SealMarker,
 		ContinuationMarker: cfg.ContinuationMarker,
@@ -642,3 +644,8 @@ func splitList(s string) []string {
 	}
 	return out
 }
+
+// ptr returns a pointer to v. The relay resolves the spinner period
+// itself — including the 0 that means "do not animate" — so it must
+// hand the handler an explicit value, never a nil "use your default".
+func ptr[T any](v T) *T { return &v }

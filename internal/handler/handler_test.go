@@ -50,6 +50,10 @@ type fakeZulip struct {
 	// which happens after the placeholder has already gone up.
 	sendHook func(content string) error
 	editErr  error
+	// editN counts every successful EditMessage. Quiet mode is a claim
+	// about HOW MANY edits a turn costs, so it needs a counter, not a
+	// body comparison.
+	editN    int
 	getErr   error
 	uploadEr error
 	// widgets records the widget_content each message was sent with,
@@ -240,6 +244,7 @@ func (z *fakeZulip) EditMessage(_ context.Context, id int64, content string) err
 		return fmt.Errorf("no such message %d", id)
 	}
 	z.bodies[id] = content
+	z.editN++
 	z.signal()
 	return nil
 }
@@ -397,6 +402,13 @@ func (z *fakeZulip) body(id int64) string {
 	return z.bodies[id]
 }
 
+// edits reports how many message edits the relay has issued.
+func (z *fakeZulip) edits() int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.editN
+}
+
 // lastID and lastBody address the NEWEST surviving message.
 //
 // Tests must use them rather than a hard-coded id wherever they look at
@@ -448,6 +460,11 @@ type fakeAgent struct {
 	hold chan struct{}
 	// entered is signalled when Prompt starts.
 	entered chan struct{}
+	// streamed is signalled once every chunk has been handed to the
+	// sink, i.e. at the point where a streaming relay would already
+	// have text pending. A quiet-mode test needs that instant to
+	// assert "nothing has been published yet" without a sleep.
+	streamed chan struct{}
 	// during, when non-nil, runs inside Prompt — i.e. while the turn
 	// is in flight. It stands in for an MCP tool call, which is the
 	// only way the real agent reaches back into the relay mid-turn.
@@ -459,7 +476,8 @@ type fakeAgent struct {
 }
 
 func newAgent(chunks ...string) *fakeAgent {
-	return &fakeAgent{chunks: chunks, stop: acp.StopReasonEndTurn, entered: make(chan struct{}, 8)}
+	return &fakeAgent{chunks: chunks, stop: acp.StopReasonEndTurn,
+		entered: make(chan struct{}, 8), streamed: make(chan struct{}, 8)}
 }
 
 func (a *fakeAgent) Models() ([]client.ModelInfo, string) {
@@ -521,6 +539,7 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 	}
 	sink, chunks, thoughts, meta := a.sink, a.chunks, a.thoughts, a.meta
 	block, hold, stop, err := a.block, a.hold, a.stop, a.err
+	streamed := a.streamed
 	during := a.during
 	a.mu.Unlock()
 	if during != nil {
@@ -544,6 +563,10 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 		if err := sink.OnUpdate(ctx, chunkNotification(c, meta)); err != nil {
 			return "", err
 		}
+	}
+	select {
+	case streamed <- struct{}{}:
+	default:
 	}
 	if hold != nil {
 		select {
@@ -1852,6 +1875,80 @@ func TestSpinnerTickerWrapper(t *testing.T) {
 	<-z.posted
 }
 
+// TestStartSpinnerDisabled pins the "0 means do not animate" contract:
+// no goroutine is started at all. The proof is the ticker — a spinner
+// goroutine would build one from a zero period, which panics and
+// takes the test binary with it. The edit count is a smoke check.
+func TestStartSpinnerDisabled(t *testing.T) {
+	agent := newAgent()
+	hh := newHarness(t, agent, func(c *Config) { c.SpinnerInterval = ptrTo(time.Duration(0)) })
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: hh.z, key: journal.Channel(4, "t")}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	if err := split.Start(context.Background(), statusline.Thinking(statusline.Status{})); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-hh.z.posted
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hh.h.startSpinner(ctx, split, newStreamingSink(split, false))
+	if n := hh.z.edits(); n != 0 {
+		t.Fatalf("a disabled spinner edited %d times", n)
+	}
+}
+
+// TestStartSpinnerCustomInterval proves the configured period is the
+// one actually used — the hardcoded 900ms const is gone.
+func TestStartSpinnerCustomInterval(t *testing.T) {
+	agent := newAgent()
+	hh := newHarness(t, agent, func(c *Config) { c.SpinnerInterval = ptrTo(time.Millisecond) })
+	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: hh.z, key: journal.Channel(4, "t")}})
+	if err != nil {
+		t.Fatalf("rollover.New: %v", err)
+	}
+	if err := split.Start(context.Background(), statusline.Thinking(statusline.Status{})); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-hh.z.posted
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hh.h.startSpinner(ctx, split, newStreamingSink(split, false))
+	<-hh.z.posted // an animated frame landed, on the configured period
+}
+
+// TestSpinnerIntervalDefaults pins how the unset period is resolved:
+// 900ms while streaming, OFF in quiet mode — a placeholder animating
+// for a whole turn with nothing streaming under it is the worst case,
+// not a compromise. An explicit value always wins.
+func TestSpinnerIntervalDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tune func(*Config)
+		want time.Duration
+	}{
+		{name: "streaming default", tune: func(*Config) {}, want: defaultSpinnerInterval},
+		{name: "quiet default", tune: func(c *Config) { c.BatchEdits = true }, want: 0},
+		{name: "explicit wins in quiet mode", tune: func(c *Config) {
+			c.BatchEdits = true
+			c.SpinnerInterval = ptrTo(50 * time.Millisecond)
+		}, want: 50 * time.Millisecond},
+		{name: "explicit zero while streaming", tune: func(c *Config) {
+			c.SpinnerInterval = ptrTo(time.Duration(0))
+		}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hh := newHarness(t, newAgent(), tc.tune)
+			if got := *hh.h.cfg.SpinnerInterval; got != tc.want {
+				t.Fatalf("SpinnerInterval = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ptrTo is the test-side twin of cmd/zulip-acp's ptr helper.
+func ptrTo[T any](v T) *T { return &v }
+
 func TestSpinnerStopsOnContextCancel(t *testing.T) {
 	z := newZulip()
 	split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
@@ -2177,6 +2274,48 @@ func TestWatchdogPublishesMidTurn(t *testing.T) {
 	}
 	if len(hh.j.OpenTails()) != 0 {
 		t.Fatal("tail not cleared after the turn")
+	}
+}
+
+// TestBatchEditsPublishOnlyAtClose is the mirror of
+// TestWatchdogPublishesMidTurn: with streaming edits suppressed the
+// answer must NOT reach Zulip while the agent is still working, and
+// the whole turn must cost exactly one edit — the publish at Close.
+func TestBatchEditsPublishOnlyAtClose(t *testing.T) {
+	agent := newAgent("batched answer")
+	agent.hold = make(chan struct{})
+	hh := newHarness(t, agent, func(c *Config) {
+		c.BatchEdits = true
+		c.RepostOnClose = false
+	})
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stay quiet"),
+			StreamID: 4, Topic: "quiet", Type: "stream",
+		},
+	})
+	// Every chunk has been handed to the sink; a streaming relay would
+	// have published by now.
+	<-agent.streamed
+	if got := hh.z.body(1); strings.Contains(got, "batched answer") {
+		t.Fatalf("published mid-turn in quiet mode: %q", got)
+	}
+	if n := hh.z.edits(); n != 0 {
+		t.Fatalf("edits mid-turn = %d, want 0", n)
+	}
+	close(agent.hold)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if got := hh.z.body(1); !strings.Contains(got, "batched answer") {
+		t.Fatalf("answer not published at close: %q", got)
+	}
+	if n := hh.z.edits(); n != 1 {
+		t.Fatalf("edits for the whole turn = %d, want 1 (the publish at Close)", n)
 	}
 }
 

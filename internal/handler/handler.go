@@ -53,9 +53,9 @@ const OutboxDir = "outbox"
 // re-upload them.
 const sentDir = ".sent"
 
-// spinnerInterval animates the "Thinking…" placeholder. Zulip sustains
-// ~15 edits/sec, so this is purely a readability choice.
-const spinnerInterval = 900 * time.Millisecond
+// defaultSpinnerInterval animates the "Thinking…" placeholder. Zulip
+// sustains ~15 edits/sec, so this is purely a readability choice.
+const defaultSpinnerInterval = 900 * time.Millisecond
 
 // Agent is the subset of *client.AgentProc the handler drives
 // directly. Session lifecycle lives in Sessions.
@@ -183,6 +183,16 @@ type Config struct {
 	PromptTimeout time.Duration
 	// EditInterval coalesces streaming edits.
 	EditInterval time.Duration
+	// BatchEdits suppresses intra-turn streaming edits entirely: the
+	// answer is published once, when the turn closes. The zero value
+	// is the streaming behaviour, so it is stated as the negative —
+	// config.Config's operator-facing key is `stream_edits`.
+	BatchEdits bool
+	// SpinnerInterval animates the "Thinking…" placeholder. nil is the
+	// default: 900ms while streaming, off in batch mode. A non-nil 0
+	// disables the animation — the placeholder is posted once and no
+	// spinner goroutine is started at all.
+	SpinnerInterval *time.Duration
 
 	// Budget, SealMarker and ContinuationMarker configure the splitter.
 	Budget             int
@@ -434,6 +444,16 @@ func New(cfg Config) (*Handler, error) {
 	}
 	if cfg.EditInterval <= 0 {
 		cfg.EditInterval = 300 * time.Millisecond
+	}
+	if cfg.SpinnerInterval == nil {
+		d := defaultSpinnerInterval
+		if cfg.BatchEdits {
+			// Nothing else edits during a batched turn, so an
+			// animated placeholder would be the only flicker left —
+			// and it would run for the WHOLE turn.
+			d = 0
+		}
+		cfg.SpinnerInterval = &d
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
@@ -863,7 +883,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 			h.cfg.Logf("handler: placeholder post failed: %v", err)
 		}
 		h.trackTail(conv.ID, split)
-		go spinner(wctx, split, sink, spinnerInterval)
+		h.startSpinner(wctx, split, sink)
 	}
 
 	var sess *state.Session
@@ -880,7 +900,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 				h.cfg.Logf("handler: placeholder post failed: %v", err)
 			}
 			h.trackTail(conv.ID, split)
-			go spinner(wctx, split, sink, spinnerInterval)
+			h.startSpinner(wctx, split, sink)
 			if h.cfg.OnEarlyPlaceholder != nil {
 				h.cfg.OnEarlyPlaceholder(conv.ID)
 			}
@@ -912,7 +932,9 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	}
 	blocks := []acp.ContentBlock{acp.TextBlock(text)}
 
-	go watchdog(wctx, split, h.cfg.EditInterval, func() { h.trackTail(conv.ID, split) })
+	if !h.cfg.BatchEdits {
+		go watchdog(wctx, split, h.cfg.EditInterval, func() { h.trackTail(conv.ID, split) })
+	}
 
 	var stop acp.StopReason
 	if abstaining {
@@ -1462,6 +1484,18 @@ func watchdogLoop(ctx context.Context, split *rollover.Splitter, tick <-chan tim
 			after()
 		}
 	}
+}
+
+// startSpinner animates the placeholder for this turn, unless the
+// animation is disabled — in which case NO goroutine is started and
+// the placeholder is left exactly as posted. That is the whole point:
+// a disabled spinner must cost zero edits, not slower ones.
+func (h *Handler) startSpinner(ctx context.Context, split *rollover.Splitter, sink *streamingSink) {
+	period := *h.cfg.SpinnerInterval
+	if period <= 0 {
+		return
+	}
+	go spinner(ctx, split, sink, period)
 }
 
 // spinner animates the placeholder until the first real chunk lands,

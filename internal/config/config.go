@@ -29,6 +29,10 @@ const (
 	// reader (every edit re-renders the whole message, on the server
 	// and again on the phone) rather than a rate limit.
 	DefaultEditInterval = 300 * time.Millisecond
+	// DefaultSpinnerInterval animates the "Thinking…" placeholder
+	// while the agent has produced nothing yet. Same reasoning as
+	// DefaultEditInterval: readability, not a rate limit.
+	DefaultSpinnerInterval = 900 * time.Millisecond
 	// DefaultSilentSentinel matches slack-acp and poe-acp so one fir
 	// agent can serve every relay.
 	DefaultSilentSentinel = "<<SILENT>>"
@@ -144,6 +148,42 @@ type Config struct {
 	// EditIntervalMs coalesces streaming edits. 0 = 300ms.
 	EditIntervalMs int `json:"edit_interval_ms,omitempty"`
 
+	// StreamEdits publishes the answer AS IT ARRIVES, by editing the
+	// relay's own message every EditInterval. Unset = true, which is
+	// the behaviour everyone has today.
+	//
+	// Set it to false for "quiet" (batch) mode: nothing is edited
+	// during the turn and the whole answer is published once, when the
+	// turn closes. The web and desktop clients re-render a message on
+	// every edit, so a long turn visibly flickers; quiet mode trades
+	// live streaming for a still screen.
+	//
+	// EditIntervalMs is then unused: there is no coalescing tick left
+	// to set the period of.
+	//
+	// It is a pointer so "unset" and an explicit false stay
+	// distinguishable, exactly like RepostOnClose.
+	//
+	// Quiet mode also turns the placeholder spinner OFF by default —
+	// see SpinnerIntervalMs. Animating a placeholder for a whole turn
+	// with no streamed text under it is the WORST case, not a
+	// compromise, so the two settings are resolved together.
+	StreamEdits *bool `json:"stream_edits,omitempty"`
+
+	// SpinnerIntervalMs animates the "Thinking…" placeholder until the
+	// first chunk of the answer replaces it.
+	//
+	// Unset = 900ms when StreamEdits is on, and 0 when it is off. An
+	// explicit 0 means DO NOT ANIMATE: the placeholder is posted once
+	// and never edited again — no spinner goroutine is started at all.
+	// An explicit positive value is honoured in quiet mode too, which
+	// is then the only edit the relay makes during a turn; that is a
+	// deliberate choice, so it is not overridden.
+	//
+	// It is a pointer so "unset" and an explicit 0 stay
+	// distinguishable, exactly like AckEmoji.
+	SpinnerIntervalMs *int `json:"spinner_interval_ms,omitempty"`
+
 	// AckEmoji names the Zulip emoji reaction the relay adds to a
 	// message it has accepted, and removes when the turn ends.
 	// Unset = DefaultAckEmoji ("eyes"); an explicit "" disables the
@@ -252,6 +292,9 @@ func (c *Config) Validate() error {
 	if c.EditIntervalMs < 0 {
 		return fmt.Errorf("edit_interval_ms must be >= 0")
 	}
+	if c.SpinnerIntervalMs != nil && *c.SpinnerIntervalMs < 0 {
+		return fmt.Errorf("spinner_interval_ms must be >= 0")
+	}
 	if c.MaxMessageChars < 0 {
 		return fmt.Errorf("max_message_chars must be >= 0")
 	}
@@ -357,6 +400,30 @@ func (c *Config) EditInterval() time.Duration {
 		return DefaultEditInterval
 	}
 	return time.Duration(c.EditIntervalMs) * time.Millisecond
+}
+
+// GetStreamEdits reports whether the answer is published as it
+// arrives (streaming edits) rather than once at the end of the turn.
+// Unset means true.
+func (c *Config) GetStreamEdits() bool {
+	return c.StreamEdits == nil || *c.StreamEdits
+}
+
+// SpinnerInterval returns the placeholder animation period, or 0 for
+// "do not animate".
+//
+// Unset follows the streaming mode: 900ms while streaming, off in
+// quiet mode — a spinner is the only thing left editing there, and a
+// placeholder that animates for a whole turn is exactly the flicker
+// quiet mode exists to remove. An explicit value always wins.
+func (c *Config) SpinnerInterval() time.Duration {
+	if c.SpinnerIntervalMs == nil {
+		if !c.GetStreamEdits() {
+			return 0
+		}
+		return DefaultSpinnerInterval
+	}
+	return time.Duration(*c.SpinnerIntervalMs) * time.Millisecond
 }
 
 // MinScheduleInterval returns the configured repeat floor, or 0 to let
