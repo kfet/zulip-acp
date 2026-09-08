@@ -32,6 +32,11 @@
 //     allowlisted human. It arrives through Config.ReactionTrigger,
 //     which runs before the agent is involved at all — a destructive
 //     control must never depend on the model choosing to call a tool.
+//     "The relay's own last message" is resolved across a process
+//     boundary — memory, then the journal, then one narrowed API read
+//     — because an in-memory-only answer made the gesture stop working
+//     on every existing topic at every restart and reload. See
+//     Handler.lastOwnMessage.
 //   - COMMAND: `!archive` (or `!arch`).
 //
 // Either ARMS a confirmation and posts a warning. The ONLY confirmation
@@ -130,7 +135,7 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 		return false
 	}
 	confirm := h.armedFor(conv.ID, ev.MessageID)
-	last := ev.MessageID == h.lastOwnMessage(conv.ID)
+	last := ev.MessageID == h.lastOwnMessage(ctx, conv)
 	if !confirm && !last {
 		// Not the arming target and not the confirmation: an ordinary
 		// reaction that happens to be a wastebasket.

@@ -103,6 +103,54 @@ type fakeZulip struct {
 	downloads    map[string]fakeUpload
 	downloadGets []string
 	downloadErr  error
+	// history backs Messages, and narrows records every narrow asked
+	// for — the archive gesture's last-resort lookup is a claim about
+	// CALLS (at most one, cached afterwards) as much as about its
+	// answer. historyErr models a server that refuses the read.
+	history    []zulipproto.Message
+	narrows    [][]zulipproto.NarrowTerm
+	historyErr error
+}
+
+// Messages plays GET /messages. It answers the whole canned history —
+// the narrow is recorded rather than applied, because what the tests
+// assert is which narrow the relay ASKED for.
+func (z *fakeZulip) Messages(_ context.Context, narrow []zulipproto.NarrowTerm, _ int, _ int64) ([]zulipproto.Message, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.narrows = append(z.narrows, narrow)
+	if z.historyErr != nil {
+		return nil, z.historyErr
+	}
+	return append([]zulipproto.Message(nil), z.history...), nil
+}
+
+// narrowCalls returns how many /messages reads the relay made.
+func (z *fakeZulip) narrowCalls() int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return len(z.narrows)
+}
+
+// narrow returns the i-th recorded narrow.
+func (z *fakeZulip) narrow(i int) []zulipproto.NarrowTerm {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.narrows[i]
+}
+
+// setHistory installs what Messages answers, and failHistory makes the
+// read fail.
+func (z *fakeZulip) setHistory(msgs ...zulipproto.Message) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.history = msgs
+}
+
+func (z *fakeZulip) failHistory(err error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.historyErr = err
 }
 
 // fakeUpload is one stored attachment.

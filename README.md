@@ -611,6 +611,12 @@ construction, so an archived topic cannot re-engage the relay, and recovery is
 one move back. What accumulates there is a retention-policy question, not the
 relay's.
 
+"The relay's last message" survives a restart: it is written through to the
+journal and, failing that, resolved with one narrowed `GET /messages`, so the
+gesture works on an old topic and not only on one the relay has answered in
+since it last started. A conversation that has been retired (`!new`, or an
+earlier archive) owns no message and arms nothing.
+
 Only the confirmation counts, and only on the warning message: another emoji does
 nothing, a `:wastebasket:` somewhere else does nothing, un-reacting does nothing.
 An unconfirmed arming simply **expires** after two minutes and is logged; a later
