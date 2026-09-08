@@ -119,8 +119,17 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   closed and reopened, with their language tag, across the seam. **No text is
   ever dropped** — Zulip's 10000-character limit truncates *silently*, so the
   relay counts for itself.
-- **Files.** Anything the agent writes into `outbox/` in its working directory
-  is uploaded and linked at the end of the turn.
+- **Files, both ways.** Anything the agent writes into `outbox/` in its working
+  directory is uploaded and linked at the end of the turn. Anything a **human
+  attaches** to a message is downloaded into `inbox/` and the agent is told the
+  local path — with images also passed inline as ACP image blocks when the agent
+  supports them — so "what's in this photo?" just works instead of the agent
+  saying it cannot see the attachment. On by default
+  (`"inbound_attachments": false` to disable); capped by
+  `max_attachment_bytes` (20 MB) and `max_attachment_total_bytes` (60 MB), with
+  anything over cap skipped and named rather than failing the turn. Inbound
+  files persist alongside the conversation's other state; `!new` starts a fresh
+  conversation with an empty `inbox/` and leaves the old files on disk.
 - **Every answer is signed** with a one-line italic footer naming the model and
   the agent's own mood/plan labels — `*🏛️ opus-4.5 • steady • 2/5*` — from the
   `dev.acp-kit.status-line/v1` extension. It is a footer, not a header: mood and
@@ -320,6 +329,9 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
 | `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
+| `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
+| `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
+| `max_attachment_total_bytes` | `62914560` (60 MB) | cap on one message's worth of inbound attachments; must be ≥ `max_attachment_bytes` |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
 | `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
 | `max_schedules_total` | `100` | schedules armed at once across the relay |
@@ -526,6 +538,45 @@ and have the relay read out a channel they cannot see. Restricting hydration to
 the channel the link was posted in makes the check free and exact: whoever
 posted there can read there. There is no hydration in a direct message, in
 either direction.
+
+### Attachments (`inbound_attachments`)
+
+A Zulip message never carries a file. It carries markdown containing
+`![photo.jpg](/user_uploads/2/20/HASH/photo.jpg)`, and the bytes sit behind an
+authenticated endpoint — so an agent handed the raw text is handed a path it
+cannot open, and answers "I can't see the attachments".
+
+With `"inbound_attachments": true` (the default) the relay downloads them for it,
+into `inbox/` in the conversation's working directory, and appends a block like:
+
+```
+[relay] This message has attachments. They have been downloaded into this
+conversation's working directory — read them from the local paths below, do not
+fetch the Zulip links.
+- photo.jpg — local path: /…/convs/c1a2b3/inbox/photo.jpg (image/jpeg, 1.8 MB). Zulip link: /user_uploads/2/20/HASH/photo.jpg
+```
+
+The Zulip link is kept so no context is lost, and where the agent has advertised
+ACP's `image` prompt capability the image *itself* also goes in as a content
+block, so a vision model sees it without a tool call. Everything else is
+path-only — as is any image over 5 MB, or past 10 MB of inlined images in one
+message, which belong on disk rather than in a prompt.
+
+Both `![alt](path)` and `[name](path)` are recognised, as is the absolute
+`https://<your-realm>/user_uploads/…` form that "Copy link" produces. **A URL on
+any other host is ignored**: the bot's credentials never leave its own realm.
+
+Bounds, because anyone who can post in a served channel can attach a file: ten
+references per message, `max_attachment_bytes` per file, and
+`max_attachment_total_bytes` per message. Anything over cap — or any download
+that simply fails — is **skipped and named**, so the agent is told what it did
+not get and the turn still happens. Nothing here can fail a turn.
+
+The files **persist**, next to the conversation's other state. `!new` does not
+delete them: it starts a fresh conversation with a fresh working directory, so
+the new session sees an empty `inbox/` while the old files stay on disk. Prune
+`inbox/` yourself if a long-running conversation collects more than you want to
+keep.
 
 ### Archiving a topic (`archive_channel`)
 

@@ -96,6 +96,19 @@ type fakeZulip struct {
 	// avoid colliding with a topic that already exists.
 	channelTopics map[int64][]string
 	topicsErr     error
+	// downloads backs DownloadUpload, keyed by upload path, and
+	// downloadGets records every fetch — inbound ingestion is
+	// deduped and capped, and both claims are about CALLS, not about
+	// what came back.
+	downloads    map[string]fakeUpload
+	downloadGets []string
+	downloadErr  error
+}
+
+// fakeUpload is one stored attachment.
+type fakeUpload struct {
+	data  []byte
+	ctype string
 }
 
 // Topics plays GET /users/me/{stream_id}/topics.
@@ -126,6 +139,7 @@ func newZulip() *fakeZulip {
 		messages:      map[int64]zulipproto.Message{},
 		users:         map[int64]zulipproto.User{humanID: {UserID: humanID, FullName: "Ada Lovelace"}},
 		channelTopics: map[int64][]string{},
+		downloads:     map[string]fakeUpload{},
 		posted:        make(chan struct{}, 256),
 
 		unreacted: make(chan struct{}, 256),
@@ -362,6 +376,48 @@ func (z *fakeZulip) Upload(_ context.Context, filename, contentType string, r io
 	return "/user_uploads/2/ab/" + filename, nil
 }
 
+// DownloadUpload plays the authenticated attachment endpoint. downloads
+// is the store, keyed by upload path; a path that is not in it is a
+// 404, exactly as the server answers for an attachment that has been
+// deleted. downloadErr overrides everything, for the degraded path.
+func (z *fakeZulip) DownloadUpload(ctx context.Context, path string, max int64) ([]byte, string, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.downloadGets = append(z.downloadGets, path)
+	// The real client rides the caller's context, and "a superseded
+	// turn stops downloading" is a claim about exactly that.
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if z.downloadErr != nil {
+		return nil, "", z.downloadErr
+	}
+	f, ok := z.downloads[path]
+	if !ok {
+		return nil, "", &zulipproto.APIError{Status: 404, Msg: "Not Found"}
+	}
+	// The cap is the server-side behaviour that matters: the real
+	// client reads at most max+1 bytes and refuses, returning nothing.
+	if max > 0 && int64(len(f.data)) > max {
+		return nil, "", fmt.Errorf("%w: %s", zulipproto.ErrUploadTooLarge, path)
+	}
+	return append([]byte(nil), f.data...), f.ctype, nil
+}
+
+// addUpload makes an attachment exist at an upload path.
+func (z *fakeZulip) addUpload(path, ctype string, data []byte) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.downloads[path] = fakeUpload{data: data, ctype: ctype}
+}
+
+// downloaded returns every upload path the relay fetched, in order.
+func (z *fakeZulip) downloaded() []string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return slices.Clone(z.downloadGets)
+}
+
 func (z *fakeZulip) AddReaction(_ context.Context, id int64, emoji string) error {
 	z.mu.Lock()
 	defer z.mu.Unlock()
@@ -451,6 +507,12 @@ type fakeAgent struct {
 	setModel    []string
 	setErr      error
 	prompts     []string
+	// imageCap is agentCapabilities.promptCapabilities.image, and
+	// promptBlocks records the FULL block list of every prompt —
+	// prompts above keeps only the text, which is exactly what an
+	// attachment test cannot assert on.
+	imageCap     bool
+	promptBlocks [][]acp.ContentBlock
 	// block, when non-nil, holds Prompt until closed — used to test
 	// cancellation of an in-flight turn.
 	block chan struct{}
@@ -518,6 +580,15 @@ func (a *fakeAgent) AvailableCommands() []client.CommandInfo {
 	return a.agentCmds
 }
 
+// Caps is the agent's advertised capability set. imageCap is what
+// inbound attachment ingestion consults before putting an image in
+// front of the model.
+func (a *fakeAgent) Caps() client.Caps {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return client.Caps{Image: a.imageCap}
+}
+
 func (a *fakeAgent) selections() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -531,9 +602,17 @@ func (a *fakeAgent) prompted() []string {
 	return slices.Clone(a.prompts)
 }
 
+// promptedBlocks returns the full block list of every prompt.
+func (a *fakeAgent) promptedBlocks() [][]acp.ContentBlock {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.promptBlocks)
+}
+
 func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
 	a.mu.Lock()
 	a.prompts = append(a.prompts, blocks[0].Text.Text)
+	a.promptBlocks = append(a.promptBlocks, slices.Clone(blocks))
 	if d, ok := ctx.Deadline(); ok {
 		a.deadlines = append(a.deadlines, d)
 	}

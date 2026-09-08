@@ -781,12 +781,69 @@ Beyond rollover, two backstops:
 
 ## Attachments
 
-Each conversation has a stable working directory. Anything the agent writes into
+Each conversation has a stable working directory, and attachments move through
+it in both directions.
+
+**Outbound.** Anything the agent writes into
 `<cwd>/outbox/` is uploaded at the **end of the turn** and linked from the
 answer, then moved to `outbox/.sent/` so a follow-up does not re-upload it.
 End-of-turn only: uploading opportunistically races the agent still writing the
 file. The convention is documented to the agent in the built-in system prompt —
 an agent cannot use a convention it is never told about.
+
+**Inbound** (`internal/handler/inbox.go`, on by default,
+`"inbound_attachments": false` to disable). A Zulip message never carries a
+file: it carries markdown containing `![a.jpg](/user_uploads/2/20/HASH/a.jpg)`,
+and the bytes sit behind an authenticated endpoint. Handing that straight to the
+agent hands it a path it cannot open, so the relay:
+
+1. Extracts every `/user_uploads/…` reference from the raw markdown —
+   `![alt](path)`, `[name](path)`, and the absolute
+   `https://<our realm>/user_uploads/…` spelling that "Copy link" produces.
+   **Any other host is refused**: the bot's credentials must never leave the
+   realm they belong to.
+2. Downloads each with the bot's credentials
+   (`zulipproto.Client.DownloadUpload`, `GET /api/v1/user_uploads/<rest>`) into
+   `<cwd>/inbox/`, keeping the human filename. The same bytes under the same
+   name resolve to the same path; *different* bytes get a `-1`, `-2` suffix and
+   never overwrite, because the agent may already have been told where the first
+   one is.
+3. Appends a `[relay]` block naming each file's **local path**, type and size,
+   **keeping the Zulip link** so no context is lost.
+4. Additionally sends images as ACP `ContentBlock::Image` when — and only when —
+   the agent advertised `promptCapabilities.image` (`acp-kit`'s `Caps.Image`).
+   Everything else is path-only, and so is an image over `inlineImageMax` (5 MB)
+   or past `inlineTotalMax` (10 MB per message): a legal attachment can still be
+   an illegal prompt, and the per-image ceiling alone would let four of them
+   assemble one.
+
+An image is inlined only when the bytes *agree*: Zulip serves back the
+Content-Type declared at **upload**, so `image/png` is a claim by whoever posted
+the file, and without a `http.DetectContentType` cross-check anyone in the realm
+could push 10 MB of arbitrary bytes into the agent's context window. For the
+same reason `storeAttachment` uses `os.Lstat`, not `os.Stat`: a dangling symlink
+reports `ErrNotExist` to `Stat`, and `os.WriteFile` would then follow it and
+create the target outside the inbox.
+
+The displayed filename is the **sanitised** one. The name is percent-*decoded*,
+so `%0A` in an upload link is a newline in the agent's prompt — anyone in the
+realm could otherwise forge a `[relay]` instruction line by naming a file.
+
+Every bound is mandatory, because anyone who can post in a served channel can
+attach a file: at most 10 references per message, `max_attachment_bytes` per
+file (default 20 MB), `max_attachment_total_bytes` per message (default 60 MB),
+and a 60s cap on the whole ingestion. Anything refused is **skipped and named**
+in the prompt. **No failure here ever fails the turn** — a download that breaks
+degrades to the plain Zulip link plus a stated reason, so the agent can say what
+it did not get instead of hallucinating about it.
+
+Inbound files **persist**. The conversation's state directory is its memory, and
+an agent that answered about a screenshot last week should still be able to look
+at it; nothing in the relay deletes one. `!new` does not clear the directory and
+must not — it retires the conv-id and mints a fresh one, so the *new*
+conversation gets a new working directory and therefore an empty inbox, while
+the old files stay on disk under the retired id. That is the same rule
+everywhere else: ending a conversation never destroys its files.
 
 ## What was deliberately not ported from slack-acp
 

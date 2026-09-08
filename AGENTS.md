@@ -60,7 +60,9 @@ dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
-                        opts.go = the `!opts` options panel
+                        opts.go = the `!opts` options panel;
+                        inbox.go = INBOUND attachment ingestion (the mirror of
+                        the outbox upload in handler.go)
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
@@ -73,7 +75,8 @@ internal/updater/       the four strings that name THIS binary for
                         hand-off) is github.com/kfet/distkit
 internal/zulipmcp/      self-hosted MCP server identity (socket, env, subcommand)
 internal/zulipproto/    HTTP Basic client + /events long-poll runner; zform.go is
-                        the only coupling to Zulip's widget subsystem
+                        the only coupling to Zulip's widget subsystem;
+                        download.go = the authenticated /user_uploads fetch
 install.sh              GENERATED from distkit's template + install.sh.json;
                         `make install.sh` rewrites it, `make check-installsh`
                         fails the build when the checked-in copy has drifted

@@ -87,6 +87,9 @@ func TestValidate(t *testing.T) {
 		{"empty ambient channel", Config{AmbientChannels: []string{"fleet", "  "}}},
 		{"empty autotopic channel", Config{AutotopicChannels: []string{"fleet", "  "}}},
 		{"markers exceed budget", Config{MaxMessageChars: 100, SealMarker: strings.Repeat("s", 90)}},
+		{"negative per-file attachment cap", Config{MaxAttachmentBytes: -1}},
+		{"negative per-message attachment cap", Config{MaxAttachmentTotalBytes: -1}},
+		{"message attachment budget below one file's cap", Config{MaxAttachmentBytes: 100, MaxAttachmentTotalBytes: 99}},
 	}
 	for _, c := range bad {
 		if err := c.cfg.Validate(); err == nil {
@@ -100,6 +103,44 @@ func TestValidate(t *testing.T) {
 	err := (&Config{MaxMessageChars: zulipproto.MaxMessageLength + 1}).Validate()
 	if !strings.Contains(err.Error(), "truncate") {
 		t.Fatalf("error text = %q", err)
+	}
+}
+
+// TestInboundAttachments covers the three states of
+// `inbound_attachments`, which defaults ON: a Zulip message carries a
+// link and never a file, so an agent asked about an attached photo can
+// otherwise only say it cannot see it.
+func TestInboundAttachments(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"unset defaults on", `{}`, true},
+		{"explicit true", `{"inbound_attachments":true}`, true},
+		{"explicit false", `{"inbound_attachments":false}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetInboundAttachments(); got != c.want {
+				t.Fatalf("GetInboundAttachments() = %v, want %v", got, c.want)
+			}
+		})
+	}
+	// A message budget smaller than one file's cap is the one
+	// combination that reads to an operator as random failure, so the
+	// error has to name both numbers.
+	err := (&Config{MaxAttachmentBytes: 100, MaxAttachmentTotalBytes: 99}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_attachment_total_bytes") {
+		t.Fatalf("error text = %v", err)
 	}
 }
 
