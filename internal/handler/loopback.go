@@ -76,6 +76,77 @@ func (h *Handler) ConvKey(sessionKey string) (journal.Key, bool) {
 	return c.Key, true
 }
 
+// ConvOrigin maps an MCP session key to the conversation THIS one was
+// branched out of, and reports whether there is one.
+//
+// It is zulipmcp.Config.Origin, and it is the whole permission surface
+// of `history(origin: true)`. ONE HOP by construction: it returns the
+// caller's own parent pointer and never follows that parent's, so a
+// chain of branches cannot accumulate into a licence to read
+// everything.
+//
+// # The location is resolved from the message id, not from the key
+//
+// The journal stores the branch point's BARE MESSAGE ID beside the
+// channel and topic, and this is what that id is for. A topic can be
+// renamed, or moved to another channel by `!archive` or by any human,
+// so the stored key rots — and the failure is not merely a miss: a
+// LATER topic of the same name in the same channel would be read
+// instead, which is the permission model silently pointing somewhere
+// nobody granted. So the current location is read back from the
+// message itself, every time.
+//
+// Anything that does not resolve is refused rather than fallen back
+// on: an origin whose branch-point message has been deleted, or whose
+// topic has moved into a channel the relay no longer serves, is an
+// origin nobody can vouch for. The stored key is kept only as the
+// clamp's companion, never as an authority.
+//
+// A retired conversation still resolves — LookupID is deliberately
+// id-addressable past retirement — so a turn that is still unwinding
+// after `!new` keeps the origin it started with.
+func (h *Handler) ConvOrigin(sessionKey string) (journal.Parent, bool) {
+	c, ok := h.cfg.Journal.LookupID(sessionKey)
+	if !ok || c.Parent == nil || c.Parent.MessageID == 0 {
+		return journal.Parent{}, false
+	}
+	parent := *c.Parent
+	if parent.Key.IsDM() {
+		// A DM cannot be renamed or moved: its key is the participant
+		// set, which is fixed forever. There is nothing to resolve and
+		// nothing that could have rotted.
+		return parent, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), originTimeout)
+	defer cancel()
+	m, err := h.cfg.Client.GetMessage(ctx, parent.MessageID)
+	if err != nil {
+		h.cfg.Logf("handler: not resolving the origin of %s: message %d is unreadable (%v)", sessionKey, parent.MessageID, err)
+		return journal.Parent{}, false
+	}
+	if m.IsDM() || m.StreamID == 0 {
+		// The branch point was in a channel when it was recorded; a
+		// message that is now a DM is not a shape this can happen in,
+		// so refuse rather than narrow on a guess.
+		h.cfg.Logf("handler: not resolving the origin of %s: message %d is no longer a channel message", sessionKey, parent.MessageID)
+		return journal.Parent{}, false
+	}
+	if _, served := h.cfg.Channels.Name(m.StreamID); !served {
+		// The origin topic has left the served set — archived, or
+		// moved away. A conversation the relay would refuse to answer
+		// in is not one it should read out either.
+		h.cfg.Logf("handler: not resolving the origin of %s: channel %d is no longer served", sessionKey, m.StreamID)
+		return journal.Parent{}, false
+	}
+	parent.Key = journal.Channel(m.StreamID, m.Topic)
+	return parent, true
+}
+
+// originTimeout bounds the single message read ConvOrigin costs. The
+// agent's turn is blocked on the tool call, so it must not be able to
+// hang on a wedged request; it is deliberately shorter than a turn.
+const originTimeout = 30 * time.Second
+
 // PostTo satisfies command.Poster: it sends a message into the
 // conversation the tool call came from, out of band.
 //

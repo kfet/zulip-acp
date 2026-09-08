@@ -266,6 +266,7 @@ func runRelayChild() {
 	tools, err := zulipmcp.NewTools(zulipmcp.Config{
 		Client:  &stubMessages{gen: gen},
 		ConvKey: func(k string) (journal.Key, bool) { return journal.Channel(streamID, topic), k == convID },
+		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
 		Rename:  func(journal.Key, string) (string, error) { return "", nil },
 		Timeout: 10 * time.Second,
 		Logf:    func(string, ...any) {},

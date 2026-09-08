@@ -92,6 +92,11 @@ type Sessions interface {
 // the bot's subscriptions); see internal/channels.
 type ChannelSet interface {
 	Name(streamID int64) (string, bool)
+	// ID is the reverse of Name: it resolves a channel name typed as a
+	// `#**mention**` to its id, and reports whether the relay serves
+	// it. `!branch` is the only caller — it is handed a name and must
+	// refuse a destination the relay could not post in.
+	ID(name string) (int64, bool)
 	// Ambient reports whether a channel engages without an @-mention.
 	Ambient(streamID int64) bool
 	// Autotopic reports whether a general-chat message in a channel
@@ -125,6 +130,10 @@ type Poster interface {
 	// Handler.repostForNotify).
 	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
+	// Topics lists the topic names already in a channel. Only
+	// `!branch` uses it, to avoid creating a topic that collides with
+	// a live one — Zulip would silently merge the two.
+	Topics(ctx context.Context, streamID int64) ([]string, error)
 	// UserByID resolves a user id to a user record. Used only by the
 	// reaction path, which is handed an id and nothing else.
 	UserByID(ctx context.Context, id int64) (zulipproto.User, error)
@@ -376,6 +385,12 @@ type Handler struct {
 	badMsgs   *msgIndex
 	userNames *msgIndex
 
+	// linkMsgs remembers which messages have already been hydrated
+	// into which conversation, so re-pasting a link in a follow-up
+	// does not re-inject the same block every turn. A bounded hint
+	// like the three above — see link.go.
+	linkMsgs *msgIndex
+
 	// lastOwn is the NEWEST message the relay has posted in each
 	// conversation. The archive control needs more than "this message
 	// is ours" (ownMsgs): reacting to an old answer from last week
@@ -434,6 +449,7 @@ func New(cfg Config) (*Handler, error) {
 		ownMsgs:        newMsgIndex(reactionIndexSize),
 		badMsgs:        newMsgIndex(reactionIndexSize),
 		userNames:      newMsgIndex(reactionIndexSize),
+		linkMsgs:       newMsgIndex(linkIndexSize),
 		lastOwn:        map[string]int64{},
 		archivePending: map[string]*pendingArchive{},
 		reactPending:   map[string]*reactionBatch{},
@@ -723,6 +739,10 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	}
 
 	prompt = "[" + m.SenderName + "] " + prompt
+	// Hydration runs after the conversation exists — it dedupes per
+	// conversation — and before the rename hint, so the relay's own
+	// instruction stays the last thing in the prompt.
+	prompt += h.hydrateLinks(ctx, conv.ID, m)
 	if named != "" && h.cfg.Loopback != nil {
 		prompt += renameHint(named)
 	}
@@ -752,10 +772,26 @@ func renameHint(topic string) string {
 // ackMsgID is the message the in-flight acknowledgement reaction goes
 // on; 0 means no acknowledgement.
 func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID int64) {
+	h.startTurnAnchored(ctx, conv, prompt, addressed, ackMsgID, ackMsgID)
+}
+
+// startTurnAnchored is startTurn with the rename ANCHOR stated
+// separately from the acknowledged message.
+//
+// They are the same message for every ordinary turn — the one a human
+// sent, which is in the topic the answer goes to — and `!branch` is the
+// one case where they differ: the triggering `!branch` message is in
+// the ORIGIN topic, while the turn runs in the new one. A rename is an
+// edit of a message IN the topic being renamed (see rename.go), so the
+// anchor must be the seed message the relay posted in the new topic,
+// or the agent's rename would be refused as "no longer in it" and the
+// branched topic would keep its auto-generated placeholder name for
+// good.
+func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID, anchorID int64) {
 	// A follow-up supersedes whatever is still running in this topic.
 	h.cancelInflight(ctx, conv.ID)
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
-	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: ackMsgID}}
+	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: anchorID}}
 	h.setInflight(conv.ID, entry)
 	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
 }

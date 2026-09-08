@@ -139,6 +139,16 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		return "", true
 	}
 
+	// `!branch` is this relay's own for the third time and the same
+	// reason: it CREATES a Zulip topic, which poe-acp has no analogue
+	// for. Like `!opts` and `!archive` it runs ahead of the
+	// pending-login path — a pasted redirect URL never carries a sigil
+	// — and, like them, the origin agent never sees the message.
+	if arg, ok := isBranchCommand(text); ok {
+		h.branchCommand(ctx, m, key, arg)
+		return "", true
+	}
+
 	// A knob CHANGE is applied here rather than being rendered as
 	// prose: it goes through the broker's exported action exactly as
 	// `!model` does, but is acknowledged with a reaction and a
@@ -207,7 +217,7 @@ func (h *Handler) decorate(text, out string) string {
 	if !ok || !strings.EqualFold(strings.TrimSpace(body), "help") || out == "" {
 		return out
 	}
-	extra := optsHelpLine
+	extra := optsHelpLine + branchHelp
 	if h.archiveEnabled() {
 		// Advertised only when it can actually work: a help entry for
 		// a command that answers "not configured here" teaches the

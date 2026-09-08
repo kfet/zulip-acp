@@ -195,6 +195,7 @@ offer the same surface.
 | `!model` | list the models the agent reports |
 | `!model <filter>` | narrow that list |
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
+| `!branch [#**channel**] <text>` | spin `<text>` out into a new topic that can read this one |
 | `!new` | retire this conversation and start a fresh one |
 | `!stop` | interrupt the turn currently running here |
 | `!schedules` | list the prompts the agent has armed here (needs `relay_mcp`) |
@@ -205,9 +206,11 @@ offer the same surface.
 Older spellings still work and are not going away: `!models`, `!relay`,
 `!bot`, `!whoami`, `!reset`, `!cancel-login`.
 
-`!opts` is the one command that is **not** in the shared broker: it renders
-controls that already exist onto a surface only Zulip has. See
-[Options panel](#options-panel).
+`!opts`, `!archive` and `!branch` are the commands that are **not** in the
+shared broker: each needs something only Zulip has — a button widget, a
+cross-channel topic move, a topic to create. See [Options panel](#options-panel),
+[Archiving a topic](#archiving-a-topic-archive_channel) and
+[Branching a topic](#branching-a-topic-branch).
 
 Commands the **agent** advertises are forwarded to it when they are on a small
 curated allowlist — `!reload`, `!logout`, `!compact`, `!session`,
@@ -420,6 +423,76 @@ expected outcome, not a failure; reply only when the reaction plainly changes
 something or plainly asks for something; and never send a "thanks!"-style
 acknowledgement. Set `"reactions": false` if you would rather a stray `:+1:`
 never cost a turn.
+
+### Branching a topic (`!branch`)
+
+An idea surfaces in the middle of a conversation and deserves a topic of its
+own. Type, in the topic it surfaced in:
+
+```
+!branch <text>
+!branch #**other-channel** <text>
+```
+
+`<text>` is the **first message** of the new topic — both the opening prompt
+and, through the same first-line heuristic `autotopic_channels` uses, the
+topic's name. The origin agent never sees the command.
+
+What happens:
+
+- a new topic is created in this channel, or in the one you named. On a
+  case-insensitive collision with a topic that already exists there the name
+  gets a ` (2)` suffix — a branch never appends into a live conversation;
+- the relay posts one opening message in it, @-mentioning you, so your phone
+  actually surfaces the topic you are not looking at;
+- one pointer line — `branched → #**channel>New topic**` — goes into the origin
+  topic;
+- the new session's first turn is `[branched from #**channel>Origin topic@<id>**]`
+  followed by your text;
+- the journal records the origin as (channel, topic, **bare message id**), in
+  the same atomic write that allocates the conversation. The id is what the
+  origin is actually located by at read time: `!archive` — or any human — can
+  rename or move a topic, so the stored name rots, and a later topic of the same
+  name would otherwise be read instead.
+
+The context is **not** summarised into the new topic. It is pulled, lazily, by
+the agent that needs it: with `relay_mcp` on, the branched session's `history`
+tool gains `origin: true`, which reads the origin conversation clamped to
+messages **at or before** the branch point. A lazy fetch cannot be wrong about
+what matters; a summary written before anyone knows what the branch is about
+can. It also means you can branch out of a topic the relay was never engaged in
+— a human-only thread in an ambient channel — where there is no session to ask
+for a summary in the first place.
+
+The permission model is one sentence: **a session may read its declared parent
+conversation, and nothing else.** One hop only — the parent's own parent is not
+reachable, or "read my ancestors" would quietly become "read everything".
+
+From a **direct message** you must name a channel. The relay will not guess
+where to publish the contents of a private conversation. The destination must
+be a channel the relay serves, and a branch that would land in the topic it was
+typed in is refused — that is not a branch.
+
+If the origin's branch-point message is later deleted, or its topic moves to a
+channel the relay no longer serves, `origin: true` simply reports that the
+origin is no longer reachable. It never falls back on the stored name.
+
+### Linked messages are hydrated
+
+When an incoming message contains a link to another Zulip message —
+`#**channel>topic@949**`, or any URL with `/near/949` in it — the relay fetches
+that message and puts it in front of the agent as a `[linked]` block, so "see
+this" means something.
+
+Bounded on purpose: at most three per message, each body truncated, deduped so
+re-pasting the same link does not re-inject it, and — the check that matters —
+**the same channel only**. `GET /messages/{id}` runs with the *bot's*
+permissions, and the bot is subscribed to every channel it serves, so "served"
+alone would let anyone in one served channel paste a `/near/` link into another
+and have the relay read out a channel they cannot see. Restricting hydration to
+the channel the link was posted in makes the check free and exact: whoever
+posted there can read there. There is no hydration in a direct message, in
+either direction.
 
 ### Archiving a topic (`archive_channel`)
 

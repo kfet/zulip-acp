@@ -879,3 +879,30 @@ func TestUserByID(t *testing.T) {
 		t.Fatal("want an error for an unknown user")
 	}
 }
+
+// TestTopics: `!branch` reads this to avoid creating a topic that
+// collides with one already there. Zulip returns the names as stored;
+// the case-insensitive compare is the caller's job.
+func TestTopics(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"topics":[{"max_id":9,"name":"Design notes"},{"max_id":4,"name":"old"}]`)
+	})
+	got, err := newClient(t, ts).Topics(context.Background(), 4)
+	if err != nil {
+		t.Fatalf("Topics: %v", err)
+	}
+	if len(got) != 2 || got[0] != "Design notes" || got[1] != "old" {
+		t.Fatalf("Topics = %+v", got)
+	}
+	req := ts.requests()[0]
+	if req.method != http.MethodGet || req.path != "/api/v1/users/me/4/topics" {
+		t.Fatalf("request = %+v", req)
+	}
+}
+
+func TestTopicsPropagatesAnError(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) { return 500, `{"result":"error","msg":"boom"}` })
+	if _, err := newClient(t, ts).Topics(context.Background(), 4); err == nil {
+		t.Fatal("a failed listing must be reported, not read as an empty channel")
+	}
+}
