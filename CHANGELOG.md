@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-08
+
 ### Added
 
 - **Inbound attachments.** A photo or file a human attaches to a message is now
