@@ -25,6 +25,9 @@
   },
   "config": {
     "site": "https://zboxserver.tail77d32.ts.net",
+    "site_aliases": [
+      "zulip.kfet.io"
+    ],
     "bot_email": "zbox-fir-bot@zboxserver.tail77d32.ts.net",
     "channels": [
       "*"
@@ -42,7 +45,8 @@
     "system_prompt": "Treat every message you receive as addressed to you, whether or not the bot is mentioned. Reply to all of them; never emit the silent sentinel.",
     "allowed_user_ids": [
       8
-    ]
+    ],
+    "stream_edits": false
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"

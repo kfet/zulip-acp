@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-08
+
 ### Added
 
 - **`site_aliases`.** Other host names the same realm answers to. Attachment
@@ -1193,7 +1195,9 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/kfet/zulip-acp/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/kfet/zulip-acp/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/kfet/zulip-acp/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/kfet/zulip-acp/compare/v0.22.4...v0.23.0
 [0.22.4]: https://github.com/kfet/zulip-acp/compare/v0.22.3...v0.22.4
