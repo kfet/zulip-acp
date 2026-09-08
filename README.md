@@ -330,7 +330,11 @@ system prompt, alongside `system_prompt`. Two layers are merged:
 
 - **builtin** — SKILL.md files embedded in the binary (`internal/skills/bundle/`)
   whose frontmatter sets `builtin: true`. They are extracted to a
-  content-hashed dir under `$TMPDIR` at startup.
+  content-hashed dir under `<state-dir>/skills/` at startup — a stable path,
+  because the system prompt promises the agent these paths stay valid for the
+  session and a graceful reload replaces the process image mid-session.
+  Extractions from older versions of the bundle are removed as they are
+  superseded.
 - **host** — `<config-dir>/skills/<name>/SKILL.md`, i.e. next to `config.json`.
   A host skill whose `name` matches a builtin **replaces** it; that is also how
   you disable a builtin (shadow it with a stub).

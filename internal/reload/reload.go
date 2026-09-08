@@ -10,15 +10,27 @@
 // instant in which clients get ECONNREFUSED. The supervisor exists
 // solely to hold the socket across worker generations.
 //
-// zulip-acp holds no socket. It is a long-poll CLIENT, and while it is
-// not polling, nothing is lost: incoming messages accumulate
+// zulip-acp is not an HTTP server. It is a long-poll CLIENT, and while
+// it is not polling, nothing is lost: incoming messages accumulate
 // SERVER-SIDE in the Zulip event queue and are delivered on the next
 // GetEvents for that queue id. The buffer we would need a supervisor to
 // provide already exists, remotely, for free — and a Zulip queue
 // outlives an exec by orders of magnitude (idle GC is minutes; an exec
-// is sub-second). So there is nothing for a supervisor to hold, and the
-// whole apparatus of control pipes, parent-death pipes, ready signalling
-// and drain ordering buys exactly nothing.
+// is sub-second).
+//
+// It does hold ONE socket — the relay-MCP loopback (internal/zulipmcp,
+// acp-kit/mcphost) — but that socket needs no supervisor either,
+// because its only clients are our OWN redirector subprocesses. A
+// redirector redials on a 50ms→2s schedule and replays `initialize` on
+// the new connection, so the sub-second window in which nothing is
+// bound is invisible to the agent. What it does need is for the socket
+// to be at the SAME PATH afterwards (hence zulipmcp.HostConfig pinning
+// it under StateDir), for the socket file not to be unlinked on the way
+// out (hence CloseForExec rather than Close), and for the successor to
+// honour the tokens already handed out (hence EnvMCPTokens below). So
+// there is nothing for a supervisor to hold, and the whole apparatus of
+// control pipes, parent-death pipes, ready signalling and drain
+// ordering buys exactly nothing.
 //
 // # The sequence
 //
@@ -56,12 +68,13 @@
 //
 // # Wire contract
 //
-// Three environment variables, set only by Exec and consumed only by
-// Inherited:
+// Four environment variables, set only by Exec and consumed only by
+// Inherited (and, for the last one, by main's SeedTokens call):
 //
 //	ZULIP_ACP_QUEUE_ID            the live Zulip event queue to resume
 //	ZULIP_ACP_LAST_EVENT_ID       the id of the last event already dispatched
 //	ZULIP_ACP_QUEUE_REGISTRATION  the event_types + narrow that queue was registered with
+//	ZULIP_ACP_MCP_TOKENS          the loopback MCP session→token registry
 //
 // The first two must both be present and well-formed or neither is
 // honoured: half a cursor is worse than none, because it would
@@ -73,7 +86,7 @@
 // registration is not the one this image wants means polling a queue
 // that cannot carry the events it asked for, silently, across every
 // subsequent reload. A stale set is never inherited by accident —
-// Exec strips all three from the base environment before appending its
+// Exec strips all four from the base environment before appending its
 // own.
 // The cursor must never reach the ACP agent. It is a relay capability:
 // a queue id plus the bot's credentials is enough to poll the relay's
@@ -111,15 +124,31 @@ const (
 	// the successor must refuse to resume one that does not match what
 	// it wants — see Cursor.Registration.
 	EnvRegistration = "ZULIP_ACP_QUEUE_REGISTRATION"
+	// EnvMCPTokens names the env var carrying the loopback MCP token
+	// registry (mcphost.Host.ExportTokens) across the exec.
+	//
+	// The agent's redirector subprocess SURVIVES the exec holding the
+	// token it was given at session/new, so a successor that minted a
+	// fresh registry would reject it and the agent would lose every
+	// mcp__relay__* tool for the rest of its session. The blob is a
+	// BEARER CREDENTIAL for every live session: it goes in the
+	// environment of the process we are becoming and nowhere else —
+	// never a log line, never a file (which would create a new secret
+	// at rest), and never the agent's environment (see AgentEnvNames).
+	EnvMCPTokens = "ZULIP_ACP_MCP_TOKENS"
 )
 
 // AgentEnvNames lists the reload contract variables that must be
 // scrubbed from the ACP agent's environment. A queue id is a relay
 // capability, not configuration: combined with credentials it lets its
 // holder poll the relay's own event queue and take delivery of messages
-// meant for the relay. The agent is driven by untrusted text, so it
-// gets the same treatment as the bot API key.
-func AgentEnvNames() []string { return []string{EnvQueueID, EnvLastEventID, EnvRegistration} }
+// meant for the relay. The MCP token registry is worse: it is every
+// live session's bearer token, so an agent holding it could speak for
+// any conversation the relay serves. The agent is driven by untrusted
+// text, so both get the same treatment as the bot API key.
+func AgentEnvNames() []string {
+	return []string{EnvQueueID, EnvLastEventID, EnvRegistration, EnvMCPTokens}
+}
 
 // Cursor is a position in a Zulip event queue: the queue to poll, the
 // id of the last event already dispatched from it, and the
@@ -178,13 +207,15 @@ func Inherited() (Cursor, error) {
 }
 
 // Environ returns base with any pre-existing cursor variables removed
-// and c's appended when c is valid. Stripping first is what stops a
-// stale cursor from an earlier reload surviving into a generation that
-// has no live queue to hand on.
-func Environ(base []string, c Cursor) []string {
-	out := make([]string, 0, len(base)+3)
+// and c's appended when c is valid, plus the MCP token registry blob
+// when one is supplied. Stripping first is what stops a stale cursor —
+// or a stale token registry — from an earlier reload surviving into a
+// generation that has no live queue or no loopback to hand on.
+func Environ(base []string, c Cursor, mcpTokens string) []string {
+	strip := []string{EnvQueueID + "=", EnvLastEventID + "=", EnvRegistration + "=", EnvMCPTokens + "="}
+	out := make([]string, 0, len(base)+4)
 	for _, kv := range base {
-		if strings.HasPrefix(kv, EnvQueueID+"=") || strings.HasPrefix(kv, EnvLastEventID+"=") || strings.HasPrefix(kv, EnvRegistration+"=") {
+		if hasAnyPrefix(kv, strip) {
 			continue
 		}
 		out = append(out, kv)
@@ -196,7 +227,19 @@ func Environ(base []string, c Cursor) []string {
 			EnvRegistration+"="+c.Registration,
 		)
 	}
+	if mcpTokens != "" {
+		out = append(out, EnvMCPTokens+"="+mcpTokens)
+	}
 	return out
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

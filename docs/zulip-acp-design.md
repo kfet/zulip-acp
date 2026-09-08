@@ -994,9 +994,19 @@ extension: the relay hosts an MCP server, advertises it on `session/new`, and
 the agent calls into it like any other tool.
 
 The transport is `acp-kit/mcphost`: a private 0700 directory, a 0600 unix
-socket, and a dumb redirector subprocess (`zulip-acp mcp-serve`) that the
-agent spawns and that does nothing but pipe stdio to the socket after writing
-a one-line token preamble.
+socket, and a redirector subprocess (`zulip-acp mcp-serve`) that the agent
+spawns and that does nothing but pipe stdio to the socket after writing a
+one-line token preamble.
+
+The socket lives at `<state-dir>/mcp/mcp.sock` — a **stable** path, not a
+per-process temp dir — because a graceful reload replaces the relay's process
+image while the agent and its redirectors keep running. The redirector redials
+(50ms→2s, giving up after ~30s) and replays `initialize` on the new
+connection, the predecessor closes without unlinking the socket, and the
+session→token registry crosses the exec in the environment, so the successor
+honours tokens it never minted. Without all four the agent silently lost every
+`mcp__relay__*` tool for the rest of its session on any self-update; see
+[graceful-reload.md](graceful-reload.md) and `test/mcploopback_test.go`.
 
 ### Identity is the foundation
 
@@ -1242,9 +1252,10 @@ event queue forward in the environment. The PID never moves and no message is
 lost, because the queue buffers server-side while we are not polling.
 
 **This is deliberately NOT poe-acp's master/worker supervisor.** That exists to
-hold a bound listen socket across worker generations; a long-poll client has no
-socket, so the supervisor would hold nothing. The full argument, the wire
-contract and the live evidence are in
+hold a bound listen socket across worker generations. The one socket this relay
+does hold — the MCP loopback — needs no holder: its only clients are our own
+redirectors, which reconnect to the same path and replay `initialize`. The
+full argument, the wire contract and the live evidence are in
 [graceful-reload.md](graceful-reload.md).
 
 ## Layout
@@ -1268,7 +1279,8 @@ internal/reload/        graceful reload: drain in-flight turns, then re-exec in
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown model/mood/plan line (spinner + footer)
 internal/sysprompt/     built-in Zulip formatting block
-internal/zulipmcp/      MCP server identity (socket naming, env vars, subcommand)
+internal/zulipmcp/      MCP server identity (socket path under the state dir,
+                        env vars, subcommand)
                         and the Zulip-specific loopback tools, `history` and
                         `rename_topic`
 internal/zulipproto/    HTTP Basic client + /events long-poll runner

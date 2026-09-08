@@ -229,7 +229,7 @@ func (f clientFunc) Messages(ctx context.Context, _ []zulipproto.NarrowTerm, _ i
 // TestRegisterInstallsOnAHost: the tool set reaches a real mcphost.Host
 // under the relay's own identity — the wiring main.go depends on.
 func TestRegisterInstallsOnAHost(t *testing.T) {
-	h, err := mcphost.New(HostConfig())
+	h, err := mcphost.New(HostConfig(t.TempDir()))
 	if err != nil {
 		t.Fatalf("mcphost.New: %v", err)
 	}

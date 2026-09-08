@@ -86,16 +86,17 @@ func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe,
 // up without restarting the relay.
 //
 // The embedded bundle cannot change at runtime, so builtins are loaded
-// exactly once, here: LoadBuiltin extracts files to $TMPDIR with a
-// non-atomic read-compare-write, and calling it from concurrently
-// created sessions could let the agent observe a half-written SKILL.md.
+// exactly once, here: LoadBuiltin extracts files under the state dir
+// with a non-atomic read-compare-write, and calling it from
+// concurrently created sessions could let the agent observe a
+// half-written SKILL.md.
 // Only the host dir — a read-only walk — is rescanned per session.
 func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	if cfg.DisableSystemPrompt {
 		// No prompt at all, so never touch the skill dirs.
 		return func() string { return "" }
 	}
-	builtin, err := loadBuiltinSkills()
+	builtin, err := loadBuiltinSkills(cfg.StateDir)
 	if err != nil {
 		log.Printf("skills: builtin load failed (continuing): %v", err)
 	}

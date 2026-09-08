@@ -66,19 +66,28 @@ var (
 )
 
 // Exec replaces this process image with the on-disk binary, preserving
-// argv and passing c forward in the environment. The PID is unchanged,
+// argv and passing c — plus the loopback MCP token registry blob, when
+// the relay has one — forward in the environment. The PID is unchanged,
 // so the init system never observes the service stop.
+//
+// mcpTokens comes from mcphost.Host.ExportTokens and is empty when the
+// loopback is disabled. It is a bearer credential for every live
+// session: it is placed in the environment of the process we are
+// becoming and NOWHERE else — never logged, never written to disk.
 //
 // On success it does not return. Every caller MUST have drained its
 // turns and shut its ACP agent child down first: exec runs no deferred
-// functions and leaves no opportunity for cleanup.
-func Exec(c Cursor) error {
+// functions and leaves no opportunity for cleanup. The MCP host must
+// have been closed with CloseForExec, not Close, so the socket file the
+// agent's redirector is reconnecting to is still there for the
+// successor to bind.
+func Exec(c Cursor, mcpTokens string) error {
 	path, err := SelfPath()
 	if err != nil {
 		return err
 	}
 	argv := append([]string{path}, os.Args[1:]...)
-	if err := execFn(path, argv, Environ(os.Environ(), c)); err != nil {
+	if err := execFn(path, argv, Environ(os.Environ(), c, mcpTokens)); err != nil {
 		return fmt.Errorf("reload: exec %s: %w", path, err)
 	}
 	return nil // unreachable on success: execve replaced the image

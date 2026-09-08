@@ -351,13 +351,39 @@ func main() {
 	// The self-hosted MCP server must exist before the agent starts:
 	// its per-session config is minted at session/new, so the client
 	// needs the hook wired at construction.
+	//
+	// reexec is read by the MCP closer below: on the reload path the
+	// socket file must SURVIVE, because the agent's redirector is
+	// already reconnecting to that exact path and the successor image
+	// binds it. It is set once, on the way out, from this same
+	// goroutine.
+	// The token blob is a bearer credential for every live session, and
+	// once the host below has been seeded from it nothing else may read
+	// it. Dropping it unconditionally — even when the loopback is off
+	// and there is nothing to seed — means no later child can inherit
+	// it by accident. It is NOT redacted from /proc/self/environ, which
+	// reads the exec-time stack; that is same-uid readable, the same
+	// trust boundary as the state dir itself. The successor gets a
+	// freshly exported blob, not this one.
+	mcpTokenSeed := os.Getenv(reload.EnvMCPTokens)
+	if err := os.Unsetenv(reload.EnvMCPTokens); err != nil {
+		log.Printf("zulip-acp: WARN could not clear %s from the environment: %v", reload.EnvMCPTokens, err)
+	}
+
+	var reexec bool
 	var mcpHost *mcphost.Host
 	if cfg.RelayMCP {
-		mcpHost, err = mcphost.New(zulipmcp.HostConfig())
+		mcpHost, err = mcphost.New(zulipmcp.HostConfig(cfg.StateDir))
 		if err != nil {
 			log.Fatalf("relay-mcp: %v", err)
 		}
-		closers = append(closers, func() { _ = mcpHost.Close() })
+		closers = append(closers, func() {
+			if reexec {
+				_ = mcpHost.CloseForExec()
+				return
+			}
+			_ = mcpHost.Close()
+		})
 	}
 
 	clientCfg := cfg.AgentClientConfig(os.Stderr)
@@ -489,6 +515,31 @@ func main() {
 			log.Fatalf("relay-mcp history: %v", err)
 		}
 		zulipTools.Register(mcpHost)
+		// The registry the predecessor image handed us across the
+		// exec, BEFORE Listen so the first redirector to reconnect
+		// already resolves. Seeding merges and supersedes; on a cold
+		// start the var is unset and SeedTokens("") is a no-op.
+		//
+		// A malformed blob is NOT fatal, deliberately. It can only be
+		// produced by our own predecessor (or by an operator setting
+		// the var by hand), and the choice is between a relay that
+		// refuses to come up — a hard outage, looped on by
+		// Restart=on-failure, taking every conversation down — and one
+		// that comes up with a fresh registry, where the only casualty
+		// is the loopback tools of sessions that predate the exec:
+		// exactly the (bounded, pre-existing) failure this feature
+		// fixes. Degrade, and say so loudly.
+		if err := mcpHost.SeedTokens(mcpTokenSeed); err != nil {
+			log.Printf("zulip-acp: WARN relay-mcp token registry from the previous image is unusable (%v); sessions started before this reload have lost their relay tools until they are re-created", err)
+		}
+		// Everything between the exec and this line is a window in
+		// which a redirector left over from the previous image cannot
+		// reach anyone: it redials on a 50ms→2s schedule and gives up
+		// after ~30s, at which point the agent's tools are gone for
+		// good. Startup is sub-second normally, but it does talk to
+		// Zulip (Me, streams, archive probe, MarkInterrupted) and
+		// spawn the agent first, so a very sick server could eat that
+		// budget. Nothing before this line may grow a long retry loop.
 		if err := mcpHost.Listen(); err != nil {
 			log.Fatalf("relay-mcp listener: %v", err)
 		}
@@ -556,7 +607,14 @@ func main() {
 	}
 
 	// Everything holding a child process or socket must go before the
-	// exec: it runs no deferred functions.
+	// exec: it runs no deferred functions. The MCP token registry is
+	// read out first — cleanup closes the host — and travels ONLY in
+	// the environment of the image we are becoming.
+	reexec = true
+	var mcpTokens string
+	if mcpHost != nil {
+		mcpTokens = mcpHost.ExportTokens()
+	}
 	cleanup()
 	qid, last := runner.Cursor()
 	c := reload.Cursor{QueueID: qid, LastEventID: last, Registration: runner.Registration()}
@@ -571,7 +629,7 @@ func main() {
 	// Only returns on failure. The queue is still alive server-side, so
 	// a failed exec strands it — say so, and exit non-zero so
 	// Restart=on-failure brings the relay back.
-	log.Fatalf("zulip-acp: %v (the event queue is orphaned; a fresh registration will miss messages posted since %d)", reload.Exec(c), last)
+	log.Fatalf("zulip-acp: %v (the event queue is orphaned; a fresh registration will miss messages posted since %d)", reload.Exec(c, mcpTokens), last)
 }
 
 func splitList(s string) []string {
