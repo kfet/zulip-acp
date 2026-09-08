@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A turn is now bounded by PROGRESS, not wall-clock.** The per-turn
+  bound was a plain 10-minute `context.WithTimeout` that nothing reset,
+  so it punished exactly the turns working hardest: on 2026-09-08 a turn
+  was killed at 10m00s while its agent was mid-tool-call, and the tool
+  went on writing files a minute after the relay gave up. The bound is
+  now acp-kit's `client.TurnLiveness`: a **no-progress window** reset by
+  agent output and by every `tool_call` / `tool_call_update`, so a
+  legitimately long-running tool is never cut, while a genuinely wedged
+  agent still is.
+
+- **`prompt_timeout_seconds` changed meaning.** It is now an OPT-IN
+  absolute ceiling on a turn, enforced regardless of progress, and
+  **`0`/unset means no ceiling** — it used to mean 10 minutes. The guard
+  that normally fires is the new `no_progress_timeout_seconds` (default
+  120). A config that sets `prompt_timeout_seconds` keeps working and
+  still caps the turn at exactly that many seconds, but now also logs a
+  one-line startup warning naming both bounds in effect, because the
+  turn it caps behaves differently underneath.
+
+- A cut turn now says which cut it was — "no output and no tool activity
+  from the agent for 2m0s — it looks wedged" or a named ceiling — instead
+  of the bare `*error: context deadline exceeded*` that told the user
+  nothing. The partial answer streamed so far is preserved either way.
+
+- Two relay-internal Zulip calls that borrowed `prompt_timeout` — the
+  `post` loopback tool and the relay-MCP history/rename tools — now have
+  their own 2-minute bound. They are HTTP requests, not turns, and must
+  not inherit "no ceiling".
+
 ## [0.26.1] - 2026-09-08
 
 ### Fixed

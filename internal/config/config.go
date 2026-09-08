@@ -22,8 +22,17 @@ import (
 
 // Defaults for the tunables an operator rarely needs to touch.
 const (
-	DefaultIdleTimeout   = 30 * time.Minute
-	DefaultPromptTimeout = 10 * time.Minute
+	DefaultIdleTimeout = 30 * time.Minute
+	// DefaultNoProgressTimeout bounds a WEDGED turn: two minutes with
+	// no agent output and no tool activity at all. It is not a working
+	// bound — see Config.NoProgressTimeout.
+	DefaultNoProgressTimeout = 2 * time.Minute
+	// DefaultZulipCallTimeout bounds a single relay-initiated Zulip API
+	// call made outside a turn (the `post` loopback tool, the relay-MCP
+	// history/rename tools). These used to borrow prompt_timeout, which
+	// no longer has a default to borrow; they are HTTP requests, not
+	// turns, and one wedged request must not hang the agent forever.
+	DefaultZulipCallTimeout = 2 * time.Minute
 	// DefaultEditInterval coalesces streaming edits. Zulip sustains
 	// ~15 edits/sec without complaint, so this is a kindness to the
 	// reader (every edit re-renders the whole message, on the server
@@ -130,7 +139,20 @@ type Config struct {
 
 	// SessionIdleTimeoutSeconds GCs idle sessions. 0 = 30 minutes.
 	SessionIdleTimeoutSeconds int `json:"session_idle_timeout_seconds,omitempty"`
-	// PromptTimeoutSeconds caps one agent turn. 0 = 10 minutes.
+	// NoProgressTimeoutSeconds cuts a turn that has gone silent: no
+	// agent output and no tool activity for this long. Tool calls count
+	// as progress, so a legitimately long tool is never cut. 0 = 2
+	// minutes.
+	NoProgressTimeoutSeconds int `json:"no_progress_timeout_seconds,omitempty"`
+	// PromptTimeoutSeconds is an OPT-IN absolute ceiling on one agent
+	// turn, enforced regardless of progress.
+	//
+	// 0 = NO ceiling. This changed in v0.27.0: it used to mean "10
+	// minutes", a plain wall-clock cap that punished exactly the turns
+	// working hardest — a turn was killed at 10m00s mid-tool-call while
+	// the tool went on running. The guard that actually fires now is
+	// NoProgressTimeoutSeconds. A config that sets this key gets a
+	// startup warning naming both bounds in effect.
 	PromptTimeoutSeconds int `json:"prompt_timeout_seconds,omitempty"`
 
 	// SystemPrompt is appended to the built-in Zulip-formatting
@@ -333,6 +355,9 @@ func (c *Config) Validate() error {
 	if c.PromptTimeoutSeconds < 0 {
 		return fmt.Errorf("prompt_timeout_seconds must be >= 0")
 	}
+	if c.NoProgressTimeoutSeconds < 0 {
+		return fmt.Errorf("no_progress_timeout_seconds must be >= 0")
+	}
 	if c.EditIntervalMs < 0 {
 		return fmt.Errorf("edit_interval_ms must be >= 0")
 	}
@@ -441,10 +466,22 @@ func (c *Config) IdleTimeout() time.Duration {
 	return time.Duration(c.SessionIdleTimeoutSeconds) * time.Second
 }
 
-// PromptTimeout returns the per-turn wall-clock cap.
-func (c *Config) PromptTimeout() time.Duration {
+// NoProgressTimeout returns the per-turn no-progress window.
+func (c *Config) NoProgressTimeout() time.Duration {
+	if c.NoProgressTimeoutSeconds <= 0 {
+		return DefaultNoProgressTimeout
+	}
+	return time.Duration(c.NoProgressTimeoutSeconds) * time.Second
+}
+
+// TurnCeiling returns the OPT-IN absolute per-turn cap. 0 means none.
+//
+// Named for what it is rather than after its JSON key so that every
+// call site of the old PromptTimeout() had to be re-read when the
+// meaning changed underneath it.
+func (c *Config) TurnCeiling() time.Duration {
 	if c.PromptTimeoutSeconds <= 0 {
-		return DefaultPromptTimeout
+		return 0
 	}
 	return time.Duration(c.PromptTimeoutSeconds) * time.Second
 }

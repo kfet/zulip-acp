@@ -33,6 +33,7 @@ func TestLoad(t *testing.T) {
 	  "max_message_chars": 8000,
 	  "edit_interval_ms": 250,
 	  "prompt_timeout_seconds": 60,
+	  "no_progress_timeout_seconds": 30,
 	  "session_idle_timeout_seconds": 120
 	}`)
 	c, err := Load(p)
@@ -42,9 +43,10 @@ func TestLoad(t *testing.T) {
 	if c.Site != "https://zulip.example" || !c.HideThinking || c.Budget() != 8000 {
 		t.Fatalf("config = %+v", c)
 	}
-	if c.EditInterval() != 250*time.Millisecond || c.PromptTimeout() != time.Minute ||
-		c.IdleTimeout() != 2*time.Minute {
-		t.Fatalf("durations = %s %s %s", c.EditInterval(), c.PromptTimeout(), c.IdleTimeout())
+	if c.EditInterval() != 250*time.Millisecond || c.TurnCeiling() != time.Minute ||
+		c.NoProgressTimeout() != 30*time.Second || c.IdleTimeout() != 2*time.Minute {
+		t.Fatalf("durations = %s %s %s %s", c.EditInterval(), c.TurnCeiling(),
+			c.NoProgressTimeout(), c.IdleTimeout())
 	}
 	users := c.AllowedUsers()
 	if len(users) != 2 {
@@ -79,6 +81,7 @@ func TestValidate(t *testing.T) {
 	}{
 		{"idle", Config{SessionIdleTimeoutSeconds: -1}},
 		{"prompt", Config{PromptTimeoutSeconds: -1}},
+		{"no progress", Config{NoProgressTimeoutSeconds: -1}},
 		{"edit", Config{EditIntervalMs: -1}},
 		{"spinner", Config{SpinnerIntervalMs: intPtr(-1)}},
 		{"budget negative", Config{MaxMessageChars: -1}},
@@ -149,9 +152,13 @@ func TestDefaults(t *testing.T) {
 	if c.Budget() != rollover.DefaultBudget {
 		t.Fatalf("budget = %d", c.Budget())
 	}
-	if c.IdleTimeout() != DefaultIdleTimeout || c.PromptTimeout() != DefaultPromptTimeout ||
+	if c.IdleTimeout() != DefaultIdleTimeout || c.NoProgressTimeout() != DefaultNoProgressTimeout ||
 		c.EditInterval() != DefaultEditInterval || c.SpinnerInterval() != DefaultSpinnerInterval {
 		t.Fatal("duration defaults not applied")
+	}
+	// The ceiling is OPT-IN: unset must mean no ceiling, not a default.
+	if c.TurnCeiling() != 0 {
+		t.Fatalf("turn ceiling = %s, want none by default", c.TurnCeiling())
 	}
 	if !c.GetStreamEdits() {
 		t.Fatal("streaming edits must be the default")

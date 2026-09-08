@@ -575,14 +575,14 @@ type fakeAgent struct {
 	// have text pending. A quiet-mode test needs that instant to
 	// assert "nothing has been published yet" without a sleep.
 	streamed chan struct{}
+	// deadlines records the deadline of the context each Prompt ran
+	// under. It is how "this turn got a full bound, not the remainder
+	// of one" is asserted without a sleep.
+	deadlines []time.Time
 	// during, when non-nil, runs inside Prompt — i.e. while the turn
 	// is in flight. It stands in for an MCP tool call, which is the
 	// only way the real agent reaches back into the relay mid-turn.
 	during func()
-	// deadlines records the deadline of the context each Prompt ran
-	// under. It is how "this turn got a full timeout, not the
-	// remainder of one" is asserted without a sleep.
-	deadlines []time.Time
 }
 
 func newAgent(chunks ...string) *fakeAgent {
@@ -941,7 +941,8 @@ func TestNewValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if h.cfg.PromptTimeout != 10*time.Minute || h.cfg.EditInterval != 300*time.Millisecond {
+	if h.cfg.NoProgressTimeout != 2*time.Minute || h.cfg.ZulipCallTimeout != 2*time.Minute ||
+		h.cfg.TurnCeiling != 0 || h.cfg.EditInterval != 300*time.Millisecond {
 		t.Fatalf("defaults not applied: %+v", h.cfg)
 	}
 	h.cfg.Logf("smoke %d", 1) // default no-op logger must be callable
