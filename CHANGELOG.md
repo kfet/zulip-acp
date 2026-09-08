@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-09-08
+
 ### Fixed
 
 - **The agent no longer loses its `mcp__relay__*` tools when the relay
