@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-09-08
+
 ### Fixed
 
 - **The `:wastebasket:` archive gesture on a topic the relay has not posted in
@@ -1207,7 +1209,8 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/kfet/zulip-acp/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/kfet/zulip-acp/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/kfet/zulip-acp/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/kfet/zulip-acp/compare/v0.23.0...v0.24.0
