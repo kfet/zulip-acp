@@ -25,6 +25,9 @@
   },
   "config": {
     "site": "https://chat-a.example.invalid",
+    "site_aliases": [
+      "chat-b.example.invalid"
+    ],
     "bot_email": "bot-a-bot@chat-a.example.invalid",
     "channels": [
       "*"
@@ -42,7 +45,8 @@
     "system_prompt": "Treat every message you receive as addressed to you, whether or not the bot is mentioned. Reply to all of them; never emit the silent sentinel.",
     "allowed_user_ids": [
       8
-    ]
+    ],
+    "stream_edits": false
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"

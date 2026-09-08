@@ -207,11 +207,10 @@ func parseUploadRef(tok string, hosts []string) (uploadRef, bool) {
 }
 
 // hostMatches reports whether h is one of the names this realm answers
-// to. Case-insensitive, because a host name is.
+// to. Case-insensitive, because a host name is. An empty h cannot
+// match: siteHosts never yields an empty entry, so a URL without a
+// host ("https:///user_uploads/…") falls through as not ours.
 func hostMatches(h string, hosts []string) bool {
-	if h == "" {
-		return false
-	}
 	for _, want := range hosts {
 		if strings.EqualFold(h, want) {
 			return true
