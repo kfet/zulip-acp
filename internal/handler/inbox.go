@@ -136,12 +136,13 @@ const urlDelims = " \t\r\n()[]<>\"'`*|"
 //   - `https://<our realm>/user_uploads/…`, what "Copy link" puts on
 //     the clipboard, pasted bare or inside a markdown link.
 //
-// An absolute URL pointing at ANY OTHER host is ignored. host is the
-// relay's own realm host; when it is empty only relative paths are
-// accepted, which is the safe direction to fail — a relay that does not
-// know its own name must not go fetching other people's URLs with its
+// An absolute URL pointing at ANY OTHER host is ignored. hosts are the
+// names this realm answers to — Site's host plus any configured
+// aliases; when the list is empty only relative paths are accepted,
+// which is the safe direction to fail — a relay that does not know its
+// own name must not go fetching other people's URLs with its
 // credentials.
-func uploadRefs(text, host string) []uploadRef {
+func uploadRefs(text string, hosts []string) []uploadRef {
 	var out []uploadRef
 	seen := map[string]bool{}
 	for base := 0; ; {
@@ -163,7 +164,7 @@ func uploadRefs(text, host string) []uploadRef {
 		}
 		base = e
 		tok := strings.TrimRight(text[s:e], ".,;:!?")
-		if ref, ok := parseUploadRef(tok, host); ok && !seen[ref.Path] {
+		if ref, ok := parseUploadRef(tok, hosts); ok && !seen[ref.Path] {
 			seen[ref.Path] = true
 			out = append(out, ref)
 			if len(out) >= maxAttachments {
@@ -175,20 +176,20 @@ func uploadRefs(text, host string) []uploadRef {
 
 // parseUploadRef validates one candidate token and reduces it to the
 // path DownloadUpload takes.
-func parseUploadRef(tok, host string) (uploadRef, bool) {
+func parseUploadRef(tok string, hosts []string) (uploadRef, bool) {
 	// Query and fragment are Zulip UI state ("?...", "#narrow/..."),
 	// never part of the stored file.
 	if i := strings.IndexAny(tok, "?#"); i >= 0 {
 		tok = tok[:i]
 	}
 	if !strings.HasPrefix(tok, zulipproto.UploadPrefix) {
-		// The only other accepted spelling is an absolute URL on our
-		// own realm.
+		// The only other accepted spelling is an absolute URL on a
+		// name this realm answers to.
 		u, err := url.Parse(tok)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			return uploadRef{}, false
 		}
-		if host == "" || !strings.EqualFold(u.Host, host) {
+		if !hostMatches(u.Host, hosts) {
 			return uploadRef{}, false
 		}
 		tok = u.EscapedPath()
@@ -205,16 +206,54 @@ func parseUploadRef(tok, host string) (uploadRef, bool) {
 	return uploadRef{Path: zulipproto.UploadPrefix + rest, Name: zulipproto.UploadName(tok)}, true
 }
 
-// siteHost is the relay's own realm host, or "" when it is unknown.
-func (h *Handler) siteHost() string {
-	if h.cfg.Site == "" {
-		return ""
+// hostMatches reports whether h is one of the names this realm answers
+// to. Case-insensitive, because a host name is.
+func hostMatches(h string, hosts []string) bool {
+	if h == "" {
+		return false
 	}
-	u, err := url.Parse(h.cfg.Site)
-	if err != nil {
-		return ""
+	for _, want := range hosts {
+		if strings.EqualFold(h, want) {
+			return true
+		}
 	}
-	return u.Host
+	return false
+}
+
+// siteHosts is every name this realm answers to: Site's host plus the
+// operator's configured aliases, empty entries dropped. It is empty
+// when none of them is known, and ingestion then accepts relative
+// paths only.
+//
+// Aliases exist because a realm is routinely reachable under more than
+// one name — a Tailscale name for the relay and a public vanity domain
+// for the humans is the common shape. Site is the name the RELAY uses
+// to talk to the server; "Copy link" in someone's browser hands out
+// the name THEY used, and without aliases that link is silently not an
+// attachment.
+func (h *Handler) siteHosts() []string {
+	var out []string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		// An alias may be written as a bare host ("zulip.example.com")
+		// or as a URL, because both are things an operator will
+		// reasonably put in a config file.
+		if strings.Contains(s, "//") {
+			u, err := url.Parse(s)
+			if err != nil || u.Host == "" {
+				return
+			}
+			s = u.Host
+		}
+		out = append(out, strings.TrimSuffix(s, "/"))
+	}
+	add(h.cfg.Site)
+	for _, a := range h.cfg.SiteAliases {
+		add(strings.TrimSpace(a))
+	}
+	return out
 }
 
 // ingested is one attachment's outcome: either a local file or a
@@ -246,7 +285,7 @@ func (h *Handler) ingestAttachments(ctx context.Context, cwd, text string) (stri
 	if !h.cfg.InboundAttachments {
 		return "", nil
 	}
-	refs := uploadRefs(text, h.siteHost())
+	refs := uploadRefs(text, h.siteHosts())
 	if len(refs) == 0 {
 		return "", nil
 	}

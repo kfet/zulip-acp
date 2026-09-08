@@ -57,6 +57,21 @@ const (
 type Config struct {
 	// Site is the Zulip base URL, e.g. https://zulip.example.com.
 	Site string `json:"site,omitempty"`
+
+	// SiteAliases are OTHER host names the same realm answers to.
+	//
+	// A realm is routinely reachable under more than one name — a
+	// Tailscale or LAN name the relay dials, and a public vanity
+	// domain the humans browse. Attachment ingestion accepts an
+	// ABSOLUTE `https://<host>/user_uploads/…` link only when <host> is
+	// one of ours, so a link someone pasted from "Copy link" in a
+	// browser on the OTHER name is otherwise silently not an
+	// attachment. Composer-attached files use relative paths and are
+	// unaffected.
+	//
+	// Entries may be bare hosts ("zulip.example.com", with an optional
+	// :port) or full URLs; only the host part is used.
+	SiteAliases []string `json:"site_aliases,omitempty"`
 	// BotEmail and BotAPIKey are the bot's HTTP Basic credentials.
 	BotEmail  string `json:"bot_email,omitempty"`
 	BotAPIKey string `json:"bot_api_key,omitempty"`

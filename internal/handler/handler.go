@@ -230,6 +230,12 @@ type Config struct {
 	// paths, which is the safe direction to fail.
 	Site string
 
+	// SiteAliases are additional host names this realm answers to, so
+	// an absolute upload link copied from a browser is recognised as
+	// ours even when the human reached the realm by a different name
+	// than the relay does. Entries may be bare hosts or full URLs.
+	SiteAliases []string
+
 	// InboundAttachments downloads the files a human attached to a
 	// message into <cwd>/inbox and puts their local paths (and, when
 	// the agent takes image blocks, the images themselves) in front of

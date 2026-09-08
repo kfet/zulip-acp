@@ -482,6 +482,7 @@ func main() {
 		ArchiveChannel:     archiveName,
 
 		Site:                    cfg.Site,
+		SiteAliases:             cfg.SiteAliases,
 		InboundAttachments:      cfg.GetInboundAttachments(),
 		MaxAttachmentBytes:      cfg.MaxAttachmentBytes,
 		MaxAttachmentTotalBytes: cfg.MaxAttachmentTotalBytes,

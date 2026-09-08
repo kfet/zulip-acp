@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`site_aliases`.** Other host names the same realm answers to. Attachment
+  ingestion accepts an absolute `https://<host>/user_uploads/…` link only when
+  the host is ours, which quietly excluded the common two-name setup — the relay
+  dialling a Tailscale or LAN name while humans browse a vanity domain — so a
+  link pasted from "Copy link" in a browser was not seen as an attachment.
+  Entries may be bare hosts (optional `:port`) or full URLs. Composer-attached
+  files use relative paths and were never affected.
+
 ## [0.25.0] - 2026-09-08
 
 ### Added
