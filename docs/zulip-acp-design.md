@@ -630,6 +630,25 @@ discards output when rollover is cheap.
 coalescing watchdog and `Close` can both observe the same unposted message and
 both `Post` it. Regression test: `TestConcurrentFlushDoesNotDoublePost`.
 
+### Quiet mode
+
+There are exactly three sources of edits in a turn: the spinner animating the
+placeholder, the coalescing watchdog publishing streamed text, and the
+end-of-turn repost (which is a create + delete, not an edit). `stream_edits`
+and `spinner_interval_ms` turn the first two off; `repost_on_close` is
+untouched by both.
+
+With `"stream_edits": false` the watchdog goroutine is **not started** —
+`handler.Config.BatchEdits` — so the splitter accumulates and `Close` publishes
+the answer in one write. The trap this must not fall into: the spinner
+self-disarms only when `UpdatePlaceholder` reports `alive=false`, i.e. when the
+first real chunk has replaced the placeholder. Suppressing content flushes
+therefore leaves the spinner as the ONLY writer, for the whole turn. So the
+unset spinner period follows the mode (`config.Config.SpinnerInterval`): 900ms
+while streaming, `0` — no goroutine at all — in quiet mode. An explicit value
+always wins, because an operator who asks for a spinner in quiet mode is asking
+for exactly one animated message and nothing else.
+
 ## Restart semantics
 
 A relay restart kills the child agent, so any in-flight turn is dead regardless.

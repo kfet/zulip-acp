@@ -80,6 +80,7 @@ func TestValidate(t *testing.T) {
 		{"idle", Config{SessionIdleTimeoutSeconds: -1}},
 		{"prompt", Config{PromptTimeoutSeconds: -1}},
 		{"edit", Config{EditIntervalMs: -1}},
+		{"spinner", Config{SpinnerIntervalMs: intPtr(-1)}},
 		{"budget negative", Config{MaxMessageChars: -1}},
 		{"budget over Zulip's limit", Config{MaxMessageChars: zulipproto.MaxMessageLength + 1}},
 		{"empty channel", Config{Channels: []string{"fleet", "  "}}},
@@ -108,8 +109,11 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("budget = %d", c.Budget())
 	}
 	if c.IdleTimeout() != DefaultIdleTimeout || c.PromptTimeout() != DefaultPromptTimeout ||
-		c.EditInterval() != DefaultEditInterval {
+		c.EditInterval() != DefaultEditInterval || c.SpinnerInterval() != DefaultSpinnerInterval {
 		t.Fatal("duration defaults not applied")
+	}
+	if !c.GetStreamEdits() {
+		t.Fatal("streaming edits must be the default")
 	}
 	if c.GetSilentSentinel() != DefaultSilentSentinel {
 		t.Fatalf("sentinel = %q", c.GetSilentSentinel())
@@ -358,6 +362,53 @@ func TestPathDefaults(t *testing.T) {
 	}
 	if got := DefaultStateDir(); got != filepath.Join(os.TempDir(), "zulip-acp") {
 		t.Fatalf("state dir = %q", got)
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+func boolPtr(v bool) *bool { return &v }
+
+// TestQuietMode pins the two flicker knobs, and above all the
+// combination: quiet mode with an unset spinner must NOT animate, or
+// the placeholder spins for the whole turn — strictly worse than
+// streaming.
+func TestQuietMode(t *testing.T) {
+	cases := []struct {
+		name   string
+		json   string
+		stream bool
+		spin   time.Duration
+	}{
+		{"unset", `{}`, true, DefaultSpinnerInterval},
+		{"explicit stream_edits true", `{"stream_edits":true}`, true, DefaultSpinnerInterval},
+		{"quiet turns the spinner off", `{"stream_edits":false}`, false, 0},
+		{"quiet honours an explicit spinner", `{"stream_edits":false,"spinner_interval_ms":2000}`, false, 2 * time.Second},
+		{"explicit zero disables the spinner", `{"spinner_interval_ms":0}`, true, 0},
+		{"explicit spinner period", `{"spinner_interval_ms":1500}`, true, 1500 * time.Millisecond},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, c.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetStreamEdits(); got != c.stream {
+				t.Fatalf("GetStreamEdits() = %v, want %v", got, c.stream)
+			}
+			if got := cfg.SpinnerInterval(); got != c.spin {
+				t.Fatalf("SpinnerInterval() = %v, want %v", got, c.spin)
+			}
+		})
+	}
+	// The struct-side twin: a Config built in code behaves the same.
+	c := &Config{StreamEdits: boolPtr(false)}
+	if c.GetStreamEdits() || c.SpinnerInterval() != 0 {
+		t.Fatalf("quiet Config = %v / %v", c.GetStreamEdits(), c.SpinnerInterval())
+	}
+	// A negative period is rejected, like every other interval.
+	if err := (&Config{SpinnerIntervalMs: intPtr(-1)}).Validate(); err == nil {
+		t.Fatal("want error for a negative spinner_interval_ms")
 	}
 }
 
