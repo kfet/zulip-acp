@@ -649,6 +649,13 @@ func TopicNarrow(streamID int64, topic string) []NarrowTerm {
 	}
 }
 
+// SenderNarrow narrows to messages sent by one user. The operand is
+// the numeric user id, which Zulip accepts alongside the email form and
+// which is the only identifier the relay always has for itself.
+func SenderNarrow(userID int64) NarrowTerm {
+	return NarrowTerm{Operator: "sender", Operand: userID}
+}
+
 // DMNarrow narrows to the direct-message conversation between exactly
 // the given users.
 //

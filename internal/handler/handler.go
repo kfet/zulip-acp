@@ -135,6 +135,11 @@ type Poster interface {
 	// Handler.repostForNotify).
 	DeleteMessage(ctx context.Context, id int64) error
 	GetMessage(ctx context.Context, id int64) (zulipproto.Message, error)
+	// Messages reads a narrow of the realm's history. The handler uses
+	// it for exactly one thing: resolving the relay's OWN last message
+	// in a conversation when neither memory nor the journal knows it —
+	// see Handler.lastOwnMessage.
+	Messages(ctx context.Context, narrow []zulipproto.NarrowTerm, limit int, beforeID int64) ([]zulipproto.Message, error)
 	// Topics lists the topic names already in a channel. Only
 	// `!branch` uses it, to avoid creating a topic that collides with
 	// a live one — Zulip would silently merge the two.
@@ -442,6 +447,10 @@ type Handler struct {
 	// must not arm anything, so the gesture is defined on the last
 	// message and nothing else. One int per conversation, written
 	// wherever ownMsgs is — see rememberOwn.
+	//
+	// It is a CACHE, not the record: the record is the journal's
+	// Conv.LastOwnID, which survives the restarts and reloads this map
+	// does not. See lastOwnMessage for the three-step resolution.
 	lastOwnMu sync.Mutex
 	lastOwn   map[string]int64
 
@@ -1167,8 +1176,9 @@ func (h *Handler) repostForNotify(ctx context.Context, conv journal.Conv, split 
 // API call — the tail is the only id indexed, so a reaction on an
 // earlier message of a multi-message answer still costs a lookup. The
 // journal's tail is cleared when the turn ends — it means
-// "interrupted", not "mine" — so the in-memory index is the only thing
-// that remembers a FINISHED turn's message.
+// "interrupted", not "mine" — so what remembers a FINISHED turn's
+// message is the in-memory index and, across a restart,
+// Conv.LastOwnID (see rememberOwn).
 func (h *Handler) trackTail(convID string, split *rollover.Splitter) {
 	if id := split.TailID(); id != 0 {
 		h.rememberOwn(convID, id)
@@ -1185,36 +1195,119 @@ func (h *Handler) trackTail(convID string, split *rollover.Splitter) {
 // writers are not ordered with respect to each other — a turn's tail
 // and an out-of-band post (an `!opts` panel, an archive warning) can
 // interleave. Zulip message ids are monotonic, so max is the answer.
+//
+// It is also written THROUGH to the journal, which is what makes the
+// archive gesture survive a restart or a reload. The journal applies
+// the same max rule, and a write of an id it already holds is a no-op,
+// so the streaming path does not touch the disk on every flush.
 func (h *Handler) rememberOwn(convID string, msgID int64) {
 	h.ownMsgs.put(msgID, convID)
 	h.lastOwnMu.Lock()
-	defer h.lastOwnMu.Unlock()
 	if msgID > h.lastOwn[convID] {
 		h.lastOwn[convID] = msgID
 	}
+	h.lastOwnMu.Unlock()
+	if err := h.cfg.Journal.SetLastOwn(convID, msgID); err != nil {
+		h.cfg.Logf("handler: recording last own message for %s: %v", convID, err)
+	}
 }
 
-// lastOwnMessage returns the newest message the relay has posted in a
-// conversation, or 0 if it has posted none since the process started.
-//
-// Zero is the honest answer after a restart, and it must stay one: the
-// archive gesture is "react to the message I just posted", and a relay
-// that has forgotten what it posted should arm nothing rather than
-// guess at a message id.
-func (h *Handler) lastOwnMessage(convID string) int64 {
+// cachedOwn returns the in-memory answer, or 0 when this process has
+// posted nothing in the conversation since it started.
+func (h *Handler) cachedOwn(convID string) int64 {
 	h.lastOwnMu.Lock()
 	defer h.lastOwnMu.Unlock()
 	return h.lastOwn[convID]
 }
 
-// forgetOwn drops a conversation's last-message record. Called when the
-// conversation ends: the entry would otherwise outlive everything it
-// refers to, and a gesture on a message of a conversation that is over
-// must find nothing rather than something stale.
+// lastOwnMessage returns the newest message the relay has posted in a
+// conversation, or 0 if there is none.
+//
+// Three steps, stopping at the first answer:
+//
+//  1. the in-memory cache — free, and correct for anything this
+//     process posted;
+//  2. the journal's persisted record — free, and what makes the
+//     gesture work on a conversation the relay last posted in before
+//     the current process existed. lastOwn used to be the whole
+//     answer, which meant the react-to-archive gesture silently
+//     stopped working on every existing topic at every restart AND
+//     every reload;
+//  3. ONE bounded API read — newest message in this topic sent by the
+//     bot, limit 1 — cached back into both. It runs only for a
+//     :wastebasket: that matched nothing else, so its cost is bounded
+//     by how often somebody taps a trash can.
+//
+// A RETIRED conversation resolves to nothing, and that check comes
+// FIRST — before even the in-memory cache. `!new` retires without
+// going through endSession, so a warm cache entry can outlive the
+// conversation it describes; a conversation that is over must own no
+// message by whichever path it is asked about.
+//
+// Channel conversations only for step 3 — the only caller excludes
+// direct messages, which have no topic to archive.
+func (h *Handler) lastOwnMessage(ctx context.Context, conv journal.Conv) int64 {
+	rec, ok := h.cfg.Journal.LookupID(conv.ID)
+	if !ok || rec.Retired {
+		return 0
+	}
+	if id := h.cachedOwn(conv.ID); id != 0 {
+		return id
+	}
+	if rec.LastOwnID != 0 {
+		h.rememberOwn(conv.ID, rec.LastOwnID)
+		return rec.LastOwnID
+	}
+	return h.fetchLastOwn(ctx, conv)
+}
+
+// fetchLastOwn is step 3: ask the server which message in this topic
+// the bot itself posted last.
+//
+// A failure is not an error the user hears about — it degrades to
+// "nothing is armed", exactly as an unknown message always has. The
+// sender narrow is belt and braces: the answer is checked against the
+// bot's own user id before it is trusted, because arming a
+// destructive gesture on somebody else's message would be the one
+// unrecoverable way to get this wrong.
+//
+// Deliberately NOT behind allowReactionLookup, the token bucket in
+// front of GET /messages/{id}. That bucket exists because ANY reaction
+// on ANY message in the realm can reach that lookup, so a flood needs
+// a ceiling. This read is reached only by a :wastebasket: on a message
+// that already resolved to a served, engaged conversation, and a
+// success is cached in memory and on disk — and a refused read here
+// would mean a destructive control that silently stops working under
+// load, which is worse than the read.
+func (h *Handler) fetchLastOwn(ctx context.Context, conv journal.Conv) int64 {
+	narrow := append(zulipproto.TopicNarrow(conv.StreamID, conv.Topic), zulipproto.SenderNarrow(h.cfg.BotUserID))
+	msgs, err := h.cfg.Client.Messages(ctx, narrow, 1, 0)
+	if err != nil {
+		h.cfg.Logf("handler: looking up my last message in %s: %v", h.describe(conv.Key), err)
+		return 0
+	}
+	if len(msgs) == 0 || msgs[len(msgs)-1].SenderID != h.cfg.BotUserID {
+		return 0
+	}
+	id := msgs[len(msgs)-1].ID
+	h.rememberOwn(conv.ID, id)
+	return id
+}
+
+// forgetOwn drops a conversation's last-message record — from memory
+// AND from the journal. Called from endSession and from `!new`, i.e.
+// wherever a conversation ENDS: the entry would otherwise outlive
+// everything it refers to, and a gesture on a message of a
+// conversation that is over must find nothing rather than something
+// stale. Clearing only the map would leave the persisted id to hand
+// the same stale answer back on the next lookup.
 func (h *Handler) forgetOwn(convID string) {
 	h.lastOwnMu.Lock()
-	defer h.lastOwnMu.Unlock()
 	delete(h.lastOwn, convID)
+	h.lastOwnMu.Unlock()
+	if err := h.cfg.Journal.SetLastOwn(convID, 0); err != nil {
+		h.cfg.Logf("handler: clearing last own message for %s: %v", convID, err)
+	}
 }
 
 // clearTail forgets the tail message for a conversation, so a later

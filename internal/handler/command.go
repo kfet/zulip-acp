@@ -468,6 +468,10 @@ func (h *Handler) ResetSession(token string) error {
 	// The model choice is the user's, not the conversation's: carry it
 	// across so `!new` clears context without silently reverting it.
 	h.carryModelOverride(prev.ID, fresh.ID)
+	// The retired conversation owns no message any more. Retire has
+	// already cleared the persisted record; this drops the in-memory
+	// one, which would otherwise outlive the conversation it names.
+	h.forgetOwn(prev.ID)
 	h.cfg.Logf("handler: %s retired for fresh conversation %s in %s", prev.ID, fresh.ID, h.describe(key))
 	return nil
 }

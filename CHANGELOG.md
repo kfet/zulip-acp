@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `:wastebasket:` archive gesture on a topic the relay has not posted in
+  since it started.** "The relay's last message" lived only in an in-memory map,
+  so every restart — and every `systemctl --user reload` — silently took the
+  gesture away from every existing conversation: the tap fell through and was
+  delivered to the agent as an ordinary reaction. `!archive` was unaffected. The
+  answer is now persisted (`last_own_id` in the journal, written wherever the
+  in-memory record is) and, failing that, resolved by one `GET /messages`
+  narrowed to the topic and the bot. A retired conversation still resolves to
+  nothing, through all three paths.
+
 ## [0.26.0] - 2026-09-08
 
 ### Added

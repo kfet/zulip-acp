@@ -180,6 +180,22 @@ type Conv struct {
 	// the topic is truth and a stale id simply fails its edit and is
 	// replaced.
 	OptsID int64 `json:"opts_id,omitempty"`
+	// LastOwnID is the newest message the RELAY ITSELF has posted in
+	// this conversation, or 0 when it has posted none.
+	//
+	// It is deliberately NOT the tail: TailID means "a turn was in
+	// flight here", and it is CLEARED when the turn ends, so it cannot
+	// answer "which message is mine" for a finished conversation. The
+	// react-to-archive gesture is defined on the relay's last message,
+	// and an in-memory-only answer made the gesture stop working on
+	// every existing topic at every restart and every reload.
+	//
+	// Monotonic: Zulip message ids increase, and the two writers — a
+	// turn's tail and an out-of-band post — are not ordered with
+	// respect to each other, so the newest wins (see SetLastOwn).
+	// Cleared, never inherited, when a conversation is retired: a
+	// conversation that is over owns no message any more.
+	LastOwnID int64 `json:"last_own_id,omitempty"`
 	// Parent, when set, is the conversation this one was BRANCHED
 	// from — see Parent. It is what `history(origin: true)` reads,
 	// and the only cross-conversation read the relay permits.
@@ -416,8 +432,15 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	}
 	prevTail := old.TailID
 	prevOpts := old.OptsID
+	prevOwn := old.LastOwnID
 	old.Retired = true
 	old.TailID = 0
+	// The last-own-message record dies with the conversation, and is
+	// NOT inherited by the replacement. It is the anchor the archive
+	// gesture is defined on, and a retired conversation must not be
+	// reachable through one — neither as itself nor through whatever
+	// took its place.
+	old.LastOwnID = 0
 	// The `!opts` panel belongs to the PLACE, not to the session: it
 	// is still sitting in the same topic after `!new`, so the fresh
 	// conversation inherits it and keeps updating that one message
@@ -434,7 +457,7 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	return prev, fresh, true, j.commit(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, idx)
-		old.Retired, old.TailID, old.OptsID = false, prevTail, prevOpts
+		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
 		j.byKey[idx] = old
 	})
 }
@@ -476,6 +499,37 @@ func (j *Journal) SetOpts(convID string, msgID int64) error {
 	prev := c.OptsID
 	c.OptsID = msgID
 	return j.commit(func() { c.OptsID = prev })
+}
+
+// SetLastOwn records the newest message the relay itself has posted in
+// a conversation. Pass 0 to forget it.
+//
+// The write is MONOTONIC: an id at or below the one already recorded
+// is dropped rather than stored, because the two callers — a turn's
+// tail and an out-of-band post such as an `!opts` panel or an archive
+// warning — are not ordered with respect to each other, and the record
+// means "newest". Clearing is the one way the value goes backwards,
+// and it is explicit.
+//
+// Separate from SetTail for the reason spelled out on Conv.LastOwnID:
+// a tail is one turn's streaming target and is cleared when the turn
+// ends; this outlives every turn in the conversation.
+func (j *Journal) SetLastOwn(convID string, msgID int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok {
+		return fmt.Errorf("journal: unknown conversation %q", convID)
+	}
+	if msgID == 0 && c.LastOwnID == 0 {
+		return nil
+	}
+	if msgID != 0 && msgID <= c.LastOwnID {
+		return nil
+	}
+	prev := c.LastOwnID
+	c.LastOwnID = msgID
+	return j.commit(func() { c.LastOwnID = prev })
 }
 
 // Branch allocates the conversation for a freshly branched topic,
@@ -522,13 +576,16 @@ func (j *Journal) Branch(k Key, p Parent) (Conv, error) {
 }
 
 // LookupMessage returns the conversation that owns a message id the
-// journal itself recorded — the tail of a turn that was in flight, or
-// the conversation's `!opts` panel.
+// journal itself recorded — the tail of a turn that was in flight, the
+// conversation's `!opts` panel, or the relay's last own message.
 //
 // It exists for the reaction path, which is handed a message id and
 // nothing else and must decide whether it belongs to us without
-// spending an API call. Retired conversations never match: they no
-// longer answer to anything.
+// spending an API call. LastOwnID matters most after a restart: it is
+// exactly the message the archive gesture is defined on, and resolving
+// it here keeps that gesture off the rate-limited GET /messages/{id}
+// the reaction path would otherwise fall back to. Retired
+// conversations never match: they no longer answer to anything.
 func (j *Journal) LookupMessage(msgID int64) (Conv, bool) {
 	if msgID == 0 {
 		return Conv{}, false
@@ -536,7 +593,7 @@ func (j *Journal) LookupMessage(msgID int64) (Conv, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for _, c := range j.byID {
-		if !c.Retired && (c.TailID == msgID || c.OptsID == msgID) {
+		if !c.Retired && (c.TailID == msgID || c.OptsID == msgID || c.LastOwnID == msgID) {
 			return *c, true
 		}
 	}

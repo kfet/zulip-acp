@@ -546,7 +546,14 @@ func TestLookupMessage(t *testing.T) {
 	if err := j.SetOpts(c.ID, 12); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
-	for _, id := range []int64{11, 12} {
+	// The relay's own last message resolves here too: after a restart
+	// it is the one id the archive gesture is defined on, and paying
+	// a rate-limited GET /messages/{id} for it would let a reaction
+	// flood take the gesture away.
+	if err := j.SetLastOwn(c.ID, 13); err != nil {
+		t.Fatalf("SetLastOwn: %v", err)
+	}
+	for _, id := range []int64{11, 12, 13} {
 		got, ok := j.LookupMessage(id)
 		if !ok || got.ID != c.ID {
 			t.Fatalf("LookupMessage(%d) = %+v,%v", id, got, ok)
@@ -561,8 +568,119 @@ func TestLookupMessage(t *testing.T) {
 	if _, ok := j.LookupMessage(11); ok {
 		t.Fatal("a retired conversation must not answer to its tail")
 	}
+	if _, ok := j.LookupMessage(13); ok {
+		t.Fatal("a retired conversation must not answer to its last own message")
+	}
 	got, ok := j.LookupMessage(12)
 	if !ok || got.ID != fresh.ID || got.ID == prev.ID {
 		t.Fatalf("LookupMessage(12) = %+v,%v, want the fresh conversation %s", got, ok, fresh.ID)
+	}
+}
+
+// TestLastOwnTracking is the persisted answer to "which message in
+// this conversation is mine" — the record the react-to-archive gesture
+// needs across a restart, which TailID cannot be because it is cleared
+// when a turn ends.
+func TestLastOwnTracking(t *testing.T) {
+	j, path := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if c.LastOwnID != 0 {
+		t.Fatalf("fresh conversation owns message %d", c.LastOwnID)
+	}
+	if err := j.SetLastOwn(c.ID, 77); err != nil {
+		t.Fatalf("SetLastOwn: %v", err)
+	}
+	// Monotonic: an out-of-band post and a turn's tail are not ordered
+	// with respect to each other, so an older id must not win.
+	for _, id := range []int64{77, 12} {
+		if err := j.SetLastOwn(c.ID, id); err != nil {
+			t.Fatalf("SetLastOwn(%d): %v", id, err)
+		}
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.LastOwnID != 77 {
+		t.Fatalf("conv = %+v, want last own 77", got)
+	}
+	// A tail write leaves it alone: the two are separate lifecycles.
+	if err := j.SetTail(c.ID, 100); err != nil {
+		t.Fatalf("SetTail: %v", err)
+	}
+	if err := j.SetTail(c.ID, 0); err != nil {
+		t.Fatalf("SetTail clear: %v", err)
+	}
+	// Survives a restart. This is the whole bug: an in-memory-only
+	// answer made the gesture stop working on every existing topic.
+	j2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if reloaded, ok := j2.Lookup(Channel(4, "topic")); !ok || reloaded.LastOwnID != 77 {
+		t.Fatalf("conv after reload = %+v", reloaded)
+	}
+	// Clearing is explicit, and clearing an empty record is a no-op.
+	if err := j.SetLastOwn(c.ID, 0); err != nil {
+		t.Fatalf("SetLastOwn clear: %v", err)
+	}
+	if err := j.SetLastOwn(c.ID, 0); err != nil {
+		t.Fatalf("SetLastOwn clear again: %v", err)
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.LastOwnID != 0 {
+		t.Fatalf("record not cleared: %+v", got)
+	}
+	if err := j.SetLastOwn("nosuchconv", 1); err == nil {
+		t.Fatal("want error for unknown conversation")
+	}
+}
+
+// TestLastOwnDiesWithTheConversation: `!new` (and `!archive`) retire a
+// conversation, and a conversation that is over owns no message. The
+// replacement must not inherit one either — unlike the `!opts` panel,
+// this is a property of the SESSION, not of the place.
+func TestLastOwnDiesWithTheConversation(t *testing.T) {
+	j, _ := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := j.SetLastOwn(c.ID, 42); err != nil {
+		t.Fatalf("SetLastOwn: %v", err)
+	}
+	prev, fresh, existed, err := j.Retire(Channel(4, "topic"))
+	if err != nil || !existed {
+		t.Fatalf("Retire: %v, existed=%v", err, existed)
+	}
+	if prev.LastOwnID != 0 || fresh.LastOwnID != 0 {
+		t.Fatalf("prev = %+v, fresh = %+v", prev, fresh)
+	}
+}
+
+// TestSetLastOwnRollsBackOnAWriteFailure: as everywhere else in this
+// package, a reported failure must not leave the in-memory state
+// pretending the write happened.
+func TestSetLastOwnRollsBackOnAWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Open(filepath.Join(dir, "journal.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c, err := j.Ensure(Channel(4, "topic"))
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := j.SetLastOwn(c.ID, 5); err != nil {
+		t.Fatalf("SetLastOwn: %v", err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := j.SetLastOwn(c.ID, 6); err == nil {
+		t.Fatal("want write error")
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.LastOwnID != 5 {
+		t.Fatalf("record = %d after a failed write, want the previous 5", got.LastOwnID)
 	}
 }

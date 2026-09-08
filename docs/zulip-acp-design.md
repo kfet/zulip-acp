@@ -508,6 +508,48 @@ ending. Retiring first means the echoed event finds nothing of ours to migrate.
 Every failure short-circuits the rest and says so in the topic: a half-done
 archive that stayed quiet would be the worst outcome available.
 
+#### Which message is "the relay's last message"
+
+The gesture is defined on the relay's own newest message in the conversation,
+so the relay must be able to answer that question about a topic it last posted
+in *before the current process existed*. It could not until this was fixed: the
+answer lived only in an in-memory map, so a restart — or a `systemctl --user reload`,
+which this relay does often — silently took the gesture away from every
+existing topic while `!archive` went on working.
+
+It is resolved in three steps, stopping at the first answer:
+
+1. the in-memory map, free and correct for anything this process posted;
+2. `Conv.LastOwnID` in the journal, written through wherever the map is. It is
+   deliberately **not** `TailID`: a tail means "a turn was in flight here" and
+   is *cleared* when the turn ends, so it cannot speak for a finished
+   conversation;
+3. one `GET /messages` narrowed to the topic **and** the bot, `num_before=1`,
+   cached back into both. It runs only for a `:wastebasket:` that matched
+   nothing else, so its cost is bounded by how often somebody taps a trash can,
+   and the sender of what comes back is re-checked before it is trusted.
+
+A **retired** conversation resolves to nothing, and that check runs *before*
+even the in-memory step: `!new` retires without going through `endSession`, so
+a warm cache entry can outlive the conversation it names. `Retire` clears the
+persisted record rather than handing it to the replacement, and neither the
+journal nor the server may resurrect one. A conversation that is over must not
+be archivable through a stale id.
+
+The step-3 read is deliberately *not* behind the token bucket that gates
+`GET /messages/{id}` in the reaction path. That bucket exists because any
+reaction on any message in the realm can reach that lookup; this one is reached
+only by a `:wastebasket:` on a message that already resolved to a served,
+engaged conversation, and a destructive control that silently stops working
+under load would be worse than the read.
+
+One consequence worth stating: after `!new` **and** a restart, the fresh
+conversation has no record, so a tap on the *previous* conversation's last bot
+message — still sitting in the same topic — resolves through step 3 and arms an
+archive of the conversation currently answering there. That is the same thing
+`!archive` does: the gesture archives the topic, not the session that happened
+to post the message.
+
 #### The confirmation, and what expiry means
 
 The arm records the message id of the warning, not merely a deadline: a

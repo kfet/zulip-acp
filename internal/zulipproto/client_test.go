@@ -299,6 +299,30 @@ func TestMessagesTopicNarrow(t *testing.T) {
 	}
 }
 
+// TestMessagesSenderNarrow: the archive gesture asks "which message in
+// this topic did I post last", which is a topic narrow AND a sender
+// narrow, with the numeric user id as the operand.
+func TestMessagesSenderNarrow(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"messages":[{"id":7,"sender_id":9}]`)
+	})
+	narrow := append(TopicNarrow(4, "sess"), SenderNarrow(9))
+	got, err := newClient(t, ts).Messages(context.Background(), narrow, 1, 0)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 7 || got[0].SenderID != 9 {
+		t.Fatalf("messages = %+v", got)
+	}
+	var sent []map[string]any
+	if err := json.Unmarshal([]byte(ts.requests()[0].query.Get("narrow")), &sent); err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+	if len(sent) != 3 || sent[2]["operator"] != "sender" || sent[2]["operand"] != float64(9) {
+		t.Fatalf("narrow = %+v", sent)
+	}
+}
+
 // TestMessagesDMNarrow: a DM conversation is not in any channel, so it
 // needs the `dm` operator with the full participant set — otherwise the
 // history tool would simply not work in a direct message.
