@@ -575,14 +575,14 @@ type fakeAgent struct {
 	// have text pending. A quiet-mode test needs that instant to
 	// assert "nothing has been published yet" without a sleep.
 	streamed chan struct{}
-	// deadlines records the deadline of the context each Prompt ran
-	// under. It is how "this turn got a full bound, not the remainder
-	// of one" is asserted without a sleep.
-	deadlines []time.Time
 	// during, when non-nil, runs inside Prompt — i.e. while the turn
 	// is in flight. It stands in for an MCP tool call, which is the
 	// only way the real agent reaches back into the relay mid-turn.
 	during func()
+	// deadlines records the deadline of the context each Prompt ran
+	// under. It is how "this turn got a full bound, not the remainder
+	// of one" is asserted without a sleep.
+	deadlines []time.Time
 }
 
 func newAgent(chunks ...string) *fakeAgent {
