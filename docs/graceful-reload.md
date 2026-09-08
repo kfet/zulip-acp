@@ -336,5 +336,5 @@ pid stable at 833097/854272 throughout):
   or the **first cutover** onto a build that has reload support (the older
   binary has no `SIGHUP` handler and would simply die on the signal).
 - `-reload-drain-deadline` (30m) — leak backstop for a reload drain. Nothing
-  external is waiting; `prompt_timeout` is what bounds a turn as work.
+  external is waiting; `no_progress_timeout_seconds` is what bounds a turn as work.
 - `-drain-deadline` (30s) — stop drain. Keep it under `TimeoutStopSec`.

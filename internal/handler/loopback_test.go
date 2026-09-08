@@ -612,7 +612,7 @@ func TestFireScheduleGivesUpWhenCancelled(t *testing.T) {
 // returns, so a wedged Zulip request must not hang the agent's turn
 // forever.
 func TestPostToIsBounded(t *testing.T) {
-	lh := newLoopHarness(t, newAgent("ok"), func(c *Config) { c.PromptTimeout = time.Millisecond })
+	lh := newLoopHarness(t, newAgent("ok"), func(c *Config) { c.ZulipCallTimeout = time.Millisecond })
 	lh.z.mu.Lock()
 	lh.z.sendErr = context.DeadlineExceeded
 	lh.z.mu.Unlock()

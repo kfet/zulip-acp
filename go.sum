@@ -1,7 +1,7 @@
 github.com/coder/acp-go-sdk v0.13.5 h1:LI9jq5xon7xslaYlnoktvTVyDlE37yIk2daT7N9ASYk=
 github.com/coder/acp-go-sdk v0.13.5/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
-github.com/kfet/acp-kit v0.15.0 h1:X+RCq5dcOBRQCeyKYbpFV9zySoQL88fMQ0Ph0Uw1+6o=
-github.com/kfet/acp-kit v0.15.0/go.mod h1:3o2kYL9t3coGVqP3FLQ0l8CKCtQHR7VIoy33LQwVwgM=
+github.com/kfet/acp-kit v0.16.1 h1:fJa0lu+tZ15kggJ2rkH60Vo5wCsLewNnK+ZLsK6TphE=
+github.com/kfet/acp-kit v0.16.1/go.mod h1:3o2kYL9t3coGVqP3FLQ0l8CKCtQHR7VIoy33LQwVwgM=
 github.com/kfet/covgate v0.1.2 h1:29q7vN+GJ8cJeXdDwohaqAT02cCZA4HlEkzjVq0MuAA=
 github.com/kfet/covgate v0.1.2/go.mod h1:M1BHQum2HvbavZoKfnIm8qBUjPDsOb0QLFtkF0OLzlM=
 github.com/kfet/distkit v0.1.8 h1:dN1QdISloBwPsUQT/EBUaSSuS82ZwlR0bKctp0Dn1Cc=

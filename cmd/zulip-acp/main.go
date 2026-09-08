@@ -69,7 +69,8 @@ func main() {
 	reloadDrain := flag.Duration("reload-drain-deadline", reload.DefaultReloadDrain,
 		"how long a SIGHUP graceful reload waits for in-flight turns to finish before re-execing anyway. "+
 			"Nothing external is waiting on this — the Zulip event queue buffers server-side meanwhile — and agent turns "+
-			"legitimately run tens of minutes, so this is a leak backstop, not a working bound (prompt_timeout bounds a turn as work)")
+			"legitimately run tens of minutes, so this is a leak backstop, not a working bound "+
+			"(no_progress_timeout_seconds bounds a turn as work)")
 	stopDrain := flag.Duration("drain-deadline", reload.DefaultStopDrain,
 		"how long a SIGINT/SIGTERM shutdown waits for in-flight turns to finish posting. Something external IS waiting "+
 			"(systemd SIGKILLs the cgroup at TimeoutStopSec), so keep it comfortably underneath that")
@@ -89,6 +90,16 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		cfg = c
+	}
+	// prompt_timeout_seconds changed meaning in v0.27.0: it is now an
+	// opt-in absolute ceiling, not the working bound, and unset means
+	// no ceiling at all. Say so once, at startup, to whoever set it —
+	// otherwise the day a turn behaves differently is the first they
+	// hear of it.
+	if cfg.PromptTimeoutSeconds > 0 {
+		log.Printf("config: prompt_timeout_seconds is now an ABSOLUTE CEILING, not the working bound — "+
+			"this turn ceiling is %s, and the guard that normally fires is no_progress_timeout_seconds (%s)",
+			cfg.TurnCeiling(), cfg.NoProgressTimeout())
 	}
 	// Environment overrides, so the API key never has to live in a
 	// config file on the host.
@@ -466,7 +477,9 @@ func main() {
 		Channels:           served,
 		AllowedUsers:       cfg.AllowedUsers(),
 		DMs:                cfg.DMs,
-		PromptTimeout:      cfg.PromptTimeout(),
+		NoProgressTimeout:  cfg.NoProgressTimeout(),
+		TurnCeiling:        cfg.TurnCeiling(),
+		ZulipCallTimeout:   config.DefaultZulipCallTimeout,
 		EditInterval:       cfg.EditInterval(),
 		BatchEdits:         !cfg.GetStreamEdits(),
 		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
@@ -517,7 +530,7 @@ func main() {
 			ConvKey: func(k string) (journal.Key, bool) { return h.ConvKey(k) },
 			Origin:  func(k string) (journal.Parent, bool) { return h.ConvOrigin(k) },
 			Rename:  func(k journal.Key, title string) (string, error) { return h.RenameTopic(k, title) },
-			Timeout: cfg.PromptTimeout(),
+			Timeout: config.DefaultZulipCallTimeout,
 			Logf:    log.Printf,
 		})
 		if err != nil {

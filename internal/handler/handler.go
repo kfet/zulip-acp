@@ -194,8 +194,19 @@ type Config struct {
 	// must therefore be something an operator asks for.
 	DMs bool
 
-	// PromptTimeout caps one agent turn.
-	PromptTimeout time.Duration
+	// NoProgressTimeout cuts a turn that has stopped making progress:
+	// no agent output and no tool-call activity for this long. It is a
+	// WEDGE guard, not a working bound — a legitimately long tool call
+	// keeps resetting it, so a turn that is working is never cut. 0
+	// defaults to 2 minutes.
+	NoProgressTimeout time.Duration
+	// TurnCeiling is an OPT-IN absolute cap on one turn, enforced
+	// regardless of progress. 0 (the default) means no ceiling.
+	TurnCeiling time.Duration
+	// ZulipCallTimeout bounds one relay-initiated Zulip API call made
+	// outside a turn (the `post` loopback tool). 0 defaults to 2
+	// minutes.
+	ZulipCallTimeout time.Duration
 	// EditInterval coalesces streaming edits.
 	EditInterval time.Duration
 	// BatchEdits suppresses intra-turn streaming edits entirely: the
@@ -483,8 +494,11 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Channels == nil {
 		return nil, fmt.Errorf("handler: Channels is required — a relay with no channel allowlist would answer the whole realm")
 	}
-	if cfg.PromptTimeout <= 0 {
-		cfg.PromptTimeout = 10 * time.Minute
+	if cfg.NoProgressTimeout <= 0 {
+		cfg.NoProgressTimeout = 2 * time.Minute
+	}
+	if cfg.ZulipCallTimeout <= 0 {
+		cfg.ZulipCallTimeout = 2 * time.Minute
 	}
 	if cfg.EditInterval <= 0 {
 		cfg.EditInterval = 300 * time.Millisecond
@@ -860,7 +874,10 @@ func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt strin
 func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID, anchorID int64) {
 	// A follow-up supersedes whatever is still running in this topic.
 	h.cancelInflight(ctx, conv.ID)
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.PromptTimeout)
+	// Cancellable only. The turn's real bound is the progress-resetting
+	// liveness clock, armed inside run once the agent is about to be
+	// prompted (see startLiveness).
+	pctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: anchorID}}
 	h.setInflight(conv.ID, entry)
 	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
@@ -956,7 +973,16 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 			}
 		}}
 	}
-	sess, err = h.cfg.Sessions.GetOrCreate(ctx, conv.ID, sinkFor)
+	// The turn's bound. Armed HERE, not at intake: a turn that waited
+	// behind another one must not be charged for the wait. The sink is
+	// wrapped OUTERMOST so buffered paths (the abstain ValidatingSink)
+	// cannot make a streaming agent look silent — liveness sees every
+	// update as it lands, before anything downstream holds it back.
+	live, lctx, stopLive := h.startLiveness(ctx)
+	defer stopLive()
+	sinkFor = live.Wrap(sinkFor)
+
+	sess, err = h.cfg.Sessions.GetOrCreate(lctx, conv.ID, sinkFor)
 	if err != nil {
 		wcancel()
 		_ = split.Close(context.WithoutCancel(ctx), fmt.Sprintf("\n*error: %v*", err))
@@ -992,10 +1018,10 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 
 	var stop acp.StopReason
 	if abstaining {
-		res, perr := client.PromptAbstainable(ctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
+		res, perr := client.PromptAbstainable(lctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
 		wcancel()
 		if perr != nil {
-			return h.failTurn(ctx, conv, split, perr)
+			return h.failTurn(lctx, conv, split, perr)
 		}
 		if res.Abstained {
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
@@ -1004,10 +1030,10 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		}
 		stop = res.Stop
 	} else {
-		stop, err = h.cfg.Agent.Prompt(ctx, sess.SessionID, blocks)
+		stop, err = h.cfg.Agent.Prompt(lctx, sess.SessionID, blocks)
 		wcancel()
 		if err != nil {
-			return h.failTurn(ctx, conv, split, err)
+			return h.failTurn(lctx, conv, split, err)
 		}
 	}
 
@@ -1099,6 +1125,17 @@ func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript strin
 	h.cfg.Logf("handler: posting failed (%v); rescued %d chars of output to %s", cause, len(transcript), url)
 }
 
+// startLiveness arms the bound on one turn: a progress-resetting
+// no-progress window plus the operator's opt-in absolute ceiling. The
+// returned context is what the prompt runs on, and its cause is how
+// failTurn tells a wedged turn from a superseded one.
+func (h *Handler) startLiveness(ctx context.Context) (*client.TurnLiveness, context.Context, context.CancelFunc) {
+	return client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
+		NoProgressTimeout: h.cfg.NoProgressTimeout,
+		MaxTurnDuration:   h.cfg.TurnCeiling,
+	})
+}
+
 // failTurn reports an agent error into the topic instead of leaving a
 // placeholder hanging forever.
 //
@@ -1106,9 +1143,27 @@ func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript strin
 // follow-up arrives the relay cancels the running turn on purpose, so
 // "error: context canceled" would be noise pointing at nothing the
 // user can act on.
+//
+// Whatever the suffix, the partial answer streamed so far is preserved:
+// split.Close appends to it rather than replacing it, so a turn cut
+// mid-flight keeps everything the agent had already said.
+//
+// The reason is read from the TURN CONTEXT's cause, not from cause
+// itself. An agent that is cancelled mid-prompt reports it back as an
+// ordinary JSON-RPC error — "context deadline exceeded", carrying no Go
+// sentinel — so classifying on the returned error alone is exactly how
+// a wedged turn came to surface as a bare, meaningless "*error: context
+// deadline exceeded*".
 func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollover.Splitter, cause error) error {
 	suffix := fmt.Sprintf("\n\n*error: %v*", cause)
-	if errors.Is(cause, context.Canceled) {
+	switch c := context.Cause(ctx); {
+	case errors.Is(c, client.ErrNoProgress):
+		suffix = fmt.Sprintf("\n\n*(stopped: no output and no tool activity from the agent for %s — it looks wedged)*",
+			h.cfg.NoProgressTimeout)
+	case errors.Is(c, client.ErrTurnCeiling):
+		suffix = fmt.Sprintf("\n\n*(stopped: this turn hit the %s ceiling set by `prompt_timeout_seconds`)*",
+			h.cfg.TurnCeiling)
+	case errors.Is(c, context.Canceled), errors.Is(cause, context.Canceled):
 		suffix = "\n\n*(superseded by your next message)*"
 	}
 	fctx := context.WithoutCancel(ctx)

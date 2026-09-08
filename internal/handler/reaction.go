@@ -266,13 +266,14 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 		h.takeReactions(conv.ID)
 		return
 	}
-	// The turn's context is created cancellable-only and the CLOCK IS
-	// STARTED AFTER THE CLAIM. Deriving the timeout before the wait
-	// would charge the reaction turn for however long the human turn
-	// it queued behind took — and a conversation busy for longer than
-	// PromptTimeout (the exact case reactions pile up in) would start
-	// this turn already expired and post "*error: context deadline
-	// exceeded*" into the topic, caused by nothing but an emoji.
+	// The turn's context is created cancellable-only. The liveness
+	// clock that actually bounds the turn is armed later still, inside
+	// run, once the agent is about to be prompted — so a reaction turn
+	// is never charged for however long the human turn it queued behind
+	// took. (A conversation busy for longer than the old wall-clock cap
+	// — the exact case reactions pile up in — used to start this turn
+	// already expired and post "*error: context deadline exceeded*"
+	// into the topic, caused by nothing but an emoji.)
 	turnCtx, cancelTurn := context.WithCancel(context.WithoutCancel(ctx))
 	entry := &inflightEntry{cancel: cancelTurn}
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
@@ -280,8 +281,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 		h.takeReactions(conv.ID)
 		return
 	}
-	pctx, cancelTimeout := context.WithTimeout(turnCtx, h.cfg.PromptTimeout)
-	cancel := func() { cancelTimeout(); cancelTurn() }
+	pctx, cancel := turnCtx, cancelTurn
 	lines, extra := h.takeReactions(conv.ID)
 	// Re-read the conversation: seconds have passed, and unlike a
 	// message turn — where this window is microseconds — the topic may

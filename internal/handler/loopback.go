@@ -178,7 +178,7 @@ func (h *Handler) PostTo(token, text string) error {
 	// Bounded, and detached from any caller: the tool call is answered
 	// only when this returns, so an unbounded context would let one
 	// wedged Zulip request hang the agent's turn forever.
-	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.PromptTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
 	defer cancel()
 	return split.Close(ctx, text)
 }
@@ -263,11 +263,9 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 		return fmt.Errorf("%w: no conversation in %s", schedule.ErrGone, h.describe(key))
 	}
 
-	// Cancellable now, timed AFTER the claim below: a scheduled turn
-	// that waited out a long human one must still get its full
-	// PromptTimeout, not the remainder. Charging it for the wait would
-	// start it already expired and report a deadline error the user
-	// can do nothing about.
+	// Cancellable only: the turn's liveness clock is armed inside run,
+	// after the claim below, so a scheduled turn that waited out a long
+	// human one still gets its full window rather than the remainder.
 	turnCtx, cancelTurn := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelTurn()
 	// A human turn must never be superseded by a scheduled one, so wait
@@ -282,8 +280,6 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
 		return err
 	}
-	pctx, cancel := context.WithTimeout(turnCtx, h.cfg.PromptTimeout)
-	defer cancel()
 	// See handleMessage: endTurn runs after the turn has left the
 	// inflight map, never before.
 	defer h.endTurn(conv, entry)
@@ -294,7 +290,7 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 	// triggering message to react to, and a scheduled turn that decided
 	// to abstain would leave the user with no sign anything happened.
 	// msgID 0 skips the :eyes: acknowledgement for the same reason.
-	return h.run(pctx, conv, "["+scheduledSender+"] "+it.Text, true, 0)
+	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0)
 }
 
 // claimConvIdle blocks until no turn is in flight for convID and then

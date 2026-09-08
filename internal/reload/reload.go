@@ -250,7 +250,7 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 // Nothing external is waiting on this: systemd's ExecReload is just a
 // kill(1) that has already returned, and the relay is not "down" while
 // it drains — the Zulip queue is buffering for it. Agent turns
-// legitimately run tens of minutes, and prompt_timeout is what bounds a
+// legitimately run tens of minutes, and no_progress_timeout is what bounds a
 // turn as work, so this is a leak backstop rather than a working bound.
 const DefaultReloadDrain = 30 * time.Minute
 

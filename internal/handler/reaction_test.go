@@ -950,16 +950,19 @@ func TestBufferedReactionsFollowTheConversation(t *testing.T) {
 // for a busy conversation, must not be charged to the turn they queue.
 //
 // Getting this wrong is not a slow turn but a WRONG MESSAGE: a
-// conversation busy for longer than PromptTimeout — exactly when
+// conversation busy for longer than the turn bound — exactly when
 // reactions pile up — would start the reaction turn already expired and
-// post "*error: context deadline exceeded*" into the topic, caused by
-// nothing but an emoji.
+// post an error into the topic, caused by nothing but an emoji.
+//
+// It is asserted on the OPT-IN ceiling, because that is the bound with
+// a visible deadline; the no-progress window is armed in the very same
+// place, so proving one proves both.
 func TestBufferedReactionTurnGetsAFullTimeout(t *testing.T) {
 	agent := newAgent("answer")
 	waited := make(chan time.Time, 4)
 	hh := newHarness(t, agent, func(c *Config) {
 		c.Reactions = true
-		c.PromptTimeout = 5 * time.Second
+		c.TurnCeiling = 5 * time.Second
 		c.OnWaitForConv = func(string) {
 			select {
 			case waited <- time.Now():
@@ -1001,13 +1004,13 @@ func TestBufferedReactionTurnGetsAFullTimeout(t *testing.T) {
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("turn did not finish: %v", err)
 	}
-	// The clock starts when the conversation is claimed, so the
-	// deadline is strictly later than one measured from the moment the
-	// reaction was buffered.
+	// The clock starts when the turn actually runs, so the deadline is
+	// strictly later than one measured from the moment the reaction was
+	// buffered.
 	if got := agent.lastDeadline(t); !got.After(parked.Add(5 * time.Second)) {
 		t.Fatalf("reaction turn deadline %v was charged for the wait (parked at %v)", got, parked)
 	}
-	if body := hh.z.lastBody(); strings.Contains(body, "deadline exceeded") {
+	if body := hh.z.lastBody(); strings.Contains(body, "stopped:") {
 		t.Fatalf("an emoji produced an error message: %q", body)
 	}
 }
