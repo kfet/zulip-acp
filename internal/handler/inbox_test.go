@@ -108,7 +108,7 @@ func TestUploadRefs(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := uploadRefs(tc.text, host)
+			got := uploadRefs(tc.text, []string{host})
 			var paths []string
 			for _, r := range got {
 				paths = append(paths, r.Path)
@@ -132,7 +132,7 @@ func TestUploadRefsCap(t *testing.T) {
 	for i := 0; i < maxAttachments*3; i++ {
 		fmt.Fprintf(&b, "![f](/user_uploads/2/20/H/f%d.png) ", i)
 	}
-	if got := len(uploadRefs(b.String(), "z.example.com")); got != maxAttachments {
+	if got := len(uploadRefs(b.String(), []string{"z.example.com"})); got != maxAttachments {
 		t.Fatalf("extracted %d refs, want the cap of %d", got, maxAttachments)
 	}
 }
@@ -142,24 +142,51 @@ func TestUploadRefsCap(t *testing.T) {
 // rather than fetching an arbitrary URL with the bot's credentials.
 func TestUploadRefsWithoutAHost(t *testing.T) {
 	text := "![a](/user_uploads/2/20/H/a.png) https://zulip.example.com/user_uploads/2/20/H/b.png"
-	got := uploadRefs(text, "")
+	got := uploadRefs(text, nil)
 	if len(got) != 1 || got[0].Path != "/user_uploads/2/20/H/a.png" {
 		t.Fatalf("refs = %#v", got)
 	}
 }
 
-func TestSiteHost(t *testing.T) {
-	tests := []struct{ site, want string }{
-		{"", ""},
-		{"https://zulip.example.com", "zulip.example.com"},
-		{"https://zulip.example.com:8443/", "zulip.example.com:8443"},
-		{"http://[::1", ""}, // unparseable
+func TestSiteHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		site    string
+		aliases []string
+		want    string
+	}{
+		{name: "nothing known"},
+		{name: "plain", site: "https://zulip.example.com", want: "zulip.example.com"},
+		{name: "port and trailing slash", site: "https://zulip.example.com:8443/", want: "zulip.example.com:8443"},
+		{name: "unparseable site", site: "http://[::1"},
+		{
+			name: "alias as bare host and as URL", site: "https://ts.example.net",
+			aliases: []string{"zulip.example.com", "https://vanity.example.org/", "  ", ""},
+			want:    "ts.example.net,zulip.example.com,vanity.example.org",
+		},
+		{name: "aliases alone", aliases: []string{"zulip.example.com"}, want: "zulip.example.com"},
 	}
 	for _, tc := range tests {
-		h := &Handler{cfg: Config{Site: tc.site}}
-		if got := h.siteHost(); got != tc.want {
-			t.Fatalf("siteHost(%q) = %q, want %q", tc.site, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handler{cfg: Config{Site: tc.site, SiteAliases: tc.aliases}}
+			if got := strings.Join(h.siteHosts(), ","); got != tc.want {
+				t.Fatalf("siteHosts() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUploadRefsAcceptsAnAlias pins the reason aliases exist: a link
+// copied from a browser on the realm's OTHER name is still ours, and a
+// link on a host we do not answer to is still not.
+func TestUploadRefsAcceptsAnAlias(t *testing.T) {
+	hosts := []string{"ts.example.net", "zulip.example.com"}
+	text := "https://zulip.example.com/user_uploads/2/20/H/a.png " +
+		"https://ts.example.net/user_uploads/2/20/H/b.png " +
+		"https://evil.example/user_uploads/2/20/H/c.png"
+	got := uploadRefs(text, hosts)
+	if len(got) != 2 || got[0].Path != "/user_uploads/2/20/H/a.png" || got[1].Path != "/user_uploads/2/20/H/b.png" {
+		t.Fatalf("refs = %#v", got)
 	}
 }
 

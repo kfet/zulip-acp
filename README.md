@@ -303,6 +303,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | key | default | meaning |
 |---|---|---|
 | `site` | — | Zulip base URL. Env: `ZULIP_SITE` |
+| `site_aliases` | `[]` | other host names the same realm answers to, so an upload link copied from a browser on one of them is still recognised as ours. Bare hosts or full URLs |
 | `bot_email` | — | bot's Zulip email. Env: `ZULIP_EMAIL` |
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
 | `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |
@@ -565,6 +566,18 @@ message, which belong on disk rather than in a prompt.
 Both `![alt](path)` and `[name](path)` are recognised, as is the absolute
 `https://<your-realm>/user_uploads/…` form that "Copy link" produces. **A URL on
 any other host is ignored**: the bot's credentials never leave its own realm.
+
+If your realm answers to more than one name — say the relay dials a Tailscale
+name while the humans browse a vanity domain — list the others in
+`site_aliases`, or a link pasted from the other name is silently not an
+attachment:
+
+```json
+"site": "https://zulip.internal.example",
+"site_aliases": ["zulip.example.com"]
+```
+
+Composer-attached files are unaffected either way: those are relative paths.
 
 Bounds, because anyone who can post in a served channel can attach a file: ten
 references per message, `max_attachment_bytes` per file, and
