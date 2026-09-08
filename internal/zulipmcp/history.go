@@ -79,6 +79,16 @@ type Config struct {
 	// Required: without it there is no identity, and without identity
 	// there is no safe read. Returning ok=false rejects the call.
 	ConvKey func(sessionKey string) (journal.Key, bool)
+	// Origin maps the same session key to the conversation this one
+	// was BRANCHED from, if any. Required, and it is the entire
+	// permission model of `history(origin: true)`: a session may read
+	// its declared parent, clamped to messages at or before the branch
+	// point, and nothing else.
+	//
+	// ONE HOP. It resolves the parent of the CALLER, never the parent
+	// of the parent, so a chain of branches does not accumulate into a
+	// licence to read the whole realm.
+	Origin func(sessionKey string) (journal.Parent, bool)
 	// Rename arms a rename of the conversation's topic, to be applied
 	// when the turn ends. Required; it is the Handler's, because a
 	// rename must not land while the turn is still posting into the
@@ -118,6 +128,9 @@ func NewTools(cfg Config) (*Tools, error) {
 	if cfg.ConvKey == nil {
 		return nil, errors.New("zulipmcp: ConvKey is required")
 	}
+	if cfg.Origin == nil {
+		return nil, errors.New("zulipmcp: Origin is required")
+	}
 	if cfg.Rename == nil {
 		return nil, errors.New("zulipmcp: Rename is required")
 	}
@@ -137,15 +150,42 @@ func (t *Tools) Register(h *mcphost.Host) {
 	}
 }
 
+// caller is the resolved identity of one tool call: the conversation
+// it came from, and — on demand — the conversation that one was
+// branched out of.
+//
+// The key is resolved by wrap, from the mcphost session key alone,
+// before any tool body runs. That is what keeps the rule structural
+// rather than conventional: a tool body is handed the conversations it
+// may act on and has no way to name another.
+//
+// The ORIGIN is deliberately a thunk rather than a resolved value.
+// Resolving it costs the relay a Zulip round-trip — the parent's
+// location is read back from the branch-point message, because a
+// stored topic name rots when the topic is renamed or archived — and
+// an ordinary `history` call must not pay for a parent it is not
+// asking about. It is still resolved from the session key and nothing
+// else; there is simply nothing for a tool body to pass it.
+type caller struct {
+	// key is the conversation the call came from.
+	key journal.Key
+	// origin resolves the conversation this one was branched from.
+	// There is deliberately no grandparent: see Config.Origin.
+	origin func() (journal.Parent, bool)
+}
+
 // Tools builds the tool set as data.
 func (t *Tools) Tools() []Tool {
 	return []Tool{{
 		Name: ToolHistory,
 		Description: "Read earlier messages of THIS conversation, oldest first, as raw markdown — " +
 			"including your own past replies. Use it to recover what was said before your current " +
-			"session started, or before the context was cleared. It always reads here; there is no " +
-			"way to address another topic or DM. Long replies are truncated: page further back with " +
-			"before_id.",
+			"session started, or before the context was cleared. Long replies are truncated: page " +
+			"further back with before_id. With origin=true it instead reads the conversation THIS " +
+			"topic was branched out of, up to the moment of the branch — available only when the relay " +
+			"opened this topic with `!branch`. Those two are the only conversations it can ever read; " +
+			"there is no way to address any other topic or DM, and the origin's own origin is not " +
+			"reachable.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -161,23 +201,32 @@ func (t *Tools) Tools() []Tool {
 						"Pass the oldest id from a previous call to page further back. " +
 						"Omit to start from the newest message.",
 				},
+				"origin": map[string]any{
+					"type": "boolean",
+					"description": "Read the conversation this topic was branched out of, instead of " +
+						"this one. Only messages at or before the branch point are returned — the " +
+						"origin's later messages are not yours to read. Fails when this topic was not " +
+						"branched from anything.",
+				},
 			},
 		},
-		Handler: t.wrap(func(key journal.Key, args json.RawMessage) (string, error) {
+		Handler: t.wrap(func(c caller, args json.RawMessage) (string, error) {
 			var a struct {
 				Limit    int   `json:"limit"`
 				BeforeID int64 `json:"before_id"`
+				Origin   bool  `json:"origin"`
 			}
 			if err := decode(args, &a); err != nil {
 				return "", err
 			}
-			return t.history(key, a.Limit, a.BeforeID)
+			return t.history(c, a.Limit, a.BeforeID, a.Origin)
 		}),
 	}, t.renameTool()}
 }
 
-// history fetches and renders one page.
-func (t *Tools) history(key journal.Key, limit int, beforeID int64) (string, error) {
+// history fetches and renders one page, of this conversation or of its
+// origin.
+func (t *Tools) history(c caller, limit int, beforeID int64, origin bool) (string, error) {
 	if limit < 0 || beforeID < 0 {
 		return "", errors.New("limit and before_id must not be negative")
 	}
@@ -187,6 +236,25 @@ func (t *Tools) history(key journal.Key, limit int, beforeID int64) (string, err
 		limit = DefaultLimit
 	case limit > MaxLimit:
 		limit, clamped = MaxLimit, true
+	}
+	key := c.key
+	if origin {
+		parent, ok := c.origin()
+		if !ok {
+			return "", errors.New("there is no origin conversation to read: either this topic was not branched out of another one, " +
+				"or the conversation it came from is no longer reachable. Call history without origin to read this conversation instead")
+		}
+		key = parent.Key
+		// The clamp, and the whole reason a branched session can be
+		// handed another conversation at all: it may read what led to
+		// the branch, never what the origin said afterwards.
+		//
+		// Zulip's anchor is any integer and need not be a real message
+		// id, so "at or before N" is exactly "before N+1, exclusive".
+		limitID := parent.MessageID + 1
+		if beforeID == 0 || beforeID > limitID {
+			beforeID = limitID
+		}
 	}
 	var narrow []zulipproto.NarrowTerm
 	if key.IsDM() {
@@ -202,8 +270,18 @@ func (t *Tools) history(key journal.Key, limit int, beforeID int64) (string, err
 	if err != nil {
 		return "", err
 	}
-	t.cfg.Logf("zulipmcp: history read %d message(s) in %s", len(msgs), key.Label())
-	return render(msgs, clamped), nil
+	t.cfg.Logf("zulipmcp: history read %d message(s) in %s (%s)", len(msgs), key.Label(), whichConv(origin))
+	return render(msgs, clamped, origin), nil
+}
+
+// whichConv names the conversation a reply is about. The empty page in
+// particular has to say which one was empty, or an agent reading its
+// origin cannot tell "nothing there" from "wrong place".
+func whichConv(origin bool) string {
+	if origin {
+		return "the origin conversation"
+	}
+	return "this conversation"
 }
 
 // render turns a page into the agent-facing reply, bounded per message
@@ -212,9 +290,10 @@ func (t *Tools) history(key journal.Key, limit int, beforeID int64) (string, err
 // Messages arrive oldest first. The budget is spent NEWEST first and
 // the result reversed, so what survives a bound is the recent end of
 // the conversation, and before_id names the oldest that did survive.
-func render(msgs []zulipproto.Message, clamped bool) string {
+func render(msgs []zulipproto.Message, clamped, origin bool) string {
+	where := whichConv(origin)
 	if len(msgs) == 0 {
-		return "No earlier messages in this conversation."
+		return "No earlier messages in " + where + "."
 	}
 	var (
 		blocks    []string
@@ -239,7 +318,7 @@ func render(msgs []zulipproto.Message, clamped bool) string {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d earlier message(s) in this conversation, oldest first:\n\n", len(blocks))
+	fmt.Fprintf(&sb, "%d earlier message(s) in %s, oldest first:\n\n", len(blocks), where)
 	sb.WriteString(strings.Join(blocks, "\n"))
 	sb.WriteString("\n")
 	if clamped {
@@ -252,7 +331,11 @@ func render(msgs []zulipproto.Message, clamped bool) string {
 	if truncated {
 		fmt.Fprintf(&sb, "\nMessage bodies longer than %d characters were truncated.", MaxMessageRunes)
 	}
-	fmt.Fprintf(&sb, "\nTo read further back, call %s again with before_id=%d.", ToolHistory, oldestID)
+	again := ""
+	if origin {
+		again = "origin=true and "
+	}
+	fmt.Fprintf(&sb, "\nTo read further back, call %s again with %sbefore_id=%d.", ToolHistory, again, oldestID)
 	return sb.String()
 }
 
@@ -279,17 +362,20 @@ func truncate(s string, n int) (string, bool) {
 	return string(r[:n]) + "… [truncated]", true
 }
 
-// wrap resolves the mcphost session key to the conversation's key
-// before the handler runs, so no tool body ever sees a raw session key
-// and no tool body can be written that takes a conversation as an
-// argument.
-func (t *Tools) wrap(fn func(key journal.Key, args json.RawMessage) (string, error)) mcphost.Handler {
+// wrap resolves the mcphost session key to the conversations the call
+// may act on before the handler runs, so no tool body ever sees a raw
+// session key and no tool body can be written that takes a
+// conversation as an argument.
+func (t *Tools) wrap(fn func(c caller, args json.RawMessage) (string, error)) mcphost.Handler {
 	return func(sessionKey string, args json.RawMessage) (string, error) {
 		key, ok := t.cfg.ConvKey(sessionKey)
 		if !ok {
 			return "", errors.New("this conversation is no longer active")
 		}
-		return fn(key, args)
+		return fn(caller{
+			key:    key,
+			origin: func() (journal.Parent, bool) { return t.cfg.Origin(sessionKey) },
+		}, args)
 	}
 }
 

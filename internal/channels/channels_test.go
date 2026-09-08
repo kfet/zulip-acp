@@ -303,3 +303,38 @@ func TestAmbient(t *testing.T) {
 		t.Fatal("no ambient_channels means nothing is ambient")
 	}
 }
+
+// TestIDResolvesAServedChannelByName is `!branch`'s check: it is
+// handed a `#**mention**` and must refuse a destination the relay
+// could not post in.
+func TestIDResolvesAServedChannelByName(t *testing.T) {
+	s := New(Config{Explicit: map[int64]string{4: "fleet"}, Follow: true})
+	s.Sync([]zulipproto.Stream{{StreamID: 9, Name: "Design Notes"}})
+
+	for _, tc := range []struct {
+		name string
+		want int64
+		ok   bool
+	}{
+		{"fleet", 4, true},
+		{"FLEET", 4, true},
+		{"Design Notes", 9, true},
+		{"design notes", 9, true},
+		{"nowhere", 0, false},
+	} {
+		got, ok := s.ID(tc.name)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("ID(%q) = %d, %v; want %d, %v", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestIDPrefersAnExactMatch: a realm holding two case-variant names
+// must not make the name actually typed ambiguous.
+func TestIDPrefersAnExactMatch(t *testing.T) {
+	s := New(Config{Explicit: map[int64]string{4: "Fleet"}, Follow: true})
+	s.Sync([]zulipproto.Stream{{StreamID: 9, Name: "fleet"}})
+	if got, ok := s.ID("fleet"); !ok || got != 9 {
+		t.Fatalf("ID = %d, %v; want the exact match", got, ok)
+	}
+}

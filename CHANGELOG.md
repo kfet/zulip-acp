@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`!branch [#**channel**] <text>` — spin an idea out into a topic of its
+  own without losing the context it grew out of.** The command is intercepted
+  like `!new`, so the origin agent never sees it. The relay creates a topic in
+  this channel (or the one named), auto-named from `<text>`'s first line
+  through the existing `internal/autotopic` path, posts one opening message
+  there that @-mentions the branching user, drops a `branched → #**c>t**`
+  pointer in the origin topic, and starts the new session with
+  `[branched from #**channel>Origin topic@<id>**]` followed by the text.
+  Collisions with an existing topic get a ` (2)` suffix, compared
+  case-insensitively as Zulip does; a branch never appends into a live
+  conversation. From a direct message the destination channel must be named
+  explicitly.
+- **`history(origin: true)` — the branched session can read the conversation
+  it came from.** The journal records the origin as (channel, topic, bare
+  message id), and the tool reads exactly that conversation, clamped to
+  messages at or before the branch point. The origin is LOCATED by that
+  message id, read back at the moment of the call, so a renamed or archived
+  origin topic cannot silently redirect the read to a later topic of the same
+  name; an origin that no longer resolves is refused rather than guessed at.
+  One hop only: the origin's own origin is not reachable. The context is
+  never pre-summarised — it is pulled by the agent that needs it, when it
+  needs it, which is also what makes branching work out of a topic the relay
+  was never engaged in.
+- **Linked messages are hydrated into the prompt.** An incoming message
+  containing `#**channel>topic@949**` or a `/near/949` link now has that
+  message fetched and injected as a `[linked]` block, so "see this" means
+  something. Bounded: at most three per message, each body truncated, and the
+  SAME channel only — `GET /messages/{id}` runs with the bot's permissions, so
+  "a channel the relay serves" would let anyone in one served channel paste a
+  link and read out another they cannot see. Never a direct message, and
+  deduped per conversation.
+
 ## [0.22.4] - 2026-09-08
 
 ### Fixed

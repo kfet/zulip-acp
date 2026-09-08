@@ -336,6 +336,30 @@ func (c *Client) Subscriptions(ctx context.Context) ([]Stream, error) {
 	return resp.Subscriptions, nil
 }
 
+// Topics lists the topic names currently in a channel, newest first.
+//
+// It exists for `!branch`, which creates a topic and must not collide
+// with one already there. Zulip compares topic names
+// CASE-INSENSITIVELY — "Design notes" and "design notes" are one
+// topic — so a caller checking for a collision must fold case itself;
+// this returns the names exactly as stored.
+func (c *Client) Topics(ctx context.Context, streamID int64) ([]string, error) {
+	var resp struct {
+		Topics []struct {
+			Name string `json:"name"`
+		} `json:"topics"`
+	}
+	path := "/users/me/" + strconv.FormatInt(streamID, 10) + "/topics"
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(resp.Topics))
+	for _, t := range resp.Topics {
+		out = append(out, t.Name)
+	}
+	return out, nil
+}
+
 // Streams lists the channels the bot can see.
 func (c *Client) Streams(ctx context.Context) ([]Stream, error) {
 	var resp struct {

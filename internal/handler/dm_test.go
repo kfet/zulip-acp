@@ -167,6 +167,7 @@ func TestDMIgnoresChannelAllowlist(t *testing.T) {
 type emptyChannels struct{}
 
 func (emptyChannels) Name(int64) (string, bool) { return "", false }
+func (emptyChannels) ID(string) (int64, bool)   { return 0, false }
 func (emptyChannels) Ambient(int64) bool        { return false }
 func (emptyChannels) Autotopic(int64) bool      { return false }
 

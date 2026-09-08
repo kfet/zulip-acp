@@ -23,6 +23,7 @@ func renameTools(t *testing.T, key journal.Key, reply string, rerr error) (*Tool
 	tools, err := NewTools(Config{
 		Client:  &fakeClient{},
 		ConvKey: func(k string) (journal.Key, bool) { return key, k == "c1" },
+		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
 		Rename: func(k journal.Key, title string) (string, error) {
 			calls = append(calls, renameCall{k, title})
 			return reply, rerr

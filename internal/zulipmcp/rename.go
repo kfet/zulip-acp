@@ -40,7 +40,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/kfet/zulip-acp/internal/autotopic"
-	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -99,7 +98,7 @@ func (t *Tools) renameTool() Tool {
 			},
 			"required": []any{"title"},
 		},
-		Handler: t.wrap(func(key journal.Key, args json.RawMessage) (string, error) {
+		Handler: t.wrap(func(c caller, args json.RawMessage) (string, error) {
 			var a struct {
 				Title string `json:"title"`
 			}
@@ -110,17 +109,17 @@ func (t *Tools) renameTool() Tool {
 			if err != nil {
 				return "", err
 			}
-			if key.IsDM() {
+			if c.key.IsDM() {
 				// A direct message has no topic; there is nothing here
 				// to rename and no error the agent could recover from
 				// by retrying differently.
 				return "", errors.New("a direct message has no topic to rename")
 			}
-			out, err := t.cfg.Rename(key, title)
+			out, err := t.cfg.Rename(c.key, title)
 			if err != nil {
 				return "", err
 			}
-			t.cfg.Logf("zulipmcp: rename_topic armed %q for %s", title, key.Label())
+			t.cfg.Logf("zulipmcp: rename_topic armed %q for %s", title, c.key.Label())
 			return out, nil
 		}),
 	}

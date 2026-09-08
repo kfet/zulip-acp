@@ -507,6 +507,7 @@ func main() {
 		zulipTools, err := zulipmcp.NewTools(zulipmcp.Config{
 			Client:  zc,
 			ConvKey: func(k string) (journal.Key, bool) { return h.ConvKey(k) },
+			Origin:  func(k string) (journal.Parent, bool) { return h.ConvOrigin(k) },
 			Rename:  func(k journal.Key, title string) (string, error) { return h.RenameTopic(k, title) },
 			Timeout: cfg.PromptTimeout(),
 			Logf:    log.Printf,

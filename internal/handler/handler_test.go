@@ -87,19 +87,42 @@ type fakeZulip struct {
 	// name cache is proved by the SECOND reaction costing no call.
 	users    map[int64]zulipproto.User
 	userGets []int64
+	// channelTopics backs Topics, keyed by stream id, and topicsErr
+	// models a server that refuses the listing. `!branch` reads it to
+	// avoid colliding with a topic that already exists.
+	channelTopics map[int64][]string
+	topicsErr     error
+}
+
+// Topics plays GET /users/me/{stream_id}/topics.
+func (z *fakeZulip) Topics(_ context.Context, streamID int64) ([]string, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.topicsErr != nil {
+		return nil, z.topicsErr
+	}
+	return append([]string(nil), z.channelTopics[streamID]...), nil
+}
+
+// addTopic makes a topic exist in a channel, for the collision paths.
+func (z *fakeZulip) addTopic(streamID int64, names ...string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.channelTopics[streamID] = append(z.channelTopics[streamID], names...)
 }
 
 func newZulip() *fakeZulip {
 	return &fakeZulip{
-		bodies:      map[int64]string{},
-		topics:      map[int64]string{},
-		dms:         map[int64][]int64{},
-		widgets:     map[int64]string{},
-		uploads:     map[string][]byte{},
-		uploadTypes: map[string]string{},
-		messages:    map[int64]zulipproto.Message{},
-		users:       map[int64]zulipproto.User{humanID: {UserID: humanID, FullName: "Ada Lovelace"}},
-		posted:      make(chan struct{}, 256),
+		bodies:        map[int64]string{},
+		topics:        map[int64]string{},
+		dms:           map[int64][]int64{},
+		widgets:       map[int64]string{},
+		uploads:       map[string][]byte{},
+		uploadTypes:   map[string]string{},
+		messages:      map[int64]zulipproto.Message{},
+		users:         map[int64]zulipproto.User{humanID: {UserID: humanID, FullName: "Ada Lovelace"}},
+		channelTopics: map[int64][]string{},
+		posted:        make(chan struct{}, 256),
 
 		unreacted: make(chan struct{}, 256),
 	}
@@ -481,6 +504,13 @@ func (a *fakeAgent) selections() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Clone(a.setModel)
+}
+
+// prompted returns every prompt the agent has been handed, safely.
+func (a *fakeAgent) prompted() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.prompts)
 }
 
 func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {

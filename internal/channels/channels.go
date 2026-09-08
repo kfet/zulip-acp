@@ -18,6 +18,7 @@ package channels
 
 import (
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/kfet/zulip-acp/internal/zulipproto"
@@ -99,6 +100,34 @@ func (s *Set) Autotopic(id int64) bool {
 	defer s.mu.RUnlock()
 	_, ok := s.autotopic[id]
 	return ok
+}
+
+// ID resolves a channel NAME to its id, and reports whether the relay
+// serves it. It is the reverse of Name, and exists for `!branch`,
+// which is handed a `#**channel**` mention and must decide whether the
+// relay may post there at all.
+//
+// The compare is case-insensitive: Zulip channel names are unique
+// case-insensitively, and a human typing a mention should not have to
+// match the realm's capitalisation. An exact match always wins, so a
+// realm that somehow holds two case-variant names cannot make this
+// ambiguous for the name actually typed.
+func (s *Set) ID(name string) (int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var fold int64
+	var folded bool
+	for _, m := range []map[int64]string{s.explicit, s.followed} {
+		for id, n := range m {
+			if n == name {
+				return id, true
+			}
+			if !folded && strings.EqualFold(n, name) {
+				fold, folded = id, true
+			}
+		}
+	}
+	return fold, folded
 }
 
 // Name returns the channel's name and whether it is served. It is the

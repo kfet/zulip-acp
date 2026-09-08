@@ -29,8 +29,16 @@ func (f *fakeClient) Messages(_ context.Context, narrow []zulipproto.NarrowTerm,
 	return f.msgs, f.err
 }
 
-// newTools wires a Tools whose only known conversation is convID.
+// newTools wires a Tools whose only known conversation is convID, and
+// which was branched from nothing.
 func newTools(t *testing.T, c *fakeClient, convID string, key journal.Key) *Tools {
+	t.Helper()
+	return newBranchedTools(t, c, convID, key, nil)
+}
+
+// newBranchedTools is newTools with a declared origin. A nil parent
+// means the conversation was not branched from anything.
+func newBranchedTools(t *testing.T, c *fakeClient, convID string, key journal.Key, parent *journal.Parent) *Tools {
 	t.Helper()
 	tools, err := NewTools(Config{
 		Client: c,
@@ -39,6 +47,12 @@ func newTools(t *testing.T, c *fakeClient, convID string, key journal.Key) *Tool
 				return journal.Key{}, false
 			}
 			return key, true
+		},
+		Origin: func(k string) (journal.Parent, bool) {
+			if k != convID || parent == nil {
+				return journal.Parent{}, false
+			}
+			return *parent, true
 		},
 		Rename: func(journal.Key, string) (string, error) { return "armed", nil },
 		Logf:   func(string, ...any) {},
@@ -76,17 +90,21 @@ func msg(id int64, who, body string) zulipproto.Message {
 
 func TestNewToolsRequiresItsDependencies(t *testing.T) {
 	key := func(string) (journal.Key, bool) { return journal.Key{}, true }
+	origin := func(string) (journal.Parent, bool) { return journal.Parent{}, false }
 	rename := func(journal.Key, string) (string, error) { return "", nil }
-	if _, err := NewTools(Config{ConvKey: key, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no Client must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no ConvKey has no identity and must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename}); err == nil {
+		t.Fatal("a Tools with no Origin must not construct: history(origin) would panic on the first call")
+	}
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin}); err == nil {
 		t.Fatal("a Tools with no Rename must not construct: rename_topic would panic on the first call")
 	}
-	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename})
+	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
 	}
@@ -105,7 +123,7 @@ func TestSchemaTakesNoConversation(t *testing.T) {
 		t.Fatal("schema has no properties")
 	}
 	for name := range props {
-		if name != "limit" && name != "before_id" {
+		if name != "limit" && name != "before_id" && name != "origin" {
 			t.Fatalf("unexpected parameter %q: a tool must not take a conversation", name)
 		}
 	}
@@ -204,6 +222,7 @@ func TestHistoryTimesOut(t *testing.T) {
 	tools, err := NewTools(Config{
 		Client:  clientFunc(func(ctx context.Context) error { <-ctx.Done(); close(blocked); return ctx.Err() }),
 		ConvKey: func(string) (journal.Key, bool) { return journal.Channel(4, "t"), true },
+		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
 		Rename:  func(journal.Key, string) (string, error) { return "", nil },
 		Timeout: time.Millisecond,
 	})
@@ -244,7 +263,7 @@ func TestRegisterInstallsOnAHost(t *testing.T) {
 // --- rendering -----------------------------------------------------------
 
 func TestRenderEmptyPage(t *testing.T) {
-	if got := render(nil, false); !strings.Contains(got, "No earlier messages") {
+	if got := render(nil, false, false); !strings.Contains(got, "No earlier messages") {
 		t.Fatalf("render = %q", got)
 	}
 }
@@ -253,7 +272,7 @@ func TestRenderEmptyPage(t *testing.T) {
 // conversation in the order it happened, and is told how to go further
 // back without having to guess an id.
 func TestRenderIsOldestFirst(t *testing.T) {
-	got := render([]zulipproto.Message{msg(1, "Alice", "first"), msg(2, "bot", "second")}, false)
+	got := render([]zulipproto.Message{msg(1, "Alice", "first"), msg(2, "bot", "second")}, false, false)
 	if strings.Index(got, "first") > strings.Index(got, "second") {
 		t.Fatalf("not oldest first: %q", got)
 	}
@@ -270,7 +289,7 @@ func TestRenderIsOldestFirst(t *testing.T) {
 func TestRenderFallsBackToTheSenderEmail(t *testing.T) {
 	m := msg(1, "", "hi")
 	m.SenderEmail = "bot@example.com"
-	if got := render([]zulipproto.Message{m}, false); !strings.Contains(got, "bot@example.com") {
+	if got := render([]zulipproto.Message{m}, false, false); !strings.Contains(got, "bot@example.com") {
 		t.Fatalf("render = %q", got)
 	}
 }
@@ -278,7 +297,7 @@ func TestRenderFallsBackToTheSenderEmail(t *testing.T) {
 // TestRenderTruncatesOneLongMessage: a single maximal Zulip message is
 // 10000 code points; the reply says when it cut one.
 func TestRenderTruncatesOneLongMessage(t *testing.T) {
-	got := render([]zulipproto.Message{msg(1, "Alice", strings.Repeat("é", MaxMessageRunes+50))}, false)
+	got := render([]zulipproto.Message{msg(1, "Alice", strings.Repeat("é", MaxMessageRunes+50))}, false, false)
 	if !strings.Contains(got, "[truncated]") || !strings.Contains(got, "were truncated") {
 		t.Fatalf("render = %q", got)
 	}
@@ -295,7 +314,7 @@ func TestRenderDropsTheOldestWhenTheTotalBinds(t *testing.T) {
 	for i := int64(1); i <= 40; i++ {
 		msgs = append(msgs, msg(i, "Alice", strings.Repeat("x", MaxMessageRunes)))
 	}
-	got := render(msgs, false)
+	got := render(msgs, false, false)
 	if n := utf8.RuneCountInString(got); n > MaxTotalRunes+500 {
 		t.Fatalf("reply not bounded: %d runes", n)
 	}
@@ -313,7 +332,7 @@ func TestRenderDropsTheOldestWhenTheTotalBinds(t *testing.T) {
 // TestRenderKeepsOneOversizeMessage: a single message bigger than the
 // whole budget must still come back, or the tool would answer nothing.
 func TestRenderKeepsOneOversizeMessage(t *testing.T) {
-	got := render([]zulipproto.Message{msg(9, "Alice", strings.Repeat("x", MaxTotalRunes*2))}, false)
+	got := render([]zulipproto.Message{msg(9, "Alice", strings.Repeat("x", MaxTotalRunes*2))}, false, false)
 	if !strings.Contains(got, "[#9 ") {
 		t.Fatalf("render = %q", got)
 	}

@@ -132,6 +132,30 @@ func (k Key) normalise() Key {
 	return k
 }
 
+// Parent is the conversation a BRANCHED conversation was spun off
+// from, together with the exact message the branch happened at.
+//
+// It is the whole permission model of `history(origin: true)` in one
+// struct: a session may read its declared parent conversation, clamped
+// to messages at or before MessageID, and nothing else. There is
+// deliberately no chain — a parent's own parent is not reachable, so
+// "read my ancestors" can never quietly become "read everything".
+//
+// The bare message id is stored alongside the key rather than a
+// `#**channel>topic@id**` link, because `!archive` (and any human) can
+// move a topic to another channel and a rendered link would then rot.
+// The id is unique per realm and stable forever; the key is the cache.
+type Parent struct {
+	// Key is the parent conversation, flattened into the enclosing
+	// JSON object exactly as Conv flattens its own.
+	Key
+	// MessageID is the id of the `!branch` message itself: the
+	// branch point. A read of the parent is clamped to messages at or
+	// before it, so a branched session never sees what its origin
+	// went on to say afterwards.
+	MessageID int64 `json:"message_id,omitempty"`
+}
+
 // Conv is one conversation: its key, its stable conv-id, and the id of
 // the tail message the relay currently owns.
 type Conv struct {
@@ -156,6 +180,16 @@ type Conv struct {
 	// the topic is truth and a stale id simply fails its edit and is
 	// replaced.
 	OptsID int64 `json:"opts_id,omitempty"`
+	// Parent, when set, is the conversation this one was BRANCHED
+	// from — see Parent. It is what `history(origin: true)` reads,
+	// and the only cross-conversation read the relay permits.
+	//
+	// It belongs to the PLACE rather than to the session: the topic
+	// was branched from somewhere, and that stays true across `!new`,
+	// so Retire carries it to the fresh conversation exactly as it
+	// carries the `!opts` panel. Absent in a pre-branch journal, so no
+	// version bump is needed.
+	Parent *Parent `json:"parent,omitempty"`
 	// Retired marks a conversation the user replaced with `!new`. It
 	// keeps its id — and therefore its state/convs/<id>/ directory,
 	// which is never deleted — but it no longer answers to its key,
@@ -206,6 +240,18 @@ func Open(path string) (*Journal, error) {
 	for i := range f.Convs {
 		c := f.Convs[i]
 		c.Key = c.Key.normalise()
+		// A parent with no branch point is not a parent: it names a
+		// conversation with nothing to clamp a read to. Branch refuses
+		// to write one, so this can only come from a hand-edited file
+		// — and dropping it here is what keeps every reader free of
+		// the question.
+		if c.Parent != nil && c.Parent.MessageID != 0 {
+			p := *c.Parent
+			p.Key = p.Key.normalise()
+			c.Parent = &p
+		} else {
+			c.Parent = nil
+		}
 		j.index(&c)
 	}
 	return j, nil
@@ -378,7 +424,11 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// instead of leaving a stale panel behind and posting a second.
 	old.OptsID = 0
 	delete(j.byKey, idx)
-	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts}
+	// The parent pointer belongs to the place too: the topic was
+	// branched from somewhere, and `!new` does not un-branch it. The
+	// retired conversation keeps its own copy — it is the record of
+	// where that session's context came from.
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, Parent: old.Parent}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commit(func() {
@@ -426,6 +476,49 @@ func (j *Journal) SetOpts(convID string, msgID int64) error {
 	prev := c.OptsID
 	c.OptsID = msgID
 	return j.commit(func() { c.OptsID = prev })
+}
+
+// Branch allocates the conversation for a freshly branched topic,
+// recording where it came from in the SAME atomic write that mints it.
+//
+// It is deliberately not Ensure followed by a setter. Two writes leave
+// a window in which a branched conversation exists with no origin —
+// and the second write can fail on its own, which would mean shipping
+// a "your branch lost its origin" degraded path that nothing can
+// reach deterministically. One write has one outcome.
+//
+// It refuses rather than adopts an existing conversation. The caller
+// picks a topic name that collides with neither a Zulip topic nor a
+// journal entry, so a taken key here means something raced it — and
+// overwriting that conversation's origin would hand its session a
+// parent its own users never declared.
+//
+// It also refuses a parent that is the conversation ITSELF. A
+// conversation that is its own origin would make
+// `history(origin: true)` a second, clamped way to read the topic the
+// agent is already in — harmless, but a lie about where the context
+// came from, and the sort of self-reference a permission model should
+// never have to reason about.
+func (j *Journal) Branch(k Key, p Parent) (Conv, error) {
+	if p.MessageID == 0 {
+		return Conv{}, fmt.Errorf("journal: a branch needs the message id it branched at")
+	}
+	p.Key = p.Key.normalise()
+	if p.Key.index() == k.index() {
+		return Conv{}, fmt.Errorf("journal: a conversation cannot be its own origin")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, taken := j.byKey[k.index()]; taken {
+		return Conv{}, fmt.Errorf("journal: a conversation already lives in %s", k.Label())
+	}
+	c := &Conv{ID: j.newID(), Key: k, Parent: &p}
+	j.index(c)
+	out := *c
+	return out, j.commit(func() {
+		delete(j.byID, c.ID)
+		delete(j.byKey, k.index())
+	})
 }
 
 // LookupMessage returns the conversation that owns a message id the

@@ -323,6 +323,144 @@ reports whether it consumed the reaction. In production it is wired to
 which is why it belongs there and not in a prompt: a destructive control must
 never depend on the model choosing to call a tool.
 
+### Branching a topic (`!branch`)
+
+`!branch <text>` (optionally `!branch #**channel** <text>`) spins an idea out
+of the conversation it surfaced in, into a topic of its own. It is intercepted
+exactly as `!new` is: the origin agent never sees the message.
+
+`<text>` is the first message of the new topic and states what the user is
+after. That is why this is a **command and not an emoji reaction**: a reaction
+cannot carry the user's intent, and that intent is the whole value — it is both
+the opening prompt and, through the existing `internal/autotopic` heuristic, the
+topic's name. (A `:fork_and_knife:` reaction is possible later as sugar, with
+empty text and the reacted-to message force-linked. It is not built.)
+
+#### Context is pulled, never pushed
+
+The relay writes **no summary of the origin**. It records a parent pointer,
+states it in the new session's first turn, and stops. If the branched agent
+needs the context it fetches it itself, with `history(origin: true)`.
+
+This was a decision, and it replaced a heavier design that an advisor review
+killed: a "handoff briefing" turn run in the ORIGIN session, whose summary was
+seeded into the new topic. The objection is decisive — **a lazy fetch cannot be
+wrong about what matters, and a summary composed before anyone knows what the
+branch is about can.** It also costs a turn, and it cannot work at all when
+branching out of a topic the relay was never engaged in (a human-only thread in
+an ambient channel), where there is no origin session to ask.
+
+#### The permission model, in one sentence
+
+**A session may read its declared parent conversation, and nothing else.**
+
+- **ONE HOP.** `origin: true` resolves the CALLER's parent and never that
+  parent's own. `zulipmcp.Config.Origin` is asked once, for the calling session
+  key; there is no chaining and no argument that could request one. Otherwise
+  "read my ancestors" quietly becomes "read everything".
+- **Clamped at the branch point.** Only messages at or before the `!branch`
+  message id are returned — what led to the branch, never what the origin went
+  on to say afterwards. Zulip's anchor is any integer and need not be a real
+  message id, so "at or before N" is exactly "before N+1, exclusive". An agent
+  supplied `before_id` is clamped to that same bound, or the clamp would be a
+  suggestion.
+- **The pointer is the BARE MESSAGE ID**, and the location is resolved *from
+  it* at read time. `!archive` moves a topic to another channel, and any human
+  can rename one, so the stored key rots — and the failure is not a mere miss:
+  a LATER topic of the same name in the same channel would be read instead,
+  which is the permission model silently pointing somewhere nobody granted. So
+  `Handler.ConvOrigin` reads the branch-point message back, narrows to wherever
+  it is NOW, and re-checks that channel is still served. Anything that does not
+  resolve — a deleted branch point, a topic archived out of the served set — is
+  refused, never fallen back on. The stored key is the clamp's companion, not
+  an authority. A DM parent is exempt and costs no round-trip: its key is the
+  participant set, which is fixed forever.
+- **The origin is resolved lazily.** `zulipmcp.caller` carries a thunk, not a
+  value, so an ordinary `history` call does not spend a Zulip round-trip on a
+  parent it is not asking about. It is still resolved from the session key and
+  nothing else; there is simply nothing for a tool body to pass it.
+- **It belongs to the PLACE, not the session.** `Journal.Retire` carries the
+  parent to the fresh conversation exactly as it carries the `!opts` panel id:
+  `!new` clears the context, it does not un-branch the topic.
+
+#### Ordering, and what degrades
+
+Nothing is created until every refusal has been checked: the destination
+channel is resolved and confirmed served, the branch is confirmed not to land
+where it started, and the title is chosen against `GET /users/me/{id}/topics`
+unioned with the journal. Only then is the seed message posted, which is what
+CREATES the topic on Zulip.
+
+After that point exactly one thing can still stop the branch: the journal
+refusing to allocate the conversation. That aborts the turn and leaves a real
+topic behind holding one seed message — the honest trade, since the
+alternative is deleting a message to tidy up after an error — and the user is
+told to send a message in the topic to pick it up. The pointer message, which
+comes last, is the only step that truly degrades: it is logged and nothing
+else changes.
+
+- **Collisions.** Zulip compares topic names case-insensitively, so a clash
+  gets a ` (2)` suffix (trimmed to fit `MAX_TOPIC_LENGTH`, which the server
+  enforces by silent truncation). The check is against Zulip's topic listing
+  **unioned with the journal**: the listing is the authority on what a human
+  would see, but a live conversation whose messages have all been deleted has
+  left it while still holding an agent session. A branch must **never** append
+  into a live session's topic — that would drop two conversations into one
+  agent session — nor into a human's thread.
+- **A branch that would land where it started is refused.** `!branch planning`
+  typed in the topic "planning" generates exactly that title. Caught before the
+  seed message, or the relay would post an opening message into the very
+  conversation it was spinning out of. `Journal.Branch` refuses the same thing
+  structurally, as a conversation declaring itself its own origin.
+- **The conversation and its origin are ONE atomic write** (`Journal.Branch`,
+  not `Ensure` plus a setter). Two writes leave a window in which a branched
+  conversation exists with no origin, and the second can fail on its own —
+  which would mean shipping a degraded path that nothing can reach
+  deterministically.
+- **Channel-only, and never guessed.** From a DM the destination must be named
+  explicitly. Inventing one would be the relay choosing where to publish the
+  contents of a private conversation.
+- **The rename anchor is the SEED message, not the `!branch` message.** A
+  rename is an edit of a message *in* the topic being renamed, and the
+  triggering message is in the ORIGIN topic — anchoring on it would make every
+  rename the branched agent asks for fail as "no longer in it", and the topic
+  would keep its generated placeholder name for good. This is the only caller
+  of `startTurnAnchored`.
+- **The seed message @-mentions the branching user.** After typing `!branch`
+  they are still reading the origin topic; on a phone the mention is the only
+  thing that surfaces the topic they are not looking at.
+
+### Linked-message hydration
+
+The same idea at a smaller scale. When an incoming message links to another
+Zulip message — `#**channel>topic@949**`, or any URL containing `/near/949` —
+the relay fetches it and injects a `[linked]` block into the prompt.
+
+The links are read out of the **raw markdown**. The event queue is registered
+with `apply_markdown=false`, so the content the relay holds is what the human
+typed, mention syntax intact. (`topic_links` is not the field for this: it
+carries linkifier matches from the *topic* string.)
+
+Every bound is mandatory: at most three per message, each body truncated to
+less than the `history` tool's per-message bound (hydration is unasked-for, so
+it must cost less than something the agent chose to fetch), deduped per
+conversation so a re-paste does not re-inject, and — the one that is a security
+boundary rather than a budget — **the same channel only**.
+
+That last one is stricter than the channel allowlist and has to be.
+`GET /messages/{id}` runs with the **bot's** permissions, and the bot is
+subscribed to every channel it serves, so "served" alone would let anyone in
+one served channel paste a `/near/` link into another and have the relay read
+out a channel they cannot see. That is privilege escalation, not sharing.
+Restricting hydration to the channel the linking message is itself in makes the
+check free and exact: whoever posted there can read there. A DM is never
+hydrated in either direction — it has no channel to measure, and inventing a
+weaker rule for it would be inventing the hole back.
+
+Every failure is silent to the user and logged: a link to a deleted message
+must not fail a turn, and a failed fetch is not remembered as hydrated, so it
+stays retryable.
+
 ### Archiving a topic (`archive_channel`)
 
 The gesture: react `:wastebasket:` to the relay's **last** message in a topic,
@@ -1112,6 +1250,9 @@ capability the relay should own rather than leak.
   blow the agent's context window in one call.
 - **`before_id` is exclusive**, so feeding back the oldest id of a page yields
   the page before it with neither overlap nor gap.
+- **`origin: true` reads the conversation this topic was BRANCHED out of** —
+  the one and only cross-conversation read the relay permits. See
+  [Branching a topic](#branching-a-topic-branch).
 
 `rename_topic` exists because of `autotopic_channels`. The relay names a new
 topic from the opening line of the message that starts it — a pure heuristic
