@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-08
+
 ### Added
 
 - **`!branch [#**channel**] <text>` — spin an idea out into a topic of its
@@ -1149,7 +1151,11 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/kfet/zulip-acp/compare/v0.22.4...v0.23.0
+[0.22.4]: https://github.com/kfet/zulip-acp/compare/v0.22.3...v0.22.4
+[0.22.3]: https://github.com/kfet/zulip-acp/compare/v0.22.2...v0.22.3
+[0.22.2]: https://github.com/kfet/zulip-acp/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/kfet/zulip-acp/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/kfet/zulip-acp/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kfet/zulip-acp/compare/v0.20.0...v0.21.0
