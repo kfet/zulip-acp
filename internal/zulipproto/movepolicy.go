@@ -75,15 +75,14 @@ func (g *GroupSetting) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// RealmGroupSetting reads one group-setting realm setting by its
-// register-response name (e.g. RealmMoveBetweenChannels).
+// realmSnapshot fetches the realm's settings as raw JSON.
 //
 // Zulip has no "GET /realm" for non-administrators, so the only way to
 // read a realm setting is POST /register with `fetch_event_types`.
 // That creates an event queue as a side effect, which is deleted
 // immediately — the server would garbage-collect it in ten minutes
 // anyway, but leaving one behind for a startup probe is litter.
-func (c *Client) RealmGroupSetting(ctx context.Context, name string) (GroupSetting, error) {
+func (c *Client) realmSnapshot(ctx context.Context) (map[string]json.RawMessage, error) {
 	form := url.Values{
 		// No live event types: this queue exists only to carry the
 		// one-shot realm snapshot back.
@@ -92,7 +91,7 @@ func (c *Client) RealmGroupSetting(ctx context.Context, name string) (GroupSetti
 	}
 	var resp map[string]json.RawMessage
 	if err := c.do(ctx, http.MethodPost, "/register", nil, form, &resp); err != nil {
-		return GroupSetting{}, fmt.Errorf("zulip: reading realm settings: %w", err)
+		return nil, fmt.Errorf("zulip: reading realm settings: %w", err)
 	}
 	if raw, ok := resp["queue_id"]; ok {
 		var qid string
@@ -101,6 +100,17 @@ func (c *Client) RealmGroupSetting(ctx context.Context, name string) (GroupSetti
 			// successful probe.
 			_ = c.DeleteQueue(ctx, qid)
 		}
+	}
+	return resp, nil
+}
+
+// RealmGroupSetting reads one group-setting realm setting by its
+// register-response name (e.g. RealmMoveBetweenChannels), out of the
+// realm snapshot.
+func (c *Client) RealmGroupSetting(ctx context.Context, name string) (GroupSetting, error) {
+	resp, err := c.realmSnapshot(ctx)
+	if err != nil {
+		return GroupSetting{}, err
 	}
 	raw, ok := resp[name]
 	if !ok {

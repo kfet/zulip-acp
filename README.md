@@ -324,12 +324,12 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
-| `stream_edits` | `true` | publish the answer as it arrives. `false` = **quiet mode**: no intra-turn edits at all, the whole answer is published once when the turn closes. See below |
-| `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it |
+| `stream_edits` | `true` | publish the answer as it arrives. `false` = **quiet mode**: no intra-turn edits, no `Thinking…` placeholder, one message and one push carrying the answer; liveness is the typing indicator. See below |
+| `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it. Streaming mode only |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
-| `repost_on_close` | `true` | at the end of a streamed turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. See below |
+| `repost_on_close` | `true` | at the end of a **streamed** turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. A no-op in quiet mode. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
 | `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
@@ -368,39 +368,43 @@ skipped — it never blocks startup.
 ### Quiet mode (`stream_edits`, `spinner_interval_ms`)
 
 Every edit re-renders the whole message — on the server, in the web/desktop
-client, and again on the phone. A long streamed turn therefore *flickers*. Two
-knobs cut how often the relay edits its own message:
+client, and again on the phone. A long streamed turn therefore *flickers*, and
+the placeholder that makes streaming work costs a push notification of its own.
+Two knobs cut how often the relay edits its own message:
 
-- `"stream_edits": false` — **quiet mode**. No intra-turn edits at all: the
-  placeholder goes up, the answer accumulates in memory, and the whole thing is
-  published once when the turn closes. You lose live streaming; you gain a
-  still screen.
+- `"stream_edits": false` — **quiet mode**. No intra-turn edits at all, and **no
+  `Thinking…` placeholder**: the answer accumulates in memory and the whole
+  thing is published once, as a single new message, when the turn closes. You
+  lose live streaming; you gain a still screen and **one** push notification,
+  carrying the answer.
 - `"spinner_interval_ms": 0` — post the `Thinking...` placeholder once and never
   animate it. No spinner goroutine is started at all. Any positive value sets
-  the animation period instead (default `900`).
+  the animation period instead (default `900`). It applies to streaming mode
+  only — quiet mode has no placeholder to animate.
 
-The two are resolved together, because the obvious combination is a trap: the
-spinner only stops when the first streamed chunk *replaces* the placeholder, so
-quiet mode with an animated placeholder would spin for the entire turn — the
-worst of both. Leaving `spinner_interval_ms` unset in quiet mode therefore
-turns the spinner **off**. An explicit positive value is still honoured, which
-makes the spinner the only edit of the turn; that is a deliberate choice, so it
-is not overridden.
+**Liveness in quiet mode is Zulip's typing indicator.** The relay raises "the
+bot is typing…" for the topic (or DM) while the agent works and lowers it on
+every exit path. A typing notification is not a message: it generates no
+unread, no topic noise, and no push. It expires server-side after
+`server_typing_started_expiry_period_milliseconds`, which the relay reads from
+your realm at startup and refreshes well inside. The `ack_emoji` reaction stays
+as the durable "seen it, working" marker for anyone who was not looking.
 
-Neither knob touches `repost_on_close`: the finished answer is still re-posted
-as a new message so the push notification carries it. `edit_interval_ms` stops
-mattering in quiet mode — there is no coalescing tick left to pace.
+`repost_on_close` becomes a no-op in quiet mode — nothing was seeded with a
+placeholder, so there is nothing to re-post, and the one message created is
+already the answer. `edit_interval_ms` stops mattering too: there is no
+coalescing tick left to pace.
 
-The cost of quiet mode is that a relay restart mid-turn leaves nothing but the
-placeholder (marked `turn interrupted`): text that was never published cannot
-survive the process. An agent error or a superseded turn still publishes
-whatever was produced, because both close the message.
+The cost of quiet mode is that a relay restart mid-turn leaves **nothing**: text
+that was never published cannot survive the process. An agent error or a
+superseded turn still publishes whatever was produced, because both close the
+message.
 
 ### Notifications and `repost_on_close`
 
 Zulip generates a mobile push notification when a message is **created**, never
-when it is edited. The relay streams by posting an eager `Thinking...`
-placeholder and editing the answer into it, so every push on your phone used to
+when it is edited. In streaming mode the relay posts an eager `Thinking...`
+placeholder and edits the answer into it, so every push on your phone used to
 read `Thinking...` and never showed the reply.
 
 With `"repost_on_close": true` (the default) the streaming experience on
@@ -408,6 +412,8 @@ web/desktop is unchanged, but when the turn finishes the relay re-posts the
 finished chain as **new** messages and deletes the originals, so a fresh push
 carries the real answer. Notes:
 
+- It applies to **streaming mode only**. Quiet mode posts no placeholder, so
+  the first message already carries the answer and no repost happens.
 - The **whole** chain is recreated, not just the first message — deleting only
   the first would move it below its own continuations. The cost is that a turn
   split across N messages fires N notifications; N is 1 for almost every turn.
@@ -417,6 +423,13 @@ carries the real answer. Notes:
   closed delete window), the **first** refused delete disables reposting for the
   rest of the process and logs loudly, instead of doubling every topic forever.
   Set `"repost_on_close": false` to turn the feature off outright.
+
+Separately, the relay suppresses Zulip's **move notices**. Both
+`send_notification_to_old_thread` and `send_notification_to_new_thread` default
+to true, so every autotopic lift used to make Notification Bot post a notice in
+the origin *and* the destination topic — each one a push whose body starts with
+a markdown link, which a phone renders as a **blank** notification. Both are
+sent as `false`.
 
 ### Emoji reactions (`reactions`)
 

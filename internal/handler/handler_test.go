@@ -75,6 +75,13 @@ type fakeZulip struct {
 	reactAdd []string
 	reactDel []string
 	reactErr error
+	// typing records every typing op as "<op>:<streamID>:<topic>" (or
+	// "<op>:dm[ids]"), typed is signalled after each one, and
+	// typingErr models a server that refuses them. Quiet mode's
+	// liveness lives here.
+	typing    []string
+	typed     chan struct{}
+	typingErr error
 	// posted is signalled after every Post or Edit, so tests can
 	// synchronise on surface state instead of polling a clock.
 	posted chan struct{} // unreacted is signalled after every RemoveReaction. A superseded
@@ -191,6 +198,7 @@ func newZulip() *fakeZulip {
 		posted:        make(chan struct{}, 256),
 
 		unreacted: make(chan struct{}, 256),
+		typed:     make(chan struct{}, 256),
 	}
 }
 
@@ -484,10 +492,44 @@ func (z *fakeZulip) RemoveReaction(_ context.Context, id int64, emoji string) er
 	return z.reactErr
 }
 
+// SetTyping records the typing indicator ops the relay raises. Quiet
+// mode's whole liveness claim is about these, and about the fact that
+// they are not messages.
+func (z *fakeZulip) SetTyping(_ context.Context, op string, streamID int64, topic string, userIDs []int64) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	target := fmt.Sprintf("%d:%s", streamID, topic)
+	if len(userIDs) > 0 {
+		target = fmt.Sprintf("dm%v", userIDs)
+	}
+	z.typing = append(z.typing, op+":"+target)
+	select {
+	case z.typed <- struct{}{}:
+	default:
+	}
+	return z.typingErr
+}
+
+// typingOps returns the recorded typing ops, in order.
+func (z *fakeZulip) typingOps() []string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return slices.Clone(z.typing)
+}
+
 func (z *fakeZulip) reactions() (added, removed []string) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	return append([]string(nil), z.reactAdd...), append([]string(nil), z.reactDel...)
+}
+
+// nextID is the last message id the fake handed out, i.e. how many
+// messages were CREATED — which is what a push notification counts,
+// unlike stored(), which cannot see a message that was deleted again.
+func (z *fakeZulip) nextID() int64 {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.next
 }
 
 func (z *fakeZulip) stored() []string {
@@ -2408,7 +2450,12 @@ func TestWatchdogPublishesMidTurn(t *testing.T) {
 // TestBatchEditsPublishOnlyAtClose is the mirror of
 // TestWatchdogPublishesMidTurn: with streaming edits suppressed the
 // answer must NOT reach Zulip while the agent is still working, and
-// the whole turn must cost exactly one edit — the publish at Close.
+// the whole turn must cost exactly ONE created message and ZERO edits.
+//
+// Zero, not one: quiet mode posts no "Thinking…" placeholder, so there
+// is no message to edit the answer into — the single post at Close IS
+// the answer. That is the entire point, because Zulip pushes on
+// message creation and never on an edit.
 func TestBatchEditsPublishOnlyAtClose(t *testing.T) {
 	agent := newAgent("batched answer")
 	agent.hold = make(chan struct{})
@@ -2427,8 +2474,8 @@ func TestBatchEditsPublishOnlyAtClose(t *testing.T) {
 	// Every chunk has been handed to the sink; a streaming relay would
 	// have published by now.
 	<-agent.streamed
-	if got := hh.z.body(1); strings.Contains(got, "batched answer") {
-		t.Fatalf("published mid-turn in quiet mode: %q", got)
+	if got := hh.z.stored(); len(got) != 0 {
+		t.Fatalf("posted mid-turn in quiet mode: %q", got)
 	}
 	if n := hh.z.edits(); n != 0 {
 		t.Fatalf("edits mid-turn = %d, want 0", n)
@@ -2442,8 +2489,137 @@ func TestBatchEditsPublishOnlyAtClose(t *testing.T) {
 	if got := hh.z.body(1); !strings.Contains(got, "batched answer") {
 		t.Fatalf("answer not published at close: %q", got)
 	}
-	if n := hh.z.edits(); n != 1 {
-		t.Fatalf("edits for the whole turn = %d, want 1 (the publish at Close)", n)
+	if n := hh.z.edits(); n != 0 {
+		t.Fatalf("edits for the whole turn = %d, want 0 — the one post carries the answer", n)
+	}
+	if got := hh.z.stored(); len(got) != 1 {
+		t.Fatalf("messages created = %d, want exactly 1: %q", len(got), got)
+	}
+}
+
+// TestQuietModeUsesTypingIndicator pins quiet mode's replacement for
+// the placeholder: the typing indicator, which is not a message and
+// therefore costs no push notification. It must be raised for the
+// topic and lowered again when the turn ends.
+func TestQuietModeUsesTypingIndicator(t *testing.T) {
+	agent := newAgent("quiet answer")
+	hh := newHarness(t, agent, func(c *Config) { c.BatchEdits = true })
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stay quiet"),
+			StreamID: 4, Topic: "quiet", Type: "stream",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	// The stop runs on the typing goroutine, after the turn is no
+	// longer inflight, so WaitIdle cannot observe it — wait for the
+	// second op.
+	for range 2 {
+		select {
+		case <-hh.z.typed:
+		case <-ctx.Done():
+			t.Fatalf("typing ops = %q, want start then stop", hh.z.typingOps())
+		}
+	}
+	got := hh.z.typingOps()
+	if len(got) < 2 || got[0] != "start:4:quiet" || got[len(got)-1] != "stop:4:quiet" {
+		t.Fatalf("typing ops = %q, want start:4:quiet … stop:4:quiet", got)
+	}
+}
+
+// TestStreamingModeRaisesNoTyping is the other half: streaming mode is
+// unchanged, placeholder included, and must not send typing at all.
+func TestStreamingModeRaisesNoTyping(t *testing.T) {
+	agent := newAgent("streamed answer")
+	hh := newHarness(t, agent, nil)
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stream it"),
+			StreamID: 4, Topic: "loud", Type: "stream",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if got := hh.z.typingOps(); len(got) != 0 {
+		t.Fatalf("streaming mode sent typing ops %q", got)
+	}
+}
+
+// TestQuietModeSkipsRepost pins the interaction between quiet mode and
+// repost_on_close: with no placeholder to seed the chain, the message
+// created at Close already carries the real answer, so rollover's
+// `seeded` gate must make the repost a no-op. One created message, one
+// push, and nothing deleted.
+func TestQuietModeSkipsRepost(t *testing.T) {
+	agent := newAgent("quiet answer")
+	hh := newHarness(t, agent, func(c *Config) {
+		c.BatchEdits = true
+		c.RepostOnClose = true
+	})
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stay quiet"),
+			StreamID: 4, Topic: "quiet", Type: "stream",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	got := hh.z.stored()
+	if len(got) != 1 || !strings.Contains(got[0], "quiet answer") {
+		t.Fatalf("messages = %q, want exactly one carrying the answer", got)
+	}
+	if n := hh.z.nextID(); n != 1 {
+		t.Fatalf("%d messages were CREATED over the turn, want 1 — the repost must be a no-op in quiet mode", n)
+	}
+}
+
+// TestQuietModeRemembersItsOwnMessage: quiet mode posts nothing until
+// Close, so the turn's only trackTail is the one after it. Without it
+// the relay forgets the id of the answer it just posted, and a
+// reaction on it — or the archive gesture — costs a history lookup.
+// Repost is off here precisely because reposting would have tracked it
+// anyway, hiding the gap.
+func TestQuietModeRemembersItsOwnMessage(t *testing.T) {
+	agent := newAgent("quiet answer")
+	hh := newHarness(t, agent, func(c *Config) {
+		c.BatchEdits = true
+		c.RepostOnClose = false
+	})
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stay quiet"),
+			StreamID: 4, Topic: "quiet", Type: "stream",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	conv, ok := hh.j.Lookup(journal.Channel(4, "quiet"))
+	if !ok {
+		t.Fatal("no conversation recorded")
+	}
+	if got := hh.h.cachedOwn(conv.ID); got != 1 {
+		t.Fatalf("cachedOwn = %d, want 1 — the answer's id was forgotten", got)
 	}
 }
 

@@ -491,7 +491,24 @@ func (c *Client) MoveMessage(ctx context.Context, id int64, topic, propagateMode
 	if n := utf8.RuneCountInString(topic); n > MaxTopicLength {
 		return fmt.Errorf("zulip: topic is %d code points, over MAX_TOPIC_LENGTH %d — Zulip would truncate it silently", n, MaxTopicLength)
 	}
-	form := url.Values{"topic": {topic}, "propagate_mode": {propagateMode}}
+	form := url.Values{
+		"topic":          {topic},
+		"propagate_mode": {propagateMode},
+		// Zulip DEFAULTS both of these to true, so an autotopic move —
+		// which happens within a second of the message being sent —
+		// makes Notification Bot post a move notice in BOTH the
+		// catch-all origin topic and the destination. Each notice
+		// starts with a markdown link, which a mobile push renders as
+		// an EMPTY notification: two blank pushes per answer.
+		//
+		// Both are suppressed, not just the old thread. Nobody follows
+		// the catch-all topic, nobody could have read the message
+		// there in that second, and the destination notice tells you
+		// your own message was moved into the topic you are already
+		// looking at.
+		"send_notification_to_old_thread": {"false"},
+		"send_notification_to_new_thread": {"false"},
+	}
 	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
 }
 

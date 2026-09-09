@@ -5,8 +5,10 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/skills"
 	"github.com/kfet/zulip-acp/internal/sysprompt"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
@@ -79,6 +81,39 @@ func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe,
 	}
 	log.Printf("zulip-acp: topic archiving is on: :wastebasket: on my last message, or !archive, moves a topic to #%s (%d) after a confirmation", s.Name, s.StreamID)
 	return s.StreamID, s.Name
+}
+
+// typingProbe is the Zulip surface resolveTypingInterval needs: how
+// long this server keeps a typing `start` alive.
+type typingProbe interface {
+	TypingStartedExpiry(ctx context.Context) (time.Duration, error)
+}
+
+// resolveTypingInterval settles quiet mode's typing-refresh cadence at
+// startup, from the realm's own expiry period.
+//
+// Returns 0 when the relay is streaming: there is a placeholder there,
+// no typing indicator is ever sent, and probing for a number nobody
+// reads would cost a register round-trip per start.
+//
+// A probe that fails is NOT fatal and does not disable liveness: the
+// stock 15s expiry is what an unpatched realm uses anyway, so the
+// fallback cadence is right far more often than it is wrong, and the
+// worst case is an indicator that blinks rather than one that is
+// missing.
+func resolveTypingInterval(ctx context.Context, probe typingProbe, quiet bool) time.Duration {
+	if !quiet {
+		return 0
+	}
+	expiry, err := probe.TypingStartedExpiry(ctx)
+	if err != nil {
+		log.Printf("zulip-acp: could not read %s (%v); refreshing the typing indicator every %s",
+			zulipproto.ServerTypingExpirySetting, err, handler.TypingIntervalFor(zulipproto.DefaultTypingExpiry))
+		expiry = zulipproto.DefaultTypingExpiry
+	}
+	d := handler.TypingIntervalFor(expiry)
+	log.Printf("zulip-acp: quiet mode: no \"Thinking…\" placeholder; the typing indicator is refreshed every %s (server expiry %s)", d, expiry)
+	return d
 }
 
 // systemPromptProvider returns a func evaluated at every session

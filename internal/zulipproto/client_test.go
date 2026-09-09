@@ -210,7 +210,14 @@ func TestMoveMessage(t *testing.T) {
 	if req.method != http.MethodPatch || req.path != "/api/v1/messages/7" {
 		t.Fatalf("request = %+v", req)
 	}
-	for k, want := range map[string]string{"topic": "a new topic", "propagate_mode": "change_one"} {
+	// Both move notices must be suppressed: Zulip defaults them to
+	// true and each one renders as an EMPTY mobile push.
+	for k, want := range map[string]string{
+		"topic":                           "a new topic",
+		"propagate_mode":                  "change_one",
+		"send_notification_to_old_thread": "false",
+		"send_notification_to_new_thread": "false",
+	} {
 		if got := req.form.Get(k); got != want {
 			t.Fatalf("form[%s] = %q, want %q", k, got, want)
 		}
