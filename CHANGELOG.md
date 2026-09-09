@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-09-09
+
+### Fixed
+
+- **Archiving an old topic no longer half-completes.** Zulip caps how far back a
+  non-moderator may move messages between channels
+  (`move_messages_between_streams_limit_seconds`, judged against the *oldest*
+  message in the set). The relay checked only the *group* half of that
+  permission at startup, so a topic older than the limit failed at the LAST step
+  of an archive — after the conversation had been ended and retired — leaving
+  the topic where it was with nothing attached to it.
+  - `Client.ChannelMovePolicy` now reports permission **and** limit from one
+    `/register`, reading JSON `null` as unlimited and treating moderators and
+    above as exempt.
+  - `Client.OldestMessage` answers "how far back does this topic reach" in one
+    round trip (`anchor=oldest`).
+  - The archive preflights that limit before arming, and again at confirmation:
+    a topic it cannot move is refused with **nothing changed**, and the refusal
+    names the two realm fixes ("any time", or the moderator role). A preflight
+    that cannot answer is a refusal too.
+
 ## [0.28.0] - 2026-09-09
 
 ### Fixed
