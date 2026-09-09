@@ -155,6 +155,11 @@ type Poster interface {
 	DownloadUpload(ctx context.Context, uploadPath string, max int64) ([]byte, string, error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
 	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
+	// SetTyping raises or lowers the typing indicator for one
+	// conversation. It is quiet mode's liveness signal — see
+	// typing.go — and is never used while streaming, where the
+	// placeholder already shows the relay is alive.
+	SetTyping(ctx context.Context, op string, streamID int64, topic string, userIDs []int64) error
 }
 
 // Config configures a Handler.
@@ -213,12 +218,25 @@ type Config struct {
 	// answer is published once, when the turn closes. The zero value
 	// is the streaming behaviour, so it is stated as the negative —
 	// config.Config's operator-facing key is `stream_edits`.
+	//
+	// It also suppresses the eager "Thinking…" placeholder, which is
+	// the whole point: with no placeholder, the single post at Close
+	// is the first and only message CREATED, so the one push
+	// notification the user gets carries the real answer. Liveness
+	// comes from the typing indicator instead — see typing.go.
 	BatchEdits bool
 	// SpinnerInterval animates the "Thinking…" placeholder. nil is the
 	// default: 900ms while streaming, off in batch mode. A non-nil 0
 	// disables the animation — the placeholder is posted once and no
-	// spinner goroutine is started at all.
+	// spinner goroutine is started at all. It is unused in batch mode,
+	// where there is no placeholder to animate.
 	SpinnerInterval *time.Duration
+	// TypingInterval is how often quiet mode refreshes the typing
+	// indicator. It must be comfortably inside the realm's
+	// server_typing_started_expiry_period_milliseconds; resolve it
+	// with TypingIntervalFor. 0 in batch mode defaults to 10s; a
+	// negative value turns the indicator off. Unused while streaming.
+	TypingInterval time.Duration
 
 	// Budget, SealMarker and ContinuationMarker configure the splitter.
 	Budget             int
@@ -506,12 +524,14 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.SpinnerInterval == nil {
 		d := defaultSpinnerInterval
 		if cfg.BatchEdits {
-			// Nothing else edits during a batched turn, so an
-			// animated placeholder would be the only flicker left —
-			// and it would run for the WHOLE turn.
+			// Quiet mode posts no placeholder at all, so there is
+			// nothing to animate.
 			d = 0
 		}
 		cfg.SpinnerInterval = &d
+	}
+	if cfg.BatchEdits && cfg.TypingInterval == 0 {
+		cfg.TypingInterval = defaultTypingInterval
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
@@ -911,9 +931,8 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 // Two shapes after that:
 //
 //   - Addressed (an @-mention): stream. An eager placeholder goes up
-//     immediately — Zulip has no typing indicator, so it is the first
-//     thing the user sees while a cold agent starts — and the answer
-//     is edited in as it arrives.
+//     immediately — it is the first thing the user sees while a cold
+//     agent starts — and the answer is edited in as it arrives.
 //   - Ambient (a follow-up in an engaged topic, with a sentinel
 //     configured): buffer, because the agent may decline and a message
 //     that appears and then vanishes is worse on a phone than one that
@@ -922,6 +941,14 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 //     streamed text can no longer become the sentinel, which is
 //     usually the first chunk. The answer itself still lands via the
 //     normal end-of-turn commit.
+//
+// In QUIET mode (BatchEdits) there is no placeholder on either shape.
+// A placeholder is a created message and Zulip pushes on creation, so
+// it costs a push notification reading "Thinking" before the one
+// carrying the answer. Liveness is the typing indicator instead — see
+// typing.go, and note that the comment which used to justify the
+// placeholder here ("Zulip has no typing indicator") is stale: it does,
+// for channels as well as DMs, verified on Zulip 12.2.
 func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64) error {
 	defer h.ack(ctx, msgID)()
 
@@ -945,12 +972,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	defer wcancel()
 
 	if !abstaining {
-		if err := split.Start(ctx, statusline.Thinking(sink.Status())); err != nil {
-			// Non-fatal: the first real chunk will post instead.
-			h.cfg.Logf("handler: placeholder post failed: %v", err)
-		}
-		h.trackTail(conv.ID, split)
-		h.startSpinner(wctx, split, sink)
+		h.showWorking(ctx, wctx, conv, split, sink)
 	}
 
 	var sess *state.Session
@@ -963,11 +985,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		// sentinel it is already known that a reply IS coming — so the
 		// placeholder can go up then instead of minutes later.
 		sinkFor = &sentinelWatch{next: vs, sentinel: h.cfg.SilentSentinel, onCommit: func() {
-			if err := split.Start(ctx, statusline.Thinking(sink.Status())); err != nil {
-				h.cfg.Logf("handler: placeholder post failed: %v", err)
-			}
-			h.trackTail(conv.ID, split)
-			h.startSpinner(wctx, split, sink)
+			h.showWorking(ctx, wctx, conv, split, sink)
 			if h.cfg.OnEarlyPlaceholder != nil {
 				h.cfg.OnEarlyPlaceholder(conv.ID)
 			}
@@ -1062,6 +1080,12 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	if cerr != nil {
 		h.rescue(fctx, post, split.Transcript(), cerr)
 	} else {
+		// Record the chain BEFORE the repost, which may replace the
+		// ids and does its own tracking. In quiet mode this is the
+		// only trackTail of the whole turn — nothing was posted
+		// earlier — and it is what makes a reaction on the answer, and
+		// the archive gesture, resolve without an API lookup.
+		h.trackTail(conv.ID, split)
 		h.repostForNotify(fctx, conv, split)
 	}
 	h.clearTail(conv.ID)
@@ -1676,6 +1700,35 @@ func watchdogLoop(ctx context.Context, split *rollover.Splitter, tick <-chan tim
 			after()
 		}
 	}
+}
+
+// showWorking puts up the relay's "I am on it" signal for a turn, in
+// whichever form the mode allows.
+//
+// Streaming: an eager placeholder message, optionally animated. It is
+// a real message that the answer is then edited into, so the user sees
+// text appear as it arrives.
+//
+// Quiet (BatchEdits): NOTHING is posted. A placeholder would be a
+// second created message, and Zulip pushes on creation only — the
+// whole point of quiet mode is that the single message created at
+// Close is the one the push carries. The typing indicator says the
+// relay is working instead, and the ack reaction remains the durable
+// "seen it" marker.
+//
+// turnCtx bounds the posted placeholder; workCtx bounds the background
+// signal, and is cancelled the moment the agent's prompt returns.
+func (h *Handler) showWorking(turnCtx, workCtx context.Context, conv journal.Conv, split *rollover.Splitter, sink *streamingSink) {
+	if h.cfg.BatchEdits {
+		h.startTyping(workCtx, conv.Key)
+		return
+	}
+	if err := split.Start(turnCtx, statusline.Thinking(sink.Status())); err != nil {
+		// Non-fatal: the first real chunk will post instead.
+		h.cfg.Logf("handler: placeholder post failed: %v", err)
+	}
+	h.trackTail(conv.ID, split)
+	h.startSpinner(workCtx, split, sink)
 }
 
 // startSpinner animates the placeholder for this turn, unless the

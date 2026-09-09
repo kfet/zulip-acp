@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One answer no longer costs FOUR push notifications.** A single reply in a
+  fresh topic pushed: two *empty* notifications, one reading `Thinking`, and
+  finally the answer. Two causes, both fixed:
+  - `Client.MoveMessage` sent neither `send_notification_to_old_thread` nor
+    `send_notification_to_new_thread`, and Zulip defaults **both to true** — so
+    every autotopic lift made Notification Bot post a move notice in the origin
+    *and* the destination topic. Each notice opens with a markdown link, which
+    a mobile push renders as a **blank** notification. Both are now sent as
+    `false`, matching `MoveMessageToChannel`, which already did.
+  - Quiet mode (`"stream_edits": false`) still posted the eager `Thinking…`
+    placeholder. Zulip pushes on message **creation** and never on an edit, so
+    the placeholder was one push and the `repost_on_close` re-post was another.
+
+### Changed
+
+- **Quiet mode posts no placeholder at all.** With `"stream_edits": false` the
+  single message created when the turn closes *is* the finished answer: one
+  create, one push, carrying the real text. `repost_on_close` becomes a no-op
+  there by `rollover.Splitter`'s existing `seeded` gate. Streaming mode
+  (the default) is unchanged — placeholder, spinner, coalesced edits and
+  end-of-turn repost all behave exactly as before.
+
+### Added
+
+- **Zulip's typing indicator is quiet mode's liveness signal.**
+  `POST /api/v1/typing` (`type=channel` for a topic, `type=direct` for a DM) is
+  raised while the agent works and lowered on every exit path. It generates no
+  message, no unread and no push. A `start` expires after
+  `server_typing_started_expiry_period_milliseconds`, which the relay now reads
+  from the realm at startup (`Client.TypingStartedExpiry`) and refreshes at two
+  thirds of; an unreadable setting falls back to Zulip's stock 15s. The
+  `ack_emoji` reaction remains the durable "seen it, working" marker.
+  (The comment that justified the placeholder — "Zulip has no typing indicator"
+  — was true when written and is now stale; verified live on Zulip 12.2,
+  feature level 500.)
+
 ## [0.27.0] - 2026-09-09
 
 ### Changed

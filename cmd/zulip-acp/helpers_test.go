@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/skills"
@@ -220,6 +221,48 @@ func TestResolveArchive(t *testing.T) {
 			}
 			if tc.wantID != 0 && tc.probe.asked != 9 {
 				t.Fatalf("the permission check asked about user %d", tc.probe.asked)
+			}
+		})
+	}
+}
+
+// fakeTypingProbe answers the one realm question
+// resolveTypingInterval asks.
+type fakeTypingProbe struct {
+	expiry time.Duration
+	err    error
+	asked  int
+}
+
+func (p *fakeTypingProbe) TypingStartedExpiry(context.Context) (time.Duration, error) {
+	p.asked++
+	return p.expiry, p.err
+}
+
+// TestResolveTypingInterval: streaming mode never probes (it has a
+// placeholder and sends no typing at all), quiet mode follows the
+// realm, and a probe that fails degrades to the stock cadence rather
+// than losing liveness.
+func TestResolveTypingInterval(t *testing.T) {
+	cases := []struct {
+		name  string
+		quiet bool
+		probe *fakeTypingProbe
+		want  time.Duration
+		asked int
+	}{
+		{name: "streaming", quiet: false, probe: &fakeTypingProbe{expiry: 15 * time.Second}, want: 0, asked: 0},
+		{name: "quiet", quiet: true, probe: &fakeTypingProbe{expiry: 30 * time.Second}, want: 20 * time.Second, asked: 1},
+		{name: "probe failed", quiet: true, probe: &fakeTypingProbe{err: errors.New("nope")}, want: 10 * time.Second, asked: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveTypingInterval(context.Background(), tc.probe, tc.quiet)
+			if got != tc.want {
+				t.Fatalf("interval = %s, want %s", got, tc.want)
+			}
+			if tc.probe.asked != tc.asked {
+				t.Fatalf("probed %d times, want %d", tc.probe.asked, tc.asked)
 			}
 		})
 	}

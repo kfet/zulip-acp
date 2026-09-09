@@ -340,6 +340,12 @@ func main() {
 	// relay cannot perform.
 	archiveID, archiveName := resolveArchive(ctx, cfg, zc, streams, served, me.UserID)
 
+	// Quiet mode's liveness is the typing indicator, whose cadence has
+	// to stay inside the realm's expiry period — so it is read from
+	// the server rather than guessed. Streaming mode never sends one,
+	// so the probe is skipped there entirely.
+	typingInterval := resolveTypingInterval(ctx, zc, !cfg.GetStreamEdits())
+
 	// Teardown is explicit rather than purely deferred: a graceful
 	// reload ends in syscall.Exec, which replaces the process image and
 	// runs no deferred functions. Everything that owns a child process
@@ -483,6 +489,7 @@ func main() {
 		EditInterval:       cfg.EditInterval(),
 		BatchEdits:         !cfg.GetStreamEdits(),
 		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
+		TypingInterval:     typingInterval,
 		Budget:             cfg.Budget(),
 		SealMarker:         cfg.SealMarker,
 		ContinuationMarker: cfg.ContinuationMarker,

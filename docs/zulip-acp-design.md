@@ -159,16 +159,17 @@ drops any `update_message` event with no channel id before it gets that far.
 
 Both shapes open the same way: the triggering message gets an emoji reaction
 (`ack_emoji`, a bare emoji name, default `eyes`) the moment it is accepted, removed on every
-exit path — success, error, abstain, cancellation. Zulip has no typing
-indicator, and a reaction is the only acknowledgement that is instant, adds
-nothing to the topic, and can be **retracted**, which is what makes it safe on
+exit path — success, error, abstain, cancellation. A reaction is the only
+acknowledgement that is instant, adds nothing to the topic, is **durable** for
+the whole turn, and can be **retracted**, which is what makes it safe on
 a turn that may end in silence. Removal runs on a `context.WithoutCancel`
 context so a superseded turn still cleans up after itself, and every reaction
 call is non-fatal: a turn is never failed over decoration.
 
 - **Addressed** (an `@-mention`): stream. An eager placeholder goes up
   immediately — a cold agent takes seconds — a spinner animates it, and a 300ms
-  watchdog publishes the splitter's pending state.
+  watchdog publishes the splitter's pending state. In **quiet mode** there is
+  no placeholder at all; see *Quiet mode* below.
 - **Ambient** (any message in a topic the relay has already engaged, with a
   sentinel configured): buffer. The turn runs through acp-kit's
   `PromptAbstainable`, and the *answer* is not posted until the agent's verdict
@@ -608,7 +609,8 @@ Three decisions worth keeping:
   original chain in place, so output can never be lost; the worst case is a
   visible duplicate. `Repost` is a no-op unless `Start` actually seeded a
   placeholder — a chain whose first message was created carrying real text
-  already notified correctly.
+  already notified correctly. **That gate is what makes quiet mode free**: with
+  no placeholder there is nothing to repost, and no second push.
 - **A refused delete trips a process-wide circuit breaker.** Delete and post
   ride the same permission surface: if the realm forbids the bot deleting its
   own messages (`delete_own_message_policy`) or the delete window has closed,
@@ -676,20 +678,67 @@ both `Post` it. Regression test: `TestConcurrentFlushDoesNotDoublePost`.
 
 There are exactly three sources of edits in a turn: the spinner animating the
 placeholder, the coalescing watchdog publishing streamed text, and the
-end-of-turn repost (which is a create + delete, not an edit). `stream_edits`
-and `spinner_interval_ms` turn the first two off; `repost_on_close` is
-untouched by both.
+end-of-turn repost (which is a create + delete, not an edit).
 
 With `"stream_edits": false` the watchdog goroutine is **not started** —
 `handler.Config.BatchEdits` — so the splitter accumulates and `Close` publishes
-the answer in one write. The trap this must not fall into: the spinner
+the answer in one write.
+
+**And no placeholder is posted at all.** This is the part that matters on a
+phone. A placeholder is a *created* message, and Zulip pushes on creation only,
+so a quiet-mode turn used to cost the user two pushes — one reading `Thinking`,
+one carrying the reposted answer — on top of the two blank ones an autotopic
+move generated (see *Suppressing move notices* below). With no placeholder the
+single message created at `Close` **is** the answer: one create, one push, and
+it carries the real text. `rollover.Splitter.Repost` is then a no-op by its own
+`seeded` gate, with no extra condition needed — nothing seeded the chain.
+
+That removes the spinner problem rather than managing it. The spinner
 self-disarms only when `UpdatePlaceholder` reports `alive=false`, i.e. when the
-first real chunk has replaced the placeholder. Suppressing content flushes
-therefore leaves the spinner as the ONLY writer, for the whole turn. So the
-unset spinner period follows the mode (`config.Config.SpinnerInterval`): 900ms
-while streaming, `0` — no goroutine at all — in quiet mode. An explicit value
-always wins, because an operator who asks for a spinner in quiet mode is asking
-for exactly one animated message and nothing else.
+first real chunk has replaced the placeholder; with content flushes suppressed
+it would be the ONLY writer, for the whole turn. There is now nothing for it to
+animate, and the unset spinner period stays `0` in quiet mode
+(`config.Config.SpinnerInterval`) accordingly.
+
+**Liveness comes from the typing indicator instead** (`internal/handler/typing.go`).
+`POST /api/v1/typing` with `op=start` renders as "the bot is typing…" and
+generates no message, no unread and **no push**. It is sent for the topic
+(`type=channel`, `stream_id` + `topic`) or the DM (`type=direct`, `to`), raised
+when the turn's work begins and lowered — `op=stop`, on a `context.WithoutCancel`
+context, from a `defer` in `typingLoop` — on every exit path, cancellation and
+failure included.
+
+A `start` **expires** server-side after
+`server_typing_started_expiry_period_milliseconds` (15s on a stock realm), so it
+is refreshed on a ticker at two thirds of that. The period is read from the
+realm at startup (`Client.TypingStartedExpiry`, over the same
+`fetch_event_types` snapshot the move-policy probe uses) rather than hardcoded;
+a probe that fails logs and falls back to the stock 15s, because a blinking
+indicator beats a missing one. Streaming mode never sends a typing notification
+and never runs the probe.
+
+> The source comment that used to justify the eager placeholder said *"Zulip has
+> no typing indicator"*. That was true when it was written. Channel typing
+> notifications have since landed — verified live on Zulip 12.2, feature level
+> 500 — which is what made this change possible.
+
+The ack emoji is untouched: typing is ephemeral and a phone that was not looking
+sees nothing, so the reaction remains the durable "seen it, working" marker.
+
+### Suppressing move notices
+
+`send_notification_to_old_thread` and `send_notification_to_new_thread` both
+default to **true** on Zulip, so every message move makes Notification Bot post
+a move notice in *both* topics. Each notice opens with a markdown link, which a
+mobile push renders as an **empty** notification — measured live: message 1276
+in `#ask-fir > check your ssh conf`.
+
+Both `Client.MoveMessage` (the autotopic lift) and `Client.MoveMessageToChannel`
+(the archive control) therefore send both flags as `false`. Both, not just the
+old thread: an autotopic move happens within a second of the message being sent,
+out of a catch-all topic nobody follows, before anyone could have read it there,
+and the destination notice would only tell you your own message was moved into
+the topic you are already looking at.
 
 ## Restart semantics
 
