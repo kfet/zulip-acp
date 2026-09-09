@@ -937,3 +937,43 @@ func TestTopicsPropagatesAnError(t *testing.T) {
 		t.Fatal("a failed listing must be reported, not read as an empty channel")
 	}
 }
+
+// TestOldestMessage pins the one-round-trip shape of the archive
+// preflight: anchor=oldest with a window that reaches FORWARD, since
+// the anchor itself is only returned when something is asked for on
+// its far side.
+func TestOldestMessage(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"messages":[{"id":3,"timestamp":1700000000}]`)
+	})
+	got, ok, err := newClient(t, ts).OldestMessage(context.Background(), TopicNarrow(4, "sess"))
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+	if got.ID != 3 || got.Timestamp != 1700000000 {
+		t.Fatalf("message = %+v", got)
+	}
+	q := ts.requests()[0].query
+	if q.Get("anchor") != "oldest" || q.Get("num_before") != "0" || q.Get("num_after") != "1" {
+		t.Fatalf("query = %v", q)
+	}
+}
+
+// TestOldestMessageEmptyAndFailure: an empty narrow is "there is no
+// such message", NOT an error — and a refused read is an error rather
+// than a silent absence, because the caller's two responses differ.
+func TestOldestMessageEmptyAndFailure(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"messages":[]`)
+	})
+	_, ok, err := newClient(t, ts).OldestMessage(context.Background(), TopicNarrow(4, "sess"))
+	if ok || err != nil {
+		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+	bad := newServer(t, func(recordedReq) (int, string) {
+		return 400, `{"result":"error","msg":"nope"}`
+	})
+	if _, ok, err := newClient(t, bad).OldestMessage(context.Background(), TopicNarrow(4, "sess")); ok || err == nil {
+		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+}

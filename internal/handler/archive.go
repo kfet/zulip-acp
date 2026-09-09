@@ -217,6 +217,14 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, id))
 		return
 	}
+	// Preflight BEFORE the warning. A warning that invites a
+	// confirmation for a move the realm will refuse is the same trap
+	// this file exists to avoid, one step earlier: the user taps twice
+	// and is told no at the end.
+	if ok, why := h.movable(ctx, conv.Key); !ok {
+		h.reply(ctx, conv.Key, why)
+		return
+	}
 	post := &convPoster{client: h.cfg.Client, key: conv.Key}
 	id, err := post.Post(ctx, archiveWarning(who, h.cfg.ArchiveChannel))
 	if err != nil {
@@ -313,6 +321,75 @@ func (h *Handler) dropArchiveArm(convID string) {
 	h.archiveMu.Unlock()
 }
 
+// movable reports whether the WHOLE topic can still be moved to the
+// archive channel — and, when it cannot, the sentence to say instead.
+//
+// This is the preflight the archive would otherwise do by failing:
+// Zulip evaluates move_messages_between_streams_limit_seconds against
+// every message in the set being moved, so with change_all the OLDEST
+// message in the topic decides for all of them. Discovering that at
+// step 4 means a conversation already ended and retired for a move
+// that never happened; discovering it here costs one narrowed read and
+// changes nothing.
+//
+// "Cannot tell" is a refusal, exactly as it is at startup. A probe
+// that errors is not evidence that the move would work, and the
+// failure it would let through is the destructive one.
+func (h *Handler) movable(ctx context.Context, key journal.Key) (bool, string) {
+	policy := zulipproto.MovePolicy{Allowed: true, Limit: h.cfg.ArchiveMoveLimit}
+	if policy.Limit <= 0 {
+		// No limit applies to this bot: every topic is movable however
+		// far back it reaches, and the read below would tell us
+		// nothing worth an API call.
+		return true, ""
+	}
+	oldest, ok, err := h.cfg.Client.OldestMessage(ctx, zulipproto.TopicNarrow(key.StreamID, key.Topic))
+	if err != nil {
+		h.cfg.Logf("handler: not archiving %s: could not read the oldest message in the topic to check the move time limit (%v)", h.describe(key), err)
+		return false, "I could not check whether this topic is still young enough for me to move it, so I have not touched it. Try again, or move the topic by hand."
+	}
+	if !ok {
+		h.cfg.Logf("handler: not archiving %s: the topic reads as empty, so there is nothing to anchor a move to", h.describe(key))
+		return false, "I could not find any message in this topic to move, so I have not touched it."
+	}
+	if !policy.TooOld(time.Unix(oldest.Timestamp, 0), h.now()) {
+		return true, ""
+	}
+	h.cfg.Logf("handler: not archiving %s: its oldest message (%d) is older than the realm's %s move limit — refusing before anything is changed",
+		h.describe(key), oldest.ID, policy.Limit)
+	return false, archiveTooOld(policy.Limit)
+}
+
+// archiveTooOld explains a refusal the user can actually act on: the
+// two fixes are realm settings, not anything this relay can do, so the
+// message names them rather than just apologising.
+func archiveTooOld(limit time.Duration) string {
+	return fmt.Sprintf("I cannot archive this topic: it reaches back further than %s, and this realm only lets me move messages sent within that window. **Nothing was changed** — the conversation is still live.\n\n"+
+		"Two ways to lift it, both in organisation settings: set *moving messages to another channel* to **any time**, or give this bot the **moderator** role — moderators are exempt from the limit. Failing that, move the topic by hand.",
+		humanLimit(limit))
+}
+
+// humanLimit renders a move limit the way the Zulip setting offers it
+// — days, hours, minutes — rather than as Go's "168h0m0s".
+func humanLimit(d time.Duration) string {
+	plural := func(n int64, unit string) string {
+		if n == 1 {
+			return fmt.Sprintf("1 %s", unit)
+		}
+		return fmt.Sprintf("%d %ss", n, unit)
+	}
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		return plural(int64(d/(24*time.Hour)), "day")
+	case d >= time.Hour && d%time.Hour == 0:
+		return plural(int64(d/time.Hour), "hour")
+	case d >= time.Minute:
+		return plural(int64(d/time.Minute), "minute")
+	default:
+		return d.String()
+	}
+}
+
 // archiveConversation performs the archive. The ordering here is the
 // whole feature; see the file comment.
 func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, who string) {
@@ -327,6 +404,15 @@ func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, wh
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
 	defer cancel()
+
+	// Re-run the preflight the arming already passed. Two minutes of
+	// confirmation TTL is enough for the oldest message to cross the
+	// limit, and this is the last moment at which a refusal is still
+	// free: everything below either posts, ends or retires something.
+	if ok, why := h.movable(ctx, conv.Key); !ok {
+		h.reply(ctx, conv.Key, why)
+		return
+	}
 
 	// The audit trail is posted FIRST so it travels with the topic:
 	// after the move this message is in the archive channel, next to

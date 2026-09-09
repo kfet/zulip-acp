@@ -164,16 +164,17 @@ func writeSkill(t *testing.T, cfgDir, name, desc string) {
 	}
 }
 
-// fakeMoveProbe answers the one realm question resolveArchive asks.
+// fakeMoveProbe answers the realm questions resolveArchive asks.
 type fakeMoveProbe struct {
 	allowed bool
+	limit   time.Duration
 	err     error
 	asked   int64
 }
 
-func (p *fakeMoveProbe) CanMoveMessagesBetweenChannels(_ context.Context, userID int64) (bool, error) {
-	p.asked = userID
-	return p.allowed, p.err
+func (p *fakeMoveProbe) ChannelMovePolicy(_ context.Context, user zulipproto.User) (zulipproto.MovePolicy, error) {
+	p.asked = user.UserID
+	return zulipproto.MovePolicy{Allowed: p.allowed, Limit: p.limit}, p.err
 }
 
 // fakeServed is the served-channel allowlist.
@@ -193,13 +194,15 @@ func TestResolveArchive(t *testing.T) {
 	served := fakeServed{4: "fleet"}
 	off, servedName := "", "fleet"
 	cases := []struct {
-		name   string
-		cfg    *config.Config
-		probe  *fakeMoveProbe
-		served fakeServed
-		wantID int64
+		name      string
+		cfg       *config.Config
+		probe     *fakeMoveProbe
+		served    fakeServed
+		wantID    int64
+		wantLimit time.Duration
 	}{
 		{name: "on", cfg: &config.Config{}, probe: &fakeMoveProbe{allowed: true}, served: served, wantID: 12},
+		{name: "on, but time-limited", cfg: &config.Config{}, probe: &fakeMoveProbe{allowed: true, limit: 7 * 24 * time.Hour}, served: served, wantID: 12, wantLimit: 7 * 24 * time.Hour},
 		{name: "disabled in config", cfg: &config.Config{ArchiveChannel: &off}, probe: &fakeMoveProbe{allowed: true}, served: served},
 		{name: "no such channel", cfg: &config.Config{}, probe: &fakeMoveProbe{allowed: true}, served: served},
 		{name: "the destination is served", cfg: &config.Config{ArchiveChannel: &servedName}, probe: &fakeMoveProbe{allowed: true}, served: served},
@@ -212,7 +215,10 @@ func TestResolveArchive(t *testing.T) {
 			if tc.name == "no such channel" {
 				avail = streams[:1]
 			}
-			id, name := resolveArchive(context.Background(), tc.cfg, tc.probe, avail, tc.served, 9)
+			id, name, limit := resolveArchive(context.Background(), tc.cfg, tc.probe, avail, tc.served, zulipproto.User{UserID: 9})
+			if limit != tc.wantLimit {
+				t.Fatalf("limit = %s, want %s", limit, tc.wantLimit)
+			}
 			if id != tc.wantID {
 				t.Fatalf("id = %d, want %d", id, tc.wantID)
 			}

@@ -625,6 +625,18 @@ construction, so an archived topic cannot re-engage the relay, and recovery is
 one move back. What accumulates there is a retention-policy question, not the
 relay's.
 
+**Old topics have a limit, and it is checked up front.** Zulip caps how far back
+a non-moderator may move messages (`move_messages_between_streams_limit_seconds`,
+often 7 days), judged against the **oldest** message being moved — which, for a
+whole-topic move, is the oldest message in the topic. The relay reads that limit
+at startup and, before it arms anything, checks the topic's oldest message
+against it. A topic that reaches too far back is refused **with nothing changed**;
+without that check the move failed at the last step, after the conversation had
+already been ended and retired, leaving the topic where it was with nothing
+attached to it. To lift the limit, set it to "any time" in organisation settings
+or give the bot the **moderator** role — moderators are exempt. A preflight that
+cannot answer is also a refusal.
+
 "The relay's last message" survives a restart: it is written through to the
 journal and, failing that, resolved with one narrowed `GET /messages`, so the
 gesture works on an old topic and not only on one the relay has answered in

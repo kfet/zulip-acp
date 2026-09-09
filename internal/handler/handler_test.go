@@ -117,6 +117,37 @@ type fakeZulip struct {
 	history    []zulipproto.Message
 	narrows    [][]zulipproto.NarrowTerm
 	historyErr error
+	// oldest backs OldestMessage — the archive preflight's one read.
+	// A zero value means "no message in that narrow", which is how a
+	// topic that reads as empty is modelled; oldestErr models a server
+	// that refuses the read. oldestNarrows records every ASK, because
+	// the claim under test is that the preflight runs before anything
+	// destructive, not merely that it answers.
+	oldest        zulipproto.Message
+	oldestErr     error
+	oldestNarrows [][]zulipproto.NarrowTerm
+}
+
+// OldestMessage plays the archive preflight's read: GET /messages
+// anchored at the oldest message in a narrow.
+func (z *fakeZulip) OldestMessage(_ context.Context, narrow []zulipproto.NarrowTerm) (zulipproto.Message, bool, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.oldestNarrows = append(z.oldestNarrows, narrow)
+	if z.oldestErr != nil {
+		return zulipproto.Message{}, false, z.oldestErr
+	}
+	if z.oldest.ID == 0 {
+		return zulipproto.Message{}, false, nil
+	}
+	return z.oldest, true, nil
+}
+
+// oldestCalls returns how many preflight reads the relay made.
+func (z *fakeZulip) oldestCalls() int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return len(z.oldestNarrows)
 }
 
 // Messages plays GET /messages. It answers the whole canned history —

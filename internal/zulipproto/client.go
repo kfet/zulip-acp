@@ -169,7 +169,24 @@ type User struct {
 	Email    string `json:"email"`
 	FullName string `json:"full_name"`
 	IsBot    bool   `json:"is_bot"`
+	// Role is the realm role: RoleOwner, RoleAdministrator,
+	// RoleModerator, RoleMember or RoleGuest. It matters for exactly
+	// one question — whether the realm's message-move TIME LIMITS
+	// apply to this user, since owners, administrators and moderators
+	// are exempt. See ChannelMovePolicy.
+	Role int64 `json:"role"`
 }
+
+// Zulip's realm roles, smaller being more privileged. A user at
+// RoleModerator or above is exempt from the realm's message-move time
+// limits.
+const (
+	RoleOwner         int64 = 100
+	RoleAdministrator int64 = 200
+	RoleModerator     int64 = 300
+	RoleMember        int64 = 400
+	RoleGuest         int64 = 600
+)
 
 // Message is the subset of a Zulip message the relay needs. Content is
 // raw markdown when fetched with apply_markdown=false, which is the
@@ -717,6 +734,38 @@ func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, b
 		return nil, err
 	}
 	return resp.Messages, nil
+}
+
+// OldestMessage returns the OLDEST message matching narrow, and
+// whether there was one at all.
+//
+// It exists for the archive preflight, which must know how far back a
+// topic reaches before it moves it: Zulip's move time limit is
+// evaluated over every message being moved, so with
+// propagate_mode=change_all the oldest message in the topic is the one
+// that decides. Paging backwards with Messages would answer the same
+// question in O(topic) round-trips; anchor=oldest answers it in one.
+//
+// num_after=1 rather than num_before=0/num_after=0: the anchor itself
+// is only returned when the window asks for something on its far side.
+func (c *Client) OldestMessage(ctx context.Context, narrow []NarrowTerm) (Message, bool, error) {
+	q := url.Values{
+		"anchor":         {"oldest"},
+		"num_before":     {"0"},
+		"num_after":      {"1"},
+		"narrow":         {mustJSON(narrow)},
+		"apply_markdown": {"false"},
+	}
+	var resp struct {
+		Messages []Message `json:"messages"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/messages", q, nil, &resp); err != nil {
+		return Message{}, false, err
+	}
+	if len(resp.Messages) == 0 {
+		return Message{}, false, nil
+	}
+	return resp.Messages[0], true, nil
 }
 
 // Upload uploads a file in a single multipart round-trip and returns

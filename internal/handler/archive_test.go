@@ -791,3 +791,216 @@ func TestArchiveLapsedWarningIsNotAFreshCycle(t *testing.T) {
 		t.Fatal("a buried warning armed a fresh cycle")
 	}
 }
+
+// --- the move time limit -------------------------------------------------
+
+// tooOldHarness arms the archive control on a realm that only lets the
+// bot move a week's worth of messages, with a topic whose oldest
+// message is `age` old.
+func tooOldHarness(t *testing.T, age time.Duration, tune func(*Config)) (*harness, int64) {
+	t.Helper()
+	now := time.Now()
+	hh, own := archiveHarness(t, func(c *Config) {
+		c.ArchiveMoveLimit = 7 * 24 * time.Hour
+		c.Now = func() time.Time { return now }
+		if tune != nil {
+			tune(c)
+		}
+	})
+	hh.z.mu.Lock()
+	hh.z.oldest = zulipproto.Message{ID: 1, Timestamp: now.Add(-age).Unix()}
+	hh.z.mu.Unlock()
+	return hh, own
+}
+
+// TestArchiveRefusesATopicOlderThanTheMoveLimit is the bug this
+// preflight exists for: Zulip judges a change_all move against the
+// OLDEST message in the topic, so an old topic's archive used to fail
+// at the last step — after the conversation had been ended and retired,
+// leaving the topic where it was with nothing attached to it.
+//
+// Now the refusal happens at ARMING: nothing is posted but the
+// explanation, nothing is armed, and the conversation is still live.
+func TestArchiveRefusesATopicOlderThanTheMoveLimit(t *testing.T) {
+	arm := map[string]func(t *testing.T, hh *harness, own int64){
+		"reaction": func(_ *testing.T, hh *harness, own int64) { hh.tap(humanID, own) },
+		"!archive": func(t *testing.T, hh *harness, _ int64) { hh.deliver(t, "t", "!archive") },
+	}
+	for name, doArm := range arm {
+		t.Run(name, func(t *testing.T) {
+			hh, own := tooOldHarness(t, 30*24*time.Hour, nil)
+			conv := archiveConv(t, hh)
+			hh.z.reset()
+
+			doArm(t, hh, own)
+
+			if _, ok := hh.armed(conv.ID); ok {
+				t.Fatal("a topic that cannot be moved must not arm a confirmation")
+			}
+			if len(hh.z.moved()) != 0 {
+				t.Fatalf("something was moved: %v", hh.z.moved())
+			}
+			body := hh.only(t)
+			if !strings.Contains(body, "7 days") || !strings.Contains(body, "Nothing was changed") {
+				t.Fatalf("refusal = %q", body)
+			}
+			if !strings.Contains(body, "moderator") {
+				t.Fatalf("the refusal must name a fix the reader can act on: %q", body)
+			}
+			if _, still := hh.j.Lookup(conv.Key); !still {
+				t.Fatal("the conversation must survive a refused archive")
+			}
+			if !hh.logged("older than the realm") {
+				t.Fatalf("the refusal must be logged: %v", hh.logs)
+			}
+		})
+	}
+}
+
+// TestArchivePreflightRerunsAtConfirmation: a topic young enough when
+// the warning was posted can cross the limit during the two minutes it
+// is armed for. The confirmation must re-check, because that is the
+// last moment at which a refusal is still free.
+func TestArchivePreflightRerunsAtConfirmation(t *testing.T) {
+	now := time.Now()
+	hh, own := archiveHarness(t, func(c *Config) {
+		c.ArchiveMoveLimit = 7 * 24 * time.Hour
+		c.Now = func() time.Time { return now }
+	})
+	// One second inside the limit at arming time.
+	hh.z.mu.Lock()
+	hh.z.oldest = zulipproto.Message{ID: 1, Timestamp: now.Add(-(7*24*time.Hour - moveSlackTestMargin)).Unix()}
+	hh.z.mu.Unlock()
+
+	hh.tap(humanID, own)
+	conv := archiveConv(t, hh)
+	prompt, ok := hh.armed(conv.ID)
+	if !ok {
+		t.Fatalf("nothing armed; posted %q", hh.z.stored())
+	}
+
+	// The topic ages past the limit while the confirmation is live.
+	now = now.Add(moveSlackTestMargin)
+	hh.z.reset()
+	hh.tap(humanID, prompt)
+
+	if len(hh.z.moved()) != 0 {
+		t.Fatalf("a topic that crossed the limit was moved anyway: %v", hh.z.moved())
+	}
+	if !strings.Contains(hh.only(t), "7 days") {
+		t.Fatalf("no refusal was posted: %q", hh.z.stored())
+	}
+	if _, still := hh.j.Lookup(conv.Key); !still {
+		t.Fatal("the conversation must survive a refused archive")
+	}
+}
+
+// moveSlackTestMargin is more than the clock-skew slack the policy
+// holds back, so a message shifted by it crosses the boundary for
+// certain — and LESS than archiveConfirmTTL, so the arm it is used
+// against lapses on age rather than on time.
+const moveSlackTestMargin = 90 * time.Second
+
+// TestArchivePreflightUnknownIsARefusal: a preflight that cannot answer
+// is not permission to proceed. Same stance as the startup check —
+// "cannot tell" and "no" are the same decision for a destructive act.
+func TestArchivePreflightUnknownIsARefusal(t *testing.T) {
+	cases := map[string]struct {
+		tune func(z *fakeZulip)
+		want string
+	}{
+		"the read fails": {
+			tune: func(z *fakeZulip) { z.oldestErr = errors.New("boom") },
+			want: "could not check",
+		},
+		"the topic reads as empty": {
+			tune: func(z *fakeZulip) { z.oldest = zulipproto.Message{} },
+			want: "could not find any message",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hh, own := tooOldHarness(t, time.Hour, nil)
+			hh.z.mu.Lock()
+			tc.tune(hh.z)
+			hh.z.mu.Unlock()
+			hh.z.reset()
+
+			hh.tap(humanID, own)
+
+			conv := archiveConv(t, hh)
+			if _, ok := hh.armed(conv.ID); ok {
+				t.Fatal("an unanswerable preflight must not arm anything")
+			}
+			if body := hh.only(t); !strings.Contains(body, tc.want) {
+				t.Fatalf("refusal = %q", body)
+			}
+		})
+	}
+}
+
+// TestArchivePreflightIsSkippedWithoutALimit: when no limit applies —
+// the realm sets none, or the bot is exempt — the preflight is not a
+// read at all. The archive proceeds on one fewer API call than before
+// this check existed.
+func TestArchivePreflightIsSkippedWithoutALimit(t *testing.T) {
+	hh, own := archiveHarness(t, nil) // ArchiveMoveLimit is zero
+	hh.tap(humanID, own)
+	conv := archiveConv(t, hh)
+	prompt, ok := hh.armed(conv.ID)
+	if !ok {
+		t.Fatal("nothing armed")
+	}
+	hh.tap(humanID, prompt)
+	if len(hh.z.moved()) == 0 {
+		t.Fatal("the archive should have gone through")
+	}
+	if n := hh.z.oldestCalls(); n != 0 {
+		t.Fatalf("the preflight cost %d reads with no limit to check against", n)
+	}
+}
+
+// TestArchivePreflightAllowsAYoungTopic pins the other side: a topic
+// inside the limit is archived, and the preflight ran exactly twice —
+// once at arming, once at confirmation.
+func TestArchivePreflightAllowsAYoungTopic(t *testing.T) {
+	hh, own := tooOldHarness(t, time.Hour, nil)
+	hh.tap(humanID, own)
+	conv := archiveConv(t, hh)
+	prompt, ok := hh.armed(conv.ID)
+	if !ok {
+		t.Fatalf("nothing armed; posted %q", hh.z.stored())
+	}
+	hh.tap(humanID, prompt)
+	if len(hh.z.moved()) == 0 {
+		t.Fatalf("a topic inside the limit was not archived: %q", hh.z.stored())
+	}
+	if n := hh.z.oldestCalls(); n != 2 {
+		t.Fatalf("preflight ran %d times, want one per destructive decision", n)
+	}
+	narrow := hh.z.oldestNarrows[0]
+	if len(narrow) != 2 || narrow[0].Operator != "channel" || narrow[1].Operand != "t" {
+		t.Fatalf("the preflight must ask about THIS topic: %+v", narrow)
+	}
+}
+
+// TestHumanLimit renders the limit the way the Zulip setting offers it,
+// not the way Go prints a duration: an operator reading "168h0m0s" has
+// to do arithmetic to recognise their own setting.
+func TestHumanLimit(t *testing.T) {
+	cases := map[time.Duration]string{
+		24 * time.Hour:     "1 day",
+		7 * 24 * time.Hour: "7 days",
+		time.Hour:          "1 hour",
+		6 * time.Hour:      "6 hours",
+		time.Minute:        "1 minute",
+		10 * time.Minute:   "10 minutes",
+		90 * time.Minute:   "90 minutes",
+		30 * time.Second:   "30s",
+	}
+	for d, want := range cases {
+		if got := humanLimit(d); got != want {
+			t.Fatalf("humanLimit(%s) = %q, want %q", d, got, want)
+		}
+	}
+}

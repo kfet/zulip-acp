@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMoveMessageToChannel pins the wire shape of a cross-channel move:
@@ -168,20 +169,27 @@ func TestIsUserGroupMember(t *testing.T) {
 	}
 }
 
-// TestCanMoveMessagesBetweenChannels drives both shapes of the setting
-// and every answer the membership lookup can give.
-func TestCanMoveMessagesBetweenChannels(t *testing.T) {
+// TestChannelMovePolicy drives both shapes of the group setting, every
+// answer the membership lookup can give, and every shape of the time
+// limit that rides along with it.
+func TestChannelMovePolicy(t *testing.T) {
+	const limitKey = RealmMoveBetweenChannelsLimit
 	cases := []struct {
 		name    string
 		setting string
-		member  string
+		// limit is the raw JSON for the limit setting, or "" to leave
+		// the setting out of the snapshot entirely.
+		limit  string
+		member string
 		// memberStatus applies to the membership endpoint only.
 		memberStatus int
+		role         int64
 		want         bool
+		wantLimit    time.Duration
 		wantErr      bool
 	}{
-		{name: "named group, member", setting: `11`, member: okJSON(`"is_user_group_member":true`), want: true},
-		{name: "named group, not a member", setting: `11`, member: okJSON(`"is_user_group_member":false`)},
+		{name: "named group, member", setting: `11`, member: okJSON(`"is_user_group_member":true`), want: true, wantLimit: 7 * 24 * time.Hour},
+		{name: "named group, not a member", setting: `11`, member: okJSON(`"is_user_group_member":false`), wantLimit: 7 * 24 * time.Hour},
 		{
 			name:         "named group, server refuses to say",
 			setting:      `11`,
@@ -189,17 +197,18 @@ func TestCanMoveMessagesBetweenChannels(t *testing.T) {
 			memberStatus: 400,
 			wantErr:      true,
 		},
-		{name: "anonymous group, direct member", setting: `{"direct_members":[9],"direct_subgroups":[]}`, want: true},
+		{name: "anonymous group, direct member", setting: `{"direct_members":[9],"direct_subgroups":[]}`, want: true, wantLimit: 7 * 24 * time.Hour},
 		{
 			name:    "anonymous group, member of a subgroup",
 			setting: `{"direct_members":[1],"direct_subgroups":[7]}`,
 			member:  okJSON(`"is_user_group_member":true`),
-			want:    true,
+			want:    true, wantLimit: 7 * 24 * time.Hour,
 		},
 		{
-			name:    "anonymous group, in nothing",
-			setting: `{"direct_members":[1],"direct_subgroups":[7]}`,
-			member:  okJSON(`"is_user_group_member":false`),
+			name:      "anonymous group, in nothing",
+			setting:   `{"direct_members":[1],"direct_subgroups":[7]}`,
+			member:    okJSON(`"is_user_group_member":false`),
+			wantLimit: 7 * 24 * time.Hour,
 		},
 		{
 			name:         "anonymous group, subgroup lookup fails",
@@ -209,6 +218,16 @@ func TestCanMoveMessagesBetweenChannels(t *testing.T) {
 			wantErr:      true,
 		},
 		{name: "no such setting", setting: "", wantErr: true},
+		// "any time" arrives as JSON null and means unlimited — NOT
+		// "cannot tell" and not zero seconds.
+		{name: "no limit at all", setting: `{"direct_members":[9]}`, limit: `null`, want: true},
+		{name: "the limit is not reported", setting: `{"direct_members":[9]}`, limit: "-", wantErr: true},
+		{name: "the limit is not a number", setting: `{"direct_members":[9]}`, limit: `"soon"`, wantErr: true},
+		{name: "the limit is negative", setting: `{"direct_members":[9]}`, limit: `-1`, wantErr: true},
+		// Moderators and above are exempt from the realm's move time
+		// limits, so the same 7 days reads as unlimited for them.
+		{name: "a moderator is exempt", setting: `{"direct_members":[9]}`, role: RoleModerator, want: true},
+		{name: "a plain member is not", setting: `{"direct_members":[9]}`, role: RoleMember, want: true, wantLimit: 7 * 24 * time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,7 +237,15 @@ func TestCanMoveMessagesBetweenChannels(t *testing.T) {
 					if tc.setting == "" {
 						return 200, okJSON(`"queue_id":"q1"`)
 					}
-					return 200, okJSON(`"queue_id":"q1","` + RealmMoveBetweenChannels + `":` + tc.setting)
+					body := `"queue_id":"q1","` + RealmMoveBetweenChannels + `":` + tc.setting
+					switch tc.limit {
+					case "-":
+					case "":
+						body += `,"` + limitKey + `":604800`
+					default:
+						body += `,"` + limitKey + `":` + tc.limit
+					}
+					return 200, okJSON(body)
 				case strings.Contains(r.path, "/members/"):
 					status := tc.memberStatus
 					if status == 0 {
@@ -228,12 +255,56 @@ func TestCanMoveMessagesBetweenChannels(t *testing.T) {
 				}
 				return 200, okJSON("")
 			})
-			got, err := newClient(t, ts).CanMoveMessagesBetweenChannels(context.Background(), 9)
+			got, err := newClient(t, ts).ChannelMovePolicy(context.Background(), User{UserID: 9, Role: tc.role})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
 			}
-			if got != tc.want {
-				t.Fatalf("allowed = %v, want %v", got, tc.want)
+			if got.Allowed != tc.want {
+				t.Fatalf("allowed = %v, want %v", got.Allowed, tc.want)
+			}
+			if got.Limit != tc.wantLimit {
+				t.Fatalf("limit = %s, want %s", got.Limit, tc.wantLimit)
+			}
+		})
+	}
+}
+
+// TestChannelMovePolicyUnreadableRealm: a realm snapshot that cannot
+// be fetched at all is "cannot tell", which the caller turns into a
+// disabled feature rather than a guess.
+func TestChannelMovePolicyUnreadableRealm(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 500, `{"result":"error","msg":"down"}`
+	})
+	if _, err := newClient(t, ts).ChannelMovePolicy(context.Background(), User{UserID: 9}); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+// TestMovePolicyTooOld pins the one decision the archive preflight
+// makes, INCLUDING the slack held back for clock skew: a message right
+// on the boundary counts as too old, because the server's clock is the
+// one that decides and it is not ours.
+func TestMovePolicyTooOld(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	unlimited := MovePolicy{Allowed: true}
+	week := MovePolicy{Allowed: true, Limit: 7 * 24 * time.Hour}
+	cases := []struct {
+		name   string
+		policy MovePolicy
+		sent   time.Time
+		want   bool
+	}{
+		{name: "no limit, ancient message", policy: unlimited, sent: now.Add(-10 * 365 * 24 * time.Hour)},
+		{name: "well inside the limit", policy: week, sent: now.Add(-time.Hour)},
+		{name: "just inside", policy: week, sent: now.Add(-(7*24*time.Hour - 2*time.Minute))},
+		{name: "inside, but within the skew slack", policy: week, sent: now.Add(-(7*24*time.Hour - 30*time.Second)), want: true},
+		{name: "beyond it", policy: week, sent: now.Add(-8 * 24 * time.Hour), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.policy.TooOld(tc.sent, now); got != tc.want {
+				t.Fatalf("TooOld = %v, want %v", got, tc.want)
 			}
 		})
 	}
