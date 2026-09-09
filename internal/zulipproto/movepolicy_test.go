@@ -218,6 +218,7 @@ func TestChannelMovePolicy(t *testing.T) {
 			wantErr:      true,
 		},
 		{name: "no such setting", setting: "", wantErr: true},
+		{name: "the group setting is unreadable", setting: `"everyone"`, wantErr: true},
 		// "any time" arrives as JSON null and means unlimited — NOT
 		// "cannot tell" and not zero seconds.
 		{name: "no limit at all", setting: `{"direct_members":[9]}`, limit: `null`, want: true},
