@@ -300,6 +300,12 @@ func TestMovePolicyTooOld(t *testing.T) {
 		{name: "just inside", policy: week, sent: now.Add(-(7*24*time.Hour - 2*time.Minute))},
 		{name: "inside, but within the skew slack", policy: week, sent: now.Add(-(7*24*time.Hour - 30*time.Second)), want: true},
 		{name: "beyond it", policy: week, sent: now.Add(-8 * 24 * time.Hour), want: true},
+		// A limit tighter than the slack must not read as "nothing is
+		// movable": the window clamps at zero, so a message sent right
+		// now is still young enough.
+		{name: "a limit inside the slack", policy: MovePolicy{Allowed: true, Limit: 30 * time.Second}, sent: now},
+		{name: "a limit inside the slack, just inside it", policy: MovePolicy{Allowed: true, Limit: 30 * time.Second}, sent: now.Add(-20 * time.Second)},
+		{name: "a limit inside the slack, beyond it", policy: MovePolicy{Allowed: true, Limit: 30 * time.Second}, sent: now.Add(-40 * time.Second), want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

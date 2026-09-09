@@ -746,8 +746,9 @@ func (c *Client) Messages(ctx context.Context, narrow []NarrowTerm, limit int, b
 // that decides. Paging backwards with Messages would answer the same
 // question in O(topic) round-trips; anchor=oldest answers it in one.
 //
-// num_after=1 rather than num_before=0/num_after=0: the anchor itself
-// is only returned when the window asks for something on its far side.
+// num_after=1 rather than num_before=0/num_after=0: anchor=oldest is a
+// SYNTHETIC anchor below every real id, so the window has to reach
+// forward from it to contain anything at all.
 func (c *Client) OldestMessage(ctx context.Context, narrow []NarrowTerm) (Message, bool, error) {
 	q := url.Values{
 		"anchor":         {"oldest"},

@@ -978,7 +978,7 @@ func TestArchivePreflightAllowsAYoungTopic(t *testing.T) {
 	if n := hh.z.oldestCalls(); n != 2 {
 		t.Fatalf("preflight ran %d times, want one per destructive decision", n)
 	}
-	narrow := hh.z.oldestNarrows[0]
+	narrow := hh.z.oldestNarrow(0)
 	if len(narrow) != 2 || narrow[0].Operator != "channel" || narrow[1].Operand != "t" {
 		t.Fatalf("the preflight must ask about THIS topic: %+v", narrow)
 	}
