@@ -28,11 +28,22 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // RealmMoveBetweenChannels is the realm setting naming the users
 // allowed to move messages between channels.
 const RealmMoveBetweenChannels = "realm_can_move_messages_between_channels_group"
+
+// RealmMoveBetweenChannelsLimit is the realm setting bounding how OLD
+// a message may be and still be moved to another channel. It arrives
+// as a number of seconds, or JSON null for "any time".
+//
+// It is the second half of the same permission: the group setting says
+// who may move, this says how far back they may reach. A relay that
+// reads only the first one discovers the second by half-completing an
+// archive.
+const RealmMoveBetweenChannelsLimit = "realm_move_messages_between_streams_limit_seconds"
 
 // GroupSetting is Zulip's group-setting value: a permission expressed
 // either as a single user-group id, or inline as an anonymous group of
@@ -123,6 +134,22 @@ func (c *Client) RealmGroupSetting(ctx context.Context, name string) (GroupSetti
 	return gs, nil
 }
 
+// groupSetting decodes one group-setting value out of a realm
+// snapshot, for a caller that already holds one. A setting the server
+// does not report is an error: this package never guesses at a
+// permission.
+func groupSetting(snap map[string]json.RawMessage, name string) (GroupSetting, error) {
+	raw, ok := snap[name]
+	if !ok {
+		return GroupSetting{}, fmt.Errorf("zulip: this server does not report %s", name)
+	}
+	var gs GroupSetting
+	if err := json.Unmarshal(raw, &gs); err != nil {
+		return GroupSetting{}, err
+	}
+	return gs, nil
+}
+
 // IsUserGroupMember reports whether userID is in the user group with
 // the given id, counting membership through subgroups.
 //
@@ -141,25 +168,87 @@ func (c *Client) IsUserGroupMember(ctx context.Context, groupID, userID int64) (
 	return resp.IsMember, nil
 }
 
-// CanMoveMessagesBetweenChannels reports whether userID — in practice
-// the relay's own bot — is permitted by realm policy to move messages
-// from one channel to another.
+// MovePolicy is the realm's complete answer about moving a topic to
+// another channel: WHETHER a user may, and how far BACK.
+type MovePolicy struct {
+	// Allowed reports membership of
+	// can_move_messages_between_channels_group.
+	Allowed bool
+	// Limit is how old the oldest message being moved may be. Zero
+	// means UNLIMITED — either the realm sets no limit, or the user is
+	// exempt from it. A caller must not read zero as "nothing may be
+	// moved"; see MovePolicy.TooOld.
+	Limit time.Duration
+}
+
+// TooOld reports whether a message sent at `sent` is beyond the move
+// limit as of `now`.
+//
+// The slack is deliberate: the limit is enforced by the SERVER against
+// its own clock, so a decision made on ours has to leave room for the
+// two disagreeing. Erring towards "too old" costs a refusal the user
+// can act on; erring the other way costs a half-completed archive,
+// which is the bug this exists to prevent.
+func (p MovePolicy) TooOld(sent, now time.Time) bool {
+	if p.Limit <= 0 {
+		return false
+	}
+	return now.Sub(sent) >= p.Limit-moveLimitSlack
+}
+
+// moveLimitSlack is the margin held back from the realm's limit to
+// absorb clock skew between this host and the Zulip server.
+const moveLimitSlack = time.Minute
+
+// ChannelMovePolicy reports whether user — in practice the relay's own
+// bot — may move messages between channels, and the age limit that
+// applies when it does.
 //
 // An error means "cannot tell", which is NOT the same as "no": the
 // caller decides what to do about an unknown answer, and for a
 // destructive feature the only safe choice is to stay off.
 //
-// It deliberately does NOT account for
-// move_messages_between_streams_limit_seconds, the per-message time
-// limit: that bounds how OLD a message may be, so it cannot be settled
-// at startup for a topic that does not exist yet. A move refused on
-// those grounds fails loudly at the time, which is the failure mode
-// this check cannot remove and does not pretend to.
-func (c *Client) CanMoveMessagesBetweenChannels(ctx context.Context, userID int64) (bool, error) {
-	gs, err := c.RealmGroupSetting(ctx, RealmMoveBetweenChannels)
+// The time limit is read here rather than discovered mid-action for a
+// concrete reason: a move refused by
+// move_messages_between_streams_limit_seconds fails at the LAST step
+// of the archive, after the conversation has already been ended and
+// retired. Knowing the limit up front lets the caller settle the
+// question against a topic's oldest message BEFORE it touches
+// anything.
+//
+// Two ways the limit does not apply: the realm sets none (the setting
+// arrives as JSON null), or the user is a moderator or above, who are
+// exempt from message-move time limits. Both are reported as a zero
+// Limit.
+func (c *Client) ChannelMovePolicy(ctx context.Context, user User) (MovePolicy, error) {
+	snap, err := c.realmSnapshot(ctx)
 	if err != nil {
-		return false, err
+		return MovePolicy{}, err
 	}
+	gs, err := groupSetting(snap, RealmMoveBetweenChannels)
+	if err != nil {
+		return MovePolicy{}, err
+	}
+	allowed, err := c.inGroup(ctx, gs, user.UserID)
+	if err != nil {
+		return MovePolicy{}, err
+	}
+	limit, err := moveLimit(snap, RealmMoveBetweenChannelsLimit)
+	if err != nil {
+		return MovePolicy{}, err
+	}
+	if user.Role != 0 && user.Role <= RoleModerator {
+		// Moderators, administrators and owners are exempt. A zero
+		// Role is a server that did not report one, which is not
+		// evidence of privilege.
+		limit = 0
+	}
+	return MovePolicy{Allowed: allowed, Limit: limit}, nil
+}
+
+// inGroup resolves a group-setting value to a yes/no for one user,
+// following subgroups.
+func (c *Client) inGroup(ctx context.Context, gs GroupSetting, userID int64) (bool, error) {
 	if gs.GroupID != 0 {
 		return c.IsUserGroupMember(ctx, gs.GroupID, userID)
 	}
@@ -178,4 +267,28 @@ func (c *Client) CanMoveMessagesBetweenChannels(ctx context.Context, userID int6
 		}
 	}
 	return false, nil
+}
+
+// moveLimit reads a *_limit_seconds realm setting as a duration.
+//
+// JSON null is Zulip's "any time" and is returned as zero. A setting
+// the server does not report at all is an ERROR rather than zero: an
+// absent limit and an unlimited one look identical to a zero value,
+// and only one of them means the caller may proceed.
+func moveLimit(snap map[string]json.RawMessage, name string) (time.Duration, error) {
+	raw, ok := snap[name]
+	if !ok {
+		return 0, fmt.Errorf("zulip: this server does not report %s", name)
+	}
+	if string(raw) == "null" {
+		return 0, nil
+	}
+	var secs int64
+	if err := json.Unmarshal(raw, &secs); err != nil {
+		return 0, fmt.Errorf("zulip: %s is not a number of seconds: %w", name, err)
+	}
+	if secs < 0 {
+		return 0, fmt.Errorf("zulip: %s is negative (%d)", name, secs)
+	}
+	return time.Duration(secs) * time.Second, nil
 }

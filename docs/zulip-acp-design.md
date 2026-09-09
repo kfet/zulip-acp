@@ -509,6 +509,29 @@ ending. Retiring first means the echoed event finds nothing of ours to migrate.
 Every failure short-circuits the rest and says so in the topic: a half-done
 archive that stayed quiet would be the worst outcome available.
 
+#### The move time limit is a preflight, not a failure
+
+Realm policy has two halves: `can_move_messages_between_channels_group` says
+*who* may move, and `move_messages_between_streams_limit_seconds` says *how far
+back*. Startup used to read only the first one, and the second was discovered by
+running into it — at step 5, with steps 1-4 already done. The conversation was
+ended and retired, the closing message was posted, and the topic stayed put: the
+half-done archive the ordering above is careful to avoid, reached through the
+one door that was not checked.
+
+So `ChannelMovePolicy` now reports both, in one `/register`, and the limit rides
+into the handler as `Config.ArchiveMoveLimit`. Zero means unlimited — the realm
+sets no limit, *or* the bot is a moderator or above, who are exempt. Before
+arming, and again at confirmation, `Handler.movable` reads the topic's oldest
+message (`anchor=oldest`, one round trip) and refuses if it is beyond the limit.
+Both checks matter: arming late is a trap that costs the user two taps to be
+told no, and the two-minute confirmation window is long enough for a topic to
+age across the boundary.
+
+The comparison holds back a minute of slack, because the clock that actually
+decides is the server's. Erring towards "too old" costs a refusal the user can
+act on; erring the other way costs the bug this replaced.
+
 #### Which message is "the relay's last message"
 
 The gesture is defined on the relay's own newest message in the conversation,

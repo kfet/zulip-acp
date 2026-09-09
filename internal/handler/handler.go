@@ -140,6 +140,11 @@ type Poster interface {
 	// in a conversation when neither memory nor the journal knows it —
 	// see Handler.lastOwnMessage.
 	Messages(ctx context.Context, narrow []zulipproto.NarrowTerm, limit int, beforeID int64) ([]zulipproto.Message, error)
+	// OldestMessage returns the first message in a narrow. The archive
+	// preflight is the only caller: with propagate_mode=change_all it
+	// is the oldest message in the topic that Zulip's move time limit
+	// is judged against.
+	OldestMessage(ctx context.Context, narrow []zulipproto.NarrowTerm) (zulipproto.Message, bool, error)
 	// Topics lists the topic names already in a channel. Only
 	// `!branch` uses it, to avoid creating a topic that collides with
 	// a live one — Zulip would silently merge the two.
@@ -312,6 +317,18 @@ type Config struct {
 	// cmd/zulip-acp), so nothing here has to discover them mid-action.
 	ArchiveStreamID int64
 	ArchiveChannel  string
+
+	// ArchiveMoveLimit is the realm's move_messages_between_streams
+	// time limit as it applies to THIS bot: how old the oldest message
+	// in a topic may be and still be movable. Zero means unlimited —
+	// either the realm sets no limit, or the bot is exempt.
+	//
+	// It is not decoration. A move refused on age grounds fails at the
+	// LAST step of an archive, after the conversation has been ended
+	// and retired, leaving the topic where it was with no conversation
+	// attached to it. Knowing the limit lets the archive settle the
+	// question before it touches anything; see Handler.movable.
+	ArchiveMoveLimit time.Duration
 
 	// After is the timer the reaction debounce waits on. Defaults to
 	// time.After.

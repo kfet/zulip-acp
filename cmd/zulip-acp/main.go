@@ -338,7 +338,7 @@ func main() {
 	// between channels. Discovering any of that at the moment somebody
 	// taps :wastebasket: would mean a warning posted for an action the
 	// relay cannot perform.
-	archiveID, archiveName := resolveArchive(ctx, cfg, zc, streams, served, me.UserID)
+	archiveID, archiveName, archiveLimit := resolveArchive(ctx, cfg, zc, streams, served, me)
 
 	// Quiet mode's liveness is the typing indicator, whose cadence has
 	// to stay inside the realm's expiry period — so it is read from
@@ -500,6 +500,7 @@ func main() {
 		Reactions:          cfg.GetReactions(),
 		ArchiveStreamID:    archiveID,
 		ArchiveChannel:     archiveName,
+		ArchiveMoveLimit:   archiveLimit,
 
 		Site:                    cfg.Site,
 		SiteAliases:             cfg.SiteAliases,

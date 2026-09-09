@@ -21,9 +21,10 @@ var (
 )
 
 // archiveProbe is the Zulip surface resolveArchive needs: whether this
-// bot may move messages between channels at all.
+// bot may move messages between channels, and how far back it may
+// reach when it does.
 type archiveProbe interface {
-	CanMoveMessagesBetweenChannels(ctx context.Context, userID int64) (bool, error)
+	ChannelMovePolicy(ctx context.Context, user zulipproto.User) (zulipproto.MovePolicy, error)
 }
 
 // channelLookup is the served-channel allowlist, narrowed to the one
@@ -51,36 +52,47 @@ type channelLookup interface {
 // treated as no. The point of checking here is that nobody should
 // discover the answer by tapping :wastebasket: and watching a warning
 // be posted for an action that cannot happen.
-func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe, streams []zulipproto.Stream, served channelLookup, botUserID int64) (int64, string) {
+//
+// It also returns the realm's move TIME limit as it applies to this
+// bot (zero when none does). That one cannot disable the feature —
+// whether a given topic is young enough is a per-topic question — but
+// carrying it into the handler is what lets the archive refuse a topic
+// it cannot move BEFORE it ends the conversation.
+func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe, streams []zulipproto.Stream, served channelLookup, bot zulipproto.User) (int64, string, time.Duration) {
 	want := cfg.GetArchiveChannel()
 	if want == "" {
 		log.Printf("zulip-acp: topic archiving is disabled (\"archive_channel\": \"\")")
-		return 0, ""
+		return 0, "", 0
 	}
 	s, ok := cfg.ResolveArchiveChannel(streams)
 	if !ok {
 		log.Printf("zulip-acp: topic archiving is OFF: no channel %q is visible to the bot. "+
 			"Create it (the bot must not be subscribed — it must be a channel this relay does NOT serve) or set \"archive_channel\".", want)
-		return 0, ""
+		return 0, "", 0
 	}
 	if name, isServed := served.Name(s.StreamID); isServed {
 		log.Printf("zulip-acp: topic archiving is OFF: the archive channel #%s (%d) is one this relay serves, "+
 			"so an archived topic could just re-engage it. Point \"archive_channel\" at a channel outside the served set.", name, s.StreamID)
-		return 0, ""
+		return 0, "", 0
 	}
-	allowed, err := probe.CanMoveMessagesBetweenChannels(ctx, botUserID)
+	policy, err := probe.ChannelMovePolicy(ctx, bot)
 	if err != nil {
 		log.Printf("zulip-acp: topic archiving is OFF: cannot tell whether this bot may move messages between channels (%v). "+
 			"Zulip 12.0+ is needed to answer that for a bot user; until then, leave it off rather than fail on the tap.", err)
-		return 0, ""
+		return 0, "", 0
 	}
-	if !allowed {
+	if !policy.Allowed {
 		log.Printf("zulip-acp: topic archiving is OFF: realm policy (%s) does not let this bot move messages between channels. "+
 			"Add it to that group to enable archiving.", zulipproto.RealmMoveBetweenChannels)
-		return 0, ""
+		return 0, "", 0
+	}
+	if policy.Limit > 0 {
+		log.Printf("zulip-acp: topic archiving is on, but bounded: this realm (%s) only lets this bot move messages sent within %s, "+
+			"so a topic reaching further back is refused rather than half-archived. Set that limit to \"any time\", or give the bot the moderator role, to lift it.",
+			zulipproto.RealmMoveBetweenChannelsLimit, policy.Limit)
 	}
 	log.Printf("zulip-acp: topic archiving is on: :wastebasket: on my last message, or !archive, moves a topic to #%s (%d) after a confirmation", s.Name, s.StreamID)
-	return s.StreamID, s.Name
+	return s.StreamID, s.Name, policy.Limit
 }
 
 // typingProbe is the Zulip surface resolveTypingInterval needs: how

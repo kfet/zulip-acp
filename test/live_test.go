@@ -531,9 +531,14 @@ func TestMovePermissionIsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("me: %v", err)
 	}
-	allowed, err := c.CanMoveMessagesBetweenChannels(ctx, me.UserID)
+	policy, err := c.ChannelMovePolicy(ctx, me)
 	if err != nil {
 		t.Fatalf("cannot resolve this bot's membership (Zulip 12.0+ is needed for a bot user): %v", err)
 	}
-	t.Logf("bot %d (%s) may move messages between channels: %v", me.UserID, me.FullName, allowed)
+	t.Logf("bot %d (%s, role %d) may move messages between channels: %v", me.UserID, me.FullName, me.Role, policy.Allowed)
+	// The limit is the half that decides whether an OLD topic can be
+	// archived at all. Zero here means the realm sets none or this bot
+	// is exempt; anything else is the age beyond which the relay
+	// refuses up front rather than half-archiving.
+	t.Logf("%s as it applies to this bot: %s", zulipproto.RealmMoveBetweenChannelsLimit, policy.Limit)
 }
