@@ -193,7 +193,16 @@ func (p MovePolicy) TooOld(sent, now time.Time) bool {
 	if p.Limit <= 0 {
 		return false
 	}
-	return now.Sub(sent) >= p.Limit-moveLimitSlack
+	// A limit at or under the slack would otherwise make EVERY message
+	// too old, including one sent this instant. A realm that tight is
+	// absurd, but it must read as "almost nothing is movable", not as
+	// "nothing is": below the slack there is simply no room to be
+	// careful in, so the limit is used as it stands.
+	window := p.Limit - moveLimitSlack
+	if window <= 0 {
+		window = p.Limit
+	}
+	return now.Sub(sent) >= window
 }
 
 // moveLimitSlack is the margin held back from the realm's limit to

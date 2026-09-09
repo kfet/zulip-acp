@@ -143,6 +143,13 @@ func (z *fakeZulip) OldestMessage(_ context.Context, narrow []zulipproto.NarrowT
 	return z.oldest, true, nil
 }
 
+// oldestNarrow returns the narrow of the n-th preflight read.
+func (z *fakeZulip) oldestNarrow(n int) []zulipproto.NarrowTerm {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.oldestNarrows[n]
+}
+
 // oldestCalls returns how many preflight reads the relay made.
 func (z *fakeZulip) oldestCalls() int {
 	z.mu.Lock()
