@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-09-11
+
+### Changed
+
+- **Attachments are downloaded from the endpoint that actually serves
+  files.** v0.29.1 fixed the symptom on the wrong primitive. Grounded in
+  Zulip's own docs and the 12.2 source, the two spellings of
+  `/user_uploads/…` are *different endpoints*:
+  `<realm root>/user_uploads/<path>` is the download (`serve_file_backend`,
+  `url_only=False`; `rest_dispatch` accepts `email:api_key` Basic auth there
+  just as under `/api/v1`), while `<api base>/user_uploads/<path>` is the
+  documented [get public temporary URL](https://zulip.com/api/get-file-temporary-url)
+  endpoint (`url_only=True`, new in Zulip 3.0 / feature level 1) which returns
+  a `/user_uploads/temporary/<token>` URL and *never* the file. The relay now
+  downloads directly in one hop and keeps the temporary-URL endpoint only as a
+  fallback, fetched immediately — the token is a Django `TimestampSigner`
+  signature valid for `SIGNED_ACCESS_TOKEN_VALIDITY_IN_SECONDS` (60s by
+  default) and the docs forbid storing it.
+- **A page can no longer be saved as an attachment.** An unauthenticated
+  upload request is answered with `302 → /accounts/login/?next=…`, so the
+  redirect policy refuses any hop into a login path, and a 200 response that
+  is `text/html` or a temporary-URL envelope is rejected rather than written
+  into `inbox/`. Cross-host redirects (an S3 deployment's signed URL) are
+  still followed, with Go stripping the `Authorization` header across hosts.
+
 ## [0.29.1] - 2026-09-11
 
 ### Fixed
