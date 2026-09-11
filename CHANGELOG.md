@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Inbound attachments no longer land in `./inbox/` as a 256-byte JSON
+  envelope.** `GET /api/v1/user_uploads/<path>` does not always return the
+  file: it can answer with Zulip's temporary-URL envelope
+  (`{"result":"success","url":"/user_uploads/temporary/<tok>/<name>"}`), and
+  the bytes live only at that second URL. `DownloadUpload` assumed raw bytes
+  unconditionally and wrote the envelope out as the attachment, so an agent
+  handed a PDF saw JSON and could only report that the upload had failed. The
+  indirection is now followed once, **unauthenticated** — the token in the
+  temporary path is the credential, and forwarding the bot's API key there
+  would leak it. Detection is deliberately narrow (JSON content type, success
+  envelope, and a `url` that is itself a `/user_uploads/` path) so a user's own
+  `.json` upload is still served through untouched.
+
 ## [0.29.0] - 2026-09-11
 
 ### Added
