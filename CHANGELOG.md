@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`:fork_and_knife:` branches a message into its own topic.** A second entry
+  point to `!branch`, wired as a second consumer of the existing reaction seam
+  (`h.ArchiveReaction(...) || h.BranchReaction(...)`). The reacted-to message
+  supplies what the reaction cannot carry: its body becomes the seed, the topic
+  name and the new session's first prompt, and the branch point is that message
+  — so `history(origin: true)` is clamped there.
+  - The branching user is the **reactor**, not the message's sender; the
+    destination is the origin's own channel, so a `:fork_and_knife:` in a DM is
+    not a branch trigger and falls through to the agent as ordinary signal.
+  - Un-reacting never un-branches, a message branches once (a second tap is
+    answered with a link to the topic that exists), and the origin's running
+    turn is never interrupted — the pointer line is the only write to it.
+  - The prompt says who WROTE the branched text when that is not the person who
+    branched it — `allowed_user_ids` decides whose words reach the model, and
+    one allowlisted tap can otherwise spin in a message under the wrong name.
+  - The dedup memory stores the branched conv-id and resolves the topic from it,
+    so the link follows the agent's own `rename_topic`; a retired branch forgets
+    itself and a fresh tap branches again.
+  - Both entry points run one `Handler.performBranch` over a `branchPlan`, so a
+    typed branch and a tapped one cannot drift.
+
 - **In-progress marker on a streaming answer.** While a turn is running the tail
   message ends in an italic `*(…)*`; it is dropped by `Close`, where the status
   footer takes its place. The last line of a message is then always a statement
@@ -21,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     preceded by a closing fence when the tail ends inside an open code block.
   - Costs no extra API calls of its own: the marker rides out on the streaming
     edits already happening. Quiet mode (`stream_edits: false`) is unaffected.
+
+### Fixed
+
+- **An acknowledgement reaction that failed to land is no longer retracted.**
+  Zulip refuses a duplicate `:eyes:` with 400, so a second turn acknowledging a
+  message whose own turn was still running used to strip the live turn's ack on
+  the way out. Reachable as soon as one message can start two turns — which is
+  what branching by reaction makes routine.
 
 ## [0.28.1] - 2026-09-09
 

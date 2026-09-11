@@ -75,6 +75,9 @@ type fakeZulip struct {
 	reactAdd []string
 	reactDel []string
 	reactErr error
+	// reactDelErr fails only the REMOVAL, so the two halves of the
+	// ack can be driven independently.
+	reactDelErr error
 	// typing records every typing op as "<op>:<streamID>:<topic>" (or
 	// "<op>:dm[ids]"), typed is signalled after each one, and
 	// typingErr models a server that refuses them. Quiet mode's
@@ -526,6 +529,9 @@ func (z *fakeZulip) RemoveReaction(_ context.Context, id int64, emoji string) er
 	select {
 	case z.unreacted <- struct{}{}:
 	default:
+	}
+	if z.reactDelErr != nil {
+		return z.reactDelErr
 	}
 	return z.reactErr
 }
@@ -3034,7 +3040,10 @@ func TestAckReaction(t *testing.T) {
 			wantDel: []string{"1:eyes", "1:eyes"},
 		},
 		{
-			name: "reaction failures are non-fatal",
+			// An ack that could not be placed is not retracted: Zulip
+			// refuses a duplicate with 400, and the reaction that is
+			// already there belongs to somebody else's live turn.
+			name: "an ack that failed to land is never removed",
 			tune: func(c *Config) { c.AckEmoji = "eyes" },
 			setup: func(hh *harness, _ *fakeAgent) {
 				hh.z.mu.Lock()
@@ -3042,8 +3051,19 @@ func TestAckReaction(t *testing.T) {
 				hh.z.mu.Unlock()
 			},
 			wantAdd:  []string{"1:eyes"},
+			wantLogs: []string{"adding :eyes:"},
+		},
+		{
+			name: "a failed retraction is non-fatal",
+			tune: func(c *Config) { c.AckEmoji = "eyes" },
+			setup: func(hh *harness, _ *fakeAgent) {
+				hh.z.mu.Lock()
+				hh.z.reactDelErr = errors.New("nothing to remove")
+				hh.z.mu.Unlock()
+			},
+			wantAdd:  []string{"1:eyes"},
 			wantDel:  []string{"1:eyes"},
-			wantLogs: []string{"adding :eyes:", "removing :eyes:"},
+			wantLogs: []string{"removing :eyes:"},
 		},
 		{
 			name: "empty emoji disables the feature",

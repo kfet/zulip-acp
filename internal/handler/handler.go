@@ -299,10 +299,12 @@ type Config struct {
 	// consumed it — i.e. whether the relay itself acted on the
 	// reaction instead of handing it to the agent.
 	//
-	// In production this is Handler.ArchiveReaction (see archive.go):
-	// archiving a topic is a RELAY action, not an agent turn, and a
+	// In production this is Handler.ArchiveReaction (archive.go) then
+	// Handler.BranchReaction (branch.go), in that order: archiving and
+	// branching a topic are RELAY actions, not agent turns, and a
 	// destructive control must never depend on the model choosing to
-	// call a tool.
+	// call a tool. Archive is tried first because it owns a
+	// confirmation cycle whose arming message must not be shadowed.
 	ReactionTrigger func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool
 
 	// ArchiveStreamID and ArchiveChannel are the destination of the
@@ -487,6 +489,13 @@ type Handler struct {
 	// like the three above — see link.go.
 	linkMsgs *msgIndex
 
+	// branchedMsgs remembers which messages a :fork_and_knife: has
+	// already branched, and into which topic, so a second person
+	// tapping the same message is pointed at the topic that exists
+	// rather than being given a second one. A bounded hint like the
+	// four above — see alreadyBranched.
+	branchedMsgs *msgIndex
+
 	// lastOwn is the NEWEST message the relay has posted in each
 	// conversation. The archive control needs more than "this message
 	// is ours" (ownMsgs): reacting to an old answer from last week
@@ -571,6 +580,7 @@ func New(cfg Config) (*Handler, error) {
 		badMsgs:        newMsgIndex(reactionIndexSize),
 		userNames:      newMsgIndex(reactionIndexSize),
 		linkMsgs:       newMsgIndex(linkIndexSize),
+		branchedMsgs:   newMsgIndex(reactionIndexSize),
 		lastOwn:        map[string]int64{},
 		archivePending: map[string]*pendingArchive{},
 		reactPending:   map[string]*reactionBatch{},
@@ -1147,6 +1157,19 @@ func (h *Handler) ack(ctx context.Context, msgID int64) func() {
 	}
 	if err := h.cfg.Client.AddReaction(ctx, msgID, h.cfg.AckEmoji); err != nil {
 		h.cfg.Logf("handler: adding :%s: to message %d: %v", h.cfg.AckEmoji, msgID, err)
+		// We did not place it, so we must not take it away. Zulip
+		// refuses a duplicate with 400 "Reaction already exists", and
+		// the reaction that IS there belongs to somebody else's turn —
+		// the case reached by branching a message whose own turn is
+		// still running. Removing it would strip a live turn's
+		// acknowledgement.
+		//
+		// The cost is that a stale ack left by a hard-crashed relay is
+		// no longer swept away by the next turn on the same message.
+		// Nothing re-turns a message after a crash — the event queue
+		// is gone and there is no replay — so that is the cheaper of
+		// the two failures, not an oversight.
+		return func() {}
 	}
 	return func() {
 		if err := h.cfg.Client.RemoveReaction(context.WithoutCancel(ctx), msgID, h.cfg.AckEmoji); err != nil {

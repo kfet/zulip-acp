@@ -507,12 +507,15 @@ func main() {
 		InboundAttachments:      cfg.GetInboundAttachments(),
 		MaxAttachmentBytes:      cfg.MaxAttachmentBytes,
 		MaxAttachmentTotalBytes: cfg.MaxAttachmentTotalBytes,
-		// The reaction seam, wired to the archive control. Capturing h
-		// is the same trick the loopback uses: it is assigned below,
-		// before any event can arrive. ArchiveReaction is inert when
-		// the control is disabled, so this needs no condition.
+		// The reaction seam, wired to the two relay-side reaction
+		// controls. Capturing h is the same trick the loopback uses:
+		// it is assigned below, before any event can arrive.
+		// ArchiveReaction is inert when the control is disabled, so
+		// this needs no condition; archive is tried FIRST because it
+		// owns a confirmation cycle whose arming message must not be
+		// shadowed by anything.
 		ReactionTrigger: func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
-			return h.ArchiveReaction(ctx, conv, ev, m)
+			return h.ArchiveReaction(ctx, conv, ev, m) || h.BranchReaction(ctx, conv, ev, m)
 		},
 		Logf: log.Printf,
 	})

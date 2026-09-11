@@ -324,18 +324,75 @@ reports whether it consumed the reaction. In production it is wired to
 which is why it belongs there and not in a prompt: a destructive control must
 never depend on the model choosing to call a tool.
 
-### Branching a topic (`!branch`)
+### Branching a topic (`!branch`, `:fork_and_knife:`)
 
 `!branch <text>` (optionally `!branch #**channel** <text>`) spins an idea out
 of the conversation it surfaced in, into a topic of its own. It is intercepted
 exactly as `!new` is: the origin agent never sees the message.
 
 `<text>` is the first message of the new topic and states what the user is
-after. That is why this is a **command and not an emoji reaction**: a reaction
-cannot carry the user's intent, and that intent is the whole value — it is both
-the opening prompt and, through the existing `internal/autotopic` heuristic, the
-topic's name. (A `:fork_and_knife:` reaction is possible later as sugar, with
-empty text and the reacted-to message force-linked. It is not built.)
+after: it is both the opening prompt and, through the existing
+`internal/autotopic` heuristic, the topic's name.
+
+#### The second entry point
+
+A reaction cannot carry intent, which is why the typed form exists and why it
+takes an argument. But there is one case where the intent is **already written
+down**: the message being reacted to. `:fork_and_knife:` on a message branches
+*that message* — its body is the `<text>` above, and the branch point is that
+message rather than "now".
+
+It is a second consumer of the `Config.ReactionTrigger` seam, wired in `main`
+as `h.ArchiveReaction(...) || h.BranchReaction(...)` — archive first, because
+archive owns a confirmation cycle whose arming message must not be shadowed.
+Both entry points then run the same `Handler.performBranch` over a
+`branchPlan`, so a typed branch and a tapped one cannot drift; the two differ
+only in how the plan is filled, and every difference is forced:
+
+- **The reactor is the branching user**, not the reacted-to message's sender. A
+  third party may well be spinning somebody else's message out, and the seed's
+  @-mention has to reach whoever is waiting for the answer.
+- **The destination is the origin's own channel.** A reaction has nowhere to
+  name one — which is why a `:fork_and_knife:` in a **DM** is not a branch
+  trigger at all: it falls through as ordinary reaction signal, and the typed
+  form (which demands a channel) is how you branch out of a DM. Guessing a
+  channel would be the relay choosing where to publish a private conversation.
+- **Anchored AND clamped at the reacted-to message.** The pointer is
+  `journal.Parent{Key: origin, MessageID: ev.MessageID}`, so `origin: true`
+  reads the origin up to the message that was spun out and no further. Clamping
+  at "now" would hand the branched session whatever the origin has said since,
+  which is not what was branched.
+- **`ReactionAdd` only.** Un-reacting is not consumed and does not un-branch:
+  a branch has created a topic, a conversation and a turn, and none of that is
+  undone by removing an emoji.
+- **The prompt names the text's AUTHOR when it is not the reactor.** The
+  `[name]` prefix of a relay prompt means "whose turn this is", which for a
+  branch is whoever branched — so the reaction form would otherwise tell the
+  agent that the reactor said words they never typed. It is a provenance
+  question, not a courtesy: `allowed_user_ids` decides whose words may reach
+  the model, and one allowlisted tap can spin in a message from somebody the
+  allowlist would never have delivered. The clause is omitted when there is
+  nothing to correct, so it does not become noise the model learns to skip.
+- **A message branches once.** `(conv id, message id)` pairs are remembered in
+  a bounded `msgIndex`, like every other cache in `reaction.go`, so a second
+  person tapping the same message is replied to with a link to the topic that
+  exists rather than being given a `… (2)` beside it. Eviction costs at most
+  one extra topic, never correctness. The pair — not the id alone, though
+  Zulip's ids are realm-unique — because `!new` re-mints a conversation under
+  the same key, and the old one's branch is no reason to refuse the new one's.
+  What is stored is the branched **conv-id**, and the topic is resolved from it
+  at read time for the same reason the parent pointer is a bare message id: the
+  branched agent is told to `rename_topic` as soon as it knows what the
+  conversation is about, so a link captured at branch time is stale almost
+  immediately. A branch the relay can no longer answer in — gone, retired, or
+  in a channel that has left the served set — forgets itself, and the next tap
+  is a fresh branch rather than a refusal linking a dead topic.
+- **It never touches the origin's turn.** No `cancelInflight`, no claim, no
+  prompt delivered there; the pointer message is the only write to the origin.
+  Tapping mid-answer costs that answer nothing. Everything else happens in the
+  NEW conversation.
+- **No confirmation cycle**, unlike `:wastebasket:`. Branching destroys
+  nothing; the worst case is one extra topic holding one message.
 
 #### Context is pulled, never pushed
 
@@ -359,8 +416,9 @@ an ambient channel), where there is no origin session to ask.
   parent's own. `zulipmcp.Config.Origin` is asked once, for the calling session
   key; there is no chaining and no argument that could request one. Otherwise
   "read my ancestors" quietly becomes "read everything".
-- **Clamped at the branch point.** Only messages at or before the `!branch`
-  message id are returned — what led to the branch, never what the origin went
+- **Clamped at the branch point.** Only messages at or before the triggering
+  message id — the `!branch` message, or the one the `:fork_and_knife:` landed
+  on — are returned — what led to the branch, never what the origin went
   on to say afterwards. Zulip's anchor is any integer and need not be a real
   message id, so "at or before N" is exactly "before N+1, exclusive". An agent
   supplied `before_id` is clamped to that same bound, or the clamp would be a
@@ -409,7 +467,8 @@ else changes.
   into a live session's topic — that would drop two conversations into one
   agent session — nor into a human's thread.
 - **A branch that would land where it started is refused.** `!branch planning`
-  typed in the topic "planning" generates exactly that title. Caught before the
+  typed in the topic "planning" generates exactly that title, and so does a
+  `:fork_and_knife:` on the message that named the topic. Caught before the
   seed message, or the relay would post an opening message into the very
   conversation it was spinning out of. `Journal.Branch` refuses the same thing
   structurally, as a conversation declaring itself its own origin.
@@ -421,15 +480,20 @@ else changes.
 - **Channel-only, and never guessed.** From a DM the destination must be named
   explicitly. Inventing one would be the relay choosing where to publish the
   contents of a private conversation.
-- **The rename anchor is the SEED message, not the `!branch` message.** A
+- **The rename anchor is the SEED message, not the triggering message.** A
   rename is an edit of a message *in* the topic being renamed, and the
   triggering message is in the ORIGIN topic — anchoring on it would make every
   rename the branched agent asks for fail as "no longer in it", and the topic
-  would keep its generated placeholder name for good. This is the only caller
-  of `startTurnAnchored`.
-- **The seed message @-mentions the branching user.** After typing `!branch`
-  they are still reading the origin topic; on a phone the mention is the only
-  thing that surfaces the topic they are not looking at.
+  would keep its generated placeholder name for good. `performBranch` is the
+  only caller of `startTurnAnchored`; the ack reaction goes on the triggering
+  message, which is where the user is looking.
+- **The seed message @-mentions the branching user.** Having typed `!branch` or
+  tapped an emoji, they are still reading the origin topic; on a phone the
+  mention is the only thing that surfaces the topic they are not looking at.
+- **An empty message cannot be branched by reaction.** An attachment-only
+  message, or one whose body has been edited away, has nothing to name a topic
+  after and nothing to prompt with; the tap is refused with a pointer at the
+  typed form.
 
 ### Linked-message hydration
 
@@ -1442,7 +1506,7 @@ capability the relay should own rather than leak.
   the page before it with neither overlap nor gap.
 - **`origin: true` reads the conversation this topic was BRANCHED out of** —
   the one and only cross-conversation read the relay permits. See
-  [Branching a topic](#branching-a-topic-branch).
+  [Branching a topic](#branching-a-topic-branch-fork_and_knife).
 
 `rename_topic` exists because of `autotopic_channels`. The relay names a new
 topic from the opening line of the message that starts it — a pure heuristic
