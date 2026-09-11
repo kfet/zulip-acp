@@ -1090,3 +1090,124 @@ func TestRepostReportsARefusedDelete(t *testing.T) {
 		t.Fatalf("stored = %q, want the duplicate", d.stored())
 	}
 }
+
+// --- live suffix ---------------------------------------------------------
+
+// TestLiveSuffixDecoratesOnlyTheTail pins the core behaviour: the
+// marker rides on the tail while the turn runs, never enters the
+// transcript, and is gone from the final body Close writes.
+func TestLiveSuffixDecoratesOnlyTheTail(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 500})
+	// Armed before any text: nothing to annotate, so nothing is
+	// pending and no message is posted.
+	s.SetLiveSuffix("\n\n*(…)*")
+	if s.Pending() {
+		t.Fatal("live suffix alone must not make an empty chain pending")
+	}
+	s.Append("hello")
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got := f.bodies[1]; got != "hello\n\n*(…)*" {
+		t.Fatalf("streamed body = %q", got)
+	}
+	if got := s.Transcript(); got != "hello" {
+		t.Fatalf("marker leaked into the transcript: %q", got)
+	}
+	if err := s.Close(context.Background(), " world"); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := f.bodies[1]; got != "hello world" {
+		t.Fatalf("final body = %q", got)
+	}
+	checkInvariant(t, s, f)
+}
+
+// TestLiveSuffixIsIdempotentAndDroppedAfterClose covers the two guards
+// on the setter: re-arming the same marker costs no edit, and a late
+// frame after Close cannot re-decorate a finished answer.
+func TestLiveSuffixIsIdempotentAndDroppedAfterClose(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 500})
+	s.Append("hi")
+	s.SetLiveSuffix("\n\n*(…)*")
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	s.SetLiveSuffix("\n\n*(…)*")
+	if s.Pending() {
+		t.Fatal("re-arming the same marker must not dirty the tail")
+	}
+	if err := s.Close(context.Background(), ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s.SetLiveSuffix("\n\n*(…)*")
+	if s.Pending() {
+		t.Fatal("marker was re-armed after Close")
+	}
+	if got := f.bodies[1]; got != "hi" {
+		t.Fatalf("final body = %q", got)
+	}
+}
+
+// TestLiveSuffixClosesAnOpenFence pins that a marker landing inside an
+// unfinished code block is preceded by a closing fence, so it renders
+// as an indicator and not as a line of the agent's code.
+func TestLiveSuffixClosesAnOpenFence(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 500})
+	s.SetLiveSuffix("\n\n*(…)*")
+	s.Append("```go\nfunc main() {\n")
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := f.bodies[1], "```go\nfunc main() {\n\n```\n\n*(…)*"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	// The synthetic fence is decoration only: closing the block for
+	// real must not double it.
+	s.Append("}\n```\n")
+	if err := s.Close(context.Background(), ""); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got, want := f.bodies[1], "```go\nfunc main() {\n}\n```\n"; got != want {
+		t.Fatalf("final body = %q, want %q", got, want)
+	}
+	checkInvariant(t, s, f)
+}
+
+// TestLiveSuffixSkippedWhenItWouldNotFit pins that the indicator is
+// never worth truncating an answer for, and that it is suppressed on a
+// tail carrying no text of its own.
+func TestLiveSuffixSkippedWhenItWouldNotFit(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 200, SealMarker: "", ContMarker: ""})
+	s.SetLiveSuffix("\n\n*(…)*")
+	s.Append(strings.Repeat("x", 200))
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got := f.bodies[1]; got != strings.Repeat("x", 200) {
+		t.Fatalf("marker was appended over budget: %q", got)
+	}
+	checkInvariant(t, s, f)
+}
+
+// TestLiveSuffixSkippedOnABlankTail pins the other suppression: a tail
+// that carries only the leftover newline of a seal has nothing to
+// annotate, and must not be posted as a message consisting of the
+// marker alone.
+func TestLiveSuffixSkippedOnABlankTail(t *testing.T) {
+	f := newFake()
+	s := mustNew(t, Config{Poster: f, Budget: 200})
+	s.SetLiveSuffix("\n\n*(…)*")
+	s.Append(strings.Repeat("a\n", 86) + strings.Repeat("\n", 30))
+	if got := strings.TrimSpace(s.tail().raw); got != "" {
+		t.Fatalf("test setup: tail raw = %q, want whitespace only", got)
+	}
+	if got, want := s.tail().body, s.cfg.ContMarker+s.tail().raw; got != want {
+		t.Fatalf("marker on a blank tail: %q", got)
+	}
+	checkInvariant(t, s, f)
+}

@@ -77,6 +77,20 @@ func Footer(s Status) string {
 	return "\n\n*" + l + "*"
 }
 
+// Live is the transient "still writing" marker appended to the END of
+// the partially-streamed answer while the turn runs:
+//
+//	\n\n*(…)*
+//
+// It is the streaming counterpart of Spinner: Spinner covers the time
+// before any text exists, Live covers the time after. The relay drops
+// it at the end of the turn, where Footer takes its place — so the
+// last line of a message is either "still going" or the signature,
+// never nothing.
+func Live() string {
+	return "\n\n*(…)*"
+}
+
 // Thinking renders the eager placeholder posted before the agent has
 // produced anything. Zulip has no typing indicator, so this is the
 // user's only acknowledgement that the relay received them.

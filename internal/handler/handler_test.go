@@ -3275,3 +3275,55 @@ func (a *fakeAgent) lastDeadline(t *testing.T) time.Time {
 	}
 	return a.deadlines[len(a.deadlines)-1]
 }
+
+// TestLiveMarkerWhileStreamingThenFooter pins the in-progress
+// indicator end to end: while the agent is still working the tail
+// message ends in the live marker, and when the turn finishes the
+// marker is gone and the status footer has taken its place. The last
+// line of the message is therefore always a statement about the turn —
+// "still going" or "signed off" — which is what lets a reader on a
+// phone tell a live answer from one that stopped mid-sentence.
+func TestLiveMarkerWhileStreamingThenFooter(t *testing.T) {
+	agent := newAgent("half an ans")
+	agent.model = "anthropic/claude-sonnet-4"
+	agent.hold = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventMessage,
+		Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: mention("stream to me"),
+			StreamID: 4, Topic: "streaming", Type: "stream",
+		},
+	})
+	deadline := time.After(10 * time.Second)
+	for {
+		if strings.Contains(hh.z.body(1), "half an ans") {
+			break
+		}
+		select {
+		case <-hh.z.posted:
+		case <-deadline:
+			t.Fatalf("nothing streamed mid-turn; body = %q", hh.z.body(1))
+		}
+	}
+	if got, want := hh.z.body(1), "half an ans"+statusline.Live(); got != want {
+		t.Fatalf("mid-turn body = %q, want %q", got, want)
+	}
+
+	close(agent.hold)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if got, want := hh.z.lastBody(), "half an ans\n\n*🏛️ sonnet-4*"; got != want {
+		t.Fatalf("final body = %q, want %q", got, want)
+	}
+	// And no copy anywhere still carries the marker — the repost
+	// copies the last WRITTEN body, so a marker left in it would be
+	// permanent.
+	if strings.Contains(strings.Join(hh.z.stored(), "\x00"), statusline.Live()) {
+		t.Fatalf("live marker survived the turn: %q", hh.z.stored())
+	}
+}
