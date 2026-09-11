@@ -205,3 +205,62 @@ func TestUploadName(t *testing.T) {
 		}
 	}
 }
+
+// TestDownloadUploadTemporaryURL pins the indirection some deployments
+// answer with: the API endpoint returns a temporary-URL envelope, and
+// the file is only at that second, unauthenticated URL. Writing the
+// envelope to disk instead of the file is the bug this guards.
+func TestDownloadUploadTemporaryURL(t *testing.T) {
+	var hops []string
+	var tmpAuthed bool
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hops = append(hops, r.URL.EscapedPath())
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/user_uploads/"):
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(`{"result":"success","msg":"","url":"/user_uploads/temporary/tok/report.pdf"}`))
+		default:
+			_, _, tmpAuthed = r.BasicAuth()
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write([]byte("%PDF-1.7"))
+		}
+	})
+	c := rawClient(t, srv)
+
+	b, ct, err := c.DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/report.pdf", 1024)
+	if err != nil {
+		t.Fatalf("DownloadUpload: %v", err)
+	}
+	if string(b) != "%PDF-1.7" {
+		t.Fatalf("body = %q", b)
+	}
+	if ct != "application/pdf" {
+		t.Fatalf("content type = %q", ct)
+	}
+	if len(hops) != 2 || hops[1] != "/user_uploads/temporary/tok/report.pdf" {
+		t.Fatalf("hops = %q", hops)
+	}
+	// The token is the credential on the second hop; the bot's API key
+	// must not travel with it.
+	if tmpAuthed {
+		t.Fatal("temporary URL fetched with the bot's credentials")
+	}
+}
+
+// TestDownloadUploadJSONFile pins that an uploaded .json file is
+// served through untouched — only a success envelope carrying an
+// upload URL is an indirection.
+func TestDownloadUploadJSONFile(t *testing.T) {
+	const body = `{"result":"success","msg":"not an indirection"}`
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	b, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/data.json", 1024)
+	if err != nil {
+		t.Fatalf("DownloadUpload: %v", err)
+	}
+	if string(b) != body {
+		t.Fatalf("body = %q", b)
+	}
+}
