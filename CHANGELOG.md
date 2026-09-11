@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-11
+
 ### Added
 
 - **`:fork_and_knife:` branches a message into its own topic.** A second entry
@@ -1361,7 +1363,9 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/kfet/zulip-acp/compare/v0.28.1...v0.29.0
+[0.28.1]: https://github.com/kfet/zulip-acp/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/kfet/zulip-acp/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/kfet/zulip-acp/compare/v0.26.1...v0.27.0
 [0.26.1]: https://github.com/kfet/zulip-acp/compare/v0.26.0...v0.26.1
