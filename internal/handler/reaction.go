@@ -42,13 +42,16 @@ import (
 // never supersedes a running turn — cancelling someone's answer
 // because a third party tapped an emoji would be absurd.
 //
-// # Room for a relay-side trigger
+// # The relay-side triggers
 //
-// A later feature wants a specific emoji on the relay's own last
-// message to archive the topic — a RELAY action, not an agent turn.
-// That hooks in at reactionTrigger below: it sees the resolved
-// conversation and the resolved message before anything is handed to
-// the agent, which is exactly where such a trigger belongs.
+// Two emoji are the relay's own and never reach the agent:
+// :wastebasket: on the relay's last message arms an archive
+// (archive.go), and :fork_and_knife: on any message spins that message
+// out into its own topic (branch.go). Both are RELAY actions rather
+// than agent turns — a destructive control, and a topic-creating one,
+// must not depend on the model choosing to call a tool — so both hook
+// in at reactionTrigger below, which sees the resolved conversation
+// and the resolved message before anything is handed to the agent.
 
 const (
 	// reactionExcerptRunes bounds the quoted excerpt of the
@@ -382,16 +385,16 @@ func reactionBatchPrompt(lines []string, extra int) string {
 	return sb.String()
 }
 
-// reactionTrigger is the hook for RELAY-side reaction actions — the
-// planned "react with :wastebasket: on my last message to archive the
-// topic". It runs after the conversation and the message are resolved
-// and before the agent is involved at all, and reports whether it
-// consumed the reaction.
+// reactionTrigger is the hook for RELAY-side reaction actions. It runs
+// after the conversation and the message are resolved and before the
+// agent is involved at all, and reports whether it consumed the
+// reaction.
 //
-// Nothing is wired to it in production (Config.ReactionTrigger is nil):
-// v1 delivers every resolved reaction to the agent. It exists so that
-// adding a trigger later is a change in one place rather than a
-// re-plumbing of the gate order.
+// In production main wires it to ArchiveReaction then BranchReaction.
+// It is deliberately ONE seam rather than a list: adding a further
+// trigger is a change in one place rather than a re-plumbing of the
+// gate order, and the order the consumers run in stays visible at the
+// call site instead of being buried in registration.
 func (h *Handler) reactionTrigger(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
 	if h.cfg.ReactionTrigger == nil {
 		return false

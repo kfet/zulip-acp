@@ -210,7 +210,7 @@ offer the same surface.
 | `!model` | list the models the agent reports |
 | `!model <filter>` | narrow that list |
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
-| `!branch [#**channel**] <text>` | spin `<text>` out into a new topic that can read this one |
+| `!branch [#**channel**] <text>` | spin `<text>` out into a new topic that can read this one (or react `:fork_and_knife:` on a message to spin that message out) |
 | `!new` | retire this conversation and start a fresh one |
 | `!stop` | interrupt the turn currently running here |
 | `!schedules` | list the prompts the agent has armed here (needs `relay_mcp`) |
@@ -490,6 +490,12 @@ something or plainly asks for something; and never send a "thanks!"-style
 acknowledgement. Set `"reactions": false` if you would rather a stray `:+1:`
 never cost a turn.
 
+The two **relay-side** gestures — `:wastebasket:` to archive, `:fork_and_knife:`
+to branch — ride the same path and are consumed *before* the agent is involved,
+so they never cost a turn and never reach the model. They do, however, share its
+off switch: `"reactions": false` disables them along with everything else, and
+the typed `!archive` and `!branch` remain.
+
 ### Branching a topic (`!branch`)
 
 An idea surfaces in the middle of a conversation and deserves a topic of its
@@ -503,6 +509,13 @@ own. Type, in the topic it surfaced in:
 `<text>` is the **first message** of the new topic — both the opening prompt
 and, through the same first-line heuristic `autotopic_channels` uses, the
 topic's name. The origin agent never sees the command.
+
+Or **react `:fork_and_knife:`** on any message in the topic. That branches
+*that message*: its body becomes the text above — the seed, the topic's name
+and the new session's first prompt — and the branch point is the message you
+tapped, so the branched session reads the origin up to it and no further. The
+gesture is the answer to "this deserves its own topic" when the thing that
+deserves one has already been said.
 
 What happens:
 
@@ -538,6 +551,31 @@ From a **direct message** you must name a channel. The relay will not guess
 where to publish the contents of a private conversation. The destination must
 be a channel the relay serves, and a branch that would land in the topic it was
 typed in is refused — that is not a branch.
+
+The differences of the reaction form all follow from a reaction carrying no
+text of its own:
+
+- the destination is **this channel**; there is nowhere in a reaction to name
+  another one. In a **direct message** the `:fork_and_knife:` is therefore not
+  a branch trigger at all — it is passed to the agent as an ordinary reaction,
+  and `!branch #**channel** <text>` is how you branch out of a DM;
+- the person who **reacted** is the one who branched: the seed message
+  @-mentions them and the log line names them, not whoever wrote the message
+  being spun out;
+- a second person tapping `:fork_and_knife:` on the same message does not get a
+  second topic — the relay replies with a link to the one that already exists,
+  under whatever name that topic has *now*. If it has since been retired
+  (`!new`) the next tap branches afresh;
+- the new session's first turn says who **wrote** the branched message when that
+  is not the person who tapped, so the agent is never told the reactor said
+  words they did not;
+- un-reacting does nothing. A branch has created a topic, a conversation and a
+  turn, and none of that can be taken back by removing an emoji;
+- the origin conversation is never interrupted. No turn is cancelled and no
+  claim is taken there — the pointer line is the only thing written to it — so
+  tapping mid-answer costs that answer nothing.
+
+The same `allowed_user_ids` gate that governs messages governs the gesture.
 
 If the origin's branch-point message is later deleted, or its topic moves to a
 channel the relay no longer serves, `origin: true` simply reports that the

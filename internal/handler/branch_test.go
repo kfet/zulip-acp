@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +114,14 @@ func TestSuffixTopic(t *testing.T) {
 // carries its relay note.
 func branchHarness(t *testing.T) *harness {
 	t.Helper()
+	return branchHarnessTuned(t, nil)
+}
+
+// branchHarnessTuned is branchHarness with a hook into the Config, for
+// the reaction tests below — which need reactions on and the trigger
+// seam wired.
+func branchHarnessTuned(t *testing.T, tune func(*Config)) *harness {
+	t.Helper()
 	agent := newAgent("done")
 	broker := command.New(agent)
 	var h *Handler
@@ -126,6 +136,9 @@ func branchHarness(t *testing.T) *harness {
 		c.Commands = broker
 		c.Loopback = tools
 		c.Channels = channels.New(channels.Config{Explicit: map[int64]string{4: "fleet", 5: "design"}})
+		if tune != nil {
+			tune(c)
+		}
 	})
 	h = hh.h
 	return hh
@@ -511,11 +524,11 @@ func TestBranchSeedNamesAnAnonymousSender(t *testing.T) {
 // A numeric id is worse than a name and better than a blank.
 func TestBranchPromptNamesAnUnknownOriginChannel(t *testing.T) {
 	hh := branchHarness(t)
-	p := hh.h.branchPrompt(
-		&zulipproto.Message{SenderName: "Ada"},
-		journal.Parent{Key: journal.Channel(77, "gone"), MessageID: 3},
-		"go on", "a topic",
-	)
+	p := hh.h.branchPrompt(branchPlan{
+		Actor:  &zulipproto.Message{SenderName: "Ada"},
+		Parent: journal.Parent{Key: journal.Channel(77, "gone"), MessageID: 3},
+		Text:   "go on",
+	}, "a topic")
 	if !strings.Contains(p, "#**77>gone@3**") {
 		t.Fatalf("prompt = %q", p)
 	}
@@ -766,5 +779,480 @@ func TestBranchAvoidsATopicOnlyTheJournalKnows(t *testing.T) {
 func TestBranchSeedDegradesWithoutASenderID(t *testing.T) {
 	if got := branchSeed(nil, "#fleet > \"planning\""); strings.Contains(got, "@**") {
 		t.Fatalf("seed = %q", got)
+	}
+}
+
+// --- the :fork_and_knife: reaction ---------------------------------------
+
+// branchReactHarness is branchHarness with reactions on and the
+// reaction seam wired exactly the way main wires it — archive first,
+// then branch — plus one engaged conversation in #fleet > "planning".
+//
+// The archive control is left unconfigured, so ArchiveReaction is
+// inert and every tap below reaches BranchReaction. That is the
+// production ordering, not a test convenience: the point of running
+// both is that the two consumers do not shadow each other.
+func branchReactHarness(t *testing.T) *harness {
+	t.Helper()
+	hh := branchHarnessTuned(t, func(c *Config) {
+		c.Reactions = true
+		c.AckEmoji = "eyes"
+	})
+	hh.h.cfg.ReactionTrigger = func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
+		return hh.h.ArchiveReaction(ctx, conv, ev, m) || hh.h.BranchReaction(ctx, conv, ev, m)
+	}
+	hh.deliver(t, "planning", mention("hi"))
+	return hh
+}
+
+// plant registers a message with the fake server without posting it,
+// so a reaction on it resolves the way one on a human's message does:
+// not in the relay's own index, so convForReaction reads it back and
+// hands BranchReaction the body it needs.
+func (hh *harness) plant(topic, content string, sender int64, name string) int64 {
+	hh.z.mu.Lock()
+	defer hh.z.mu.Unlock()
+	hh.z.next++
+	id := hh.z.next
+	hh.z.messages[id] = zulipproto.Message{
+		ID: id, SenderID: sender, SenderName: name, Content: content,
+		StreamID: 4, Topic: topic, Type: zulipproto.MessageTypeStream,
+	}
+	return id
+}
+
+// fork feeds one :fork_and_knife: and waits for whatever turn it
+// started. BranchReaction itself is synchronous on the event loop; only
+// the branched turn is not.
+func (hh *harness) fork(t *testing.T, user, msgID int64) {
+	t.Helper()
+	hh.h.Handle(context.Background(), reactionEvent(user, msgID, branchEmoji, zulipproto.ReactionAdd))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("branched turn did not finish: %v", err)
+	}
+}
+
+// inflightOf reads the turn currently claimed for a conversation. Used
+// to prove, by pointer identity, that a branch did not supersede it.
+func (hh *harness) inflightOf(convID string) *inflightEntry {
+	hh.h.inflightMu.Lock()
+	defer hh.h.inflightMu.Unlock()
+	return hh.h.inflight[convID]
+}
+
+// TestBranchReactionSpinsTheMessageOut is the whole gesture: tapping
+// :fork_and_knife: on a message opens a topic named after THAT
+// message, seeded and prompted with its body, pointing back at the
+// message it was spun out of.
+func TestBranchReactionSpinsTheMessageOut(t *testing.T) {
+	hh := branchReactHarness(t)
+	origin, ok := hh.j.Lookup(journal.Channel(4, "planning"))
+	if !ok {
+		t.Fatal("no origin conversation")
+	}
+	// Sent by somebody else entirely: the branching user is the
+	// REACTOR, and this is what tells the two apart.
+	id := hh.plant("planning", "rework the rollover splitter\nit keeps sealing early", 99, "Grace Hopper")
+
+	hh.fork(t, humanID, id)
+
+	conv, ok := hh.j.Lookup(journal.Channel(4, "rework the rollover splitter"))
+	if !ok {
+		t.Fatalf("no branched topic; journal = %+v", hh.j.Convs())
+	}
+	if conv.Parent == nil {
+		t.Fatal("the branched conversation has no origin")
+	}
+	// Anchored AND clamped at the reacted-to message, not at "now".
+	if p := *conv.Parent; p.Key.StreamID != 4 || p.Key.Topic != "planning" || p.MessageID != id {
+		t.Fatalf("origin = %+v, want the reacted-to message %d in #fleet > planning", p, id)
+	}
+	if conv.ID == origin.ID {
+		t.Fatal("the branch reused the origin conversation")
+	}
+
+	// The seed mentions the reactor, never the message's author.
+	var seed string
+	for _, b := range hh.z.stored() {
+		if strings.Contains(b, "branched this out of") {
+			seed = b
+		}
+	}
+	if !strings.Contains(seed, "@**Ada Lovelace|8**") {
+		t.Fatalf("seed = %q, want an @-mention of the reactor", seed)
+	}
+	if strings.Contains(seed, "Grace Hopper") {
+		t.Fatalf("seed = %q, want the REACTOR named, not the message's sender", seed)
+	}
+
+	// The pointer line goes into the origin topic, and it is the only
+	// thing the origin conversation is told.
+	var pointer bool
+	for _, b := range hh.z.stored() {
+		if strings.Contains(b, "branched → #**fleet>rework the rollover splitter**") {
+			pointer = true
+		}
+	}
+	if !pointer {
+		t.Fatalf("no pointer line in the origin; posted %q", hh.z.stored())
+	}
+
+	// The message's body is the new session's first prompt, attributed
+	// to the reactor and carrying the clamped back-link.
+	prompt := hh.lastPrompt()
+	if !strings.Contains(prompt, "[Ada Lovelace] [branched from #**fleet>planning@"+fmt.Sprint(id)+"**]") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	if !strings.Contains(prompt, "it keeps sealing early") {
+		t.Fatalf("prompt does not carry the reacted-to message: %q", prompt)
+	}
+
+	// The ack reaction lands on the message the user tapped — that is
+	// where they are looking.
+	added, _ := hh.z.reactions()
+	if !slices.Contains(added, fmt.Sprintf("%d:eyes", id)) {
+		t.Fatalf("ack reactions = %v, want one on message %d", added, id)
+	}
+	if !hh.logged(`branched #fleet > "planning" (:fork_and_knife: on message`) {
+		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+// TestBranchReactionOnTheRelaysOwnMessage covers the other resolution
+// tier: a reaction on a message the relay itself posted resolves out of
+// its own index, so convForReaction hands over no message and the body
+// has to be read back with one GET.
+func TestBranchReactionOnTheRelaysOwnMessage(t *testing.T) {
+	hh := branchReactHarness(t)
+	own := hh.z.lastID()
+
+	hh.fork(t, humanID, own)
+
+	// The relay's answer was "done", so that is what the topic is
+	// called and what the branched session is prompted with.
+	conv, ok := hh.j.Lookup(journal.Channel(4, "done"))
+	if !ok {
+		t.Fatalf("no branched topic; journal = %+v", hh.j.Convs())
+	}
+	if conv.Parent == nil || conv.Parent.MessageID != own {
+		t.Fatalf("origin = %+v, want message %d", conv.Parent, own)
+	}
+}
+
+// TestBranchReactionGatesFallThrough: every case the gesture must NOT
+// claim stays ordinary reaction signal and reaches the agent. That is
+// the difference between "not a branch trigger" and "swallowed".
+func TestBranchReactionGatesFallThrough(t *testing.T) {
+	for name, ev := range map[string]func(own int64) zulipproto.Event{
+		"another emoji": func(own int64) zulipproto.Event {
+			return reactionEvent(humanID, own, "+1", zulipproto.ReactionAdd)
+		},
+		"un-reacting never un-branches": func(own int64) zulipproto.Event {
+			return reactionEvent(humanID, own, branchEmoji, zulipproto.ReactionRemove)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hh := branchReactHarness(t)
+			before := len(hh.j.Convs())
+			hh.react(t, ev(hh.z.lastID()))
+			if got := len(hh.j.Convs()); got != before {
+				t.Fatalf("conversations %d → %d: something was branched", before, got)
+			}
+			if !strings.HasPrefix(hh.lastPrompt(), "[reaction]") {
+				t.Fatalf("the reaction did not reach the agent: %q", hh.lastPrompt())
+			}
+		})
+	}
+}
+
+// TestBranchReactionInADMFallsThrough: a reaction cannot name a
+// destination channel and a DM is in none, so the gesture is not a
+// branch trigger there at all — it is passed to the agent untouched,
+// and `!branch #**channel** <text>` is how you branch out of a DM.
+func TestBranchReactionInADMFallsThrough(t *testing.T) {
+	hh := dmHarness(t, newAgent("done"), func(c *Config) {
+		c.Reactions = true
+	})
+	hh.h.cfg.ReactionTrigger = hh.h.BranchReaction
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	own := hh.z.lastID()
+
+	hh.react(t, reactionEvent(humanID, own, branchEmoji, zulipproto.ReactionAdd))
+
+	for _, c := range hh.j.Convs() {
+		if !c.IsDM() {
+			t.Fatalf("a DM reaction created %+v", c)
+		}
+	}
+	if !strings.Contains(hh.lastPrompt(), branchEmoji) {
+		t.Fatalf("the reaction did not reach the agent: %q", hh.lastPrompt())
+	}
+}
+
+// TestBranchReactionFromABotIsIgnored: BotSenderIDs is a startup
+// snapshot, so a bot that appeared since is caught only by the name
+// lookup — and it must not be able to create topics.
+func TestBranchReactionFromABotIsIgnored(t *testing.T) {
+	hh := branchReactHarness(t)
+	hh.z.mu.Lock()
+	hh.z.users[77] = zulipproto.User{UserID: 77, FullName: "Nagios", IsBot: true}
+	hh.z.mu.Unlock()
+	before := len(hh.j.Convs())
+
+	hh.reactDropped(t, reactionEvent(77, hh.z.lastID(), branchEmoji, zulipproto.ReactionAdd))
+
+	if got := len(hh.j.Convs()); got != before {
+		t.Fatalf("a bot branched a topic: %d → %d", before, got)
+	}
+}
+
+// TestBranchReactionBranchesAMessageOnce: two people reading the same
+// message will tap the same emoji on it. The second tap must link the
+// topic that exists, not open "… (2)" beside it.
+func TestBranchReactionBranchesAMessageOnce(t *testing.T) {
+	hh := branchReactHarness(t)
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+	hh.fork(t, humanID, id)
+	after := len(hh.j.Convs())
+
+	hh.fork(t, humanID, id)
+
+	if got := len(hh.j.Convs()); got != after {
+		t.Fatalf("a second tap opened another conversation: %d → %d", after, got)
+	}
+	if !strings.Contains(hh.z.lastBody(), "already been branched → #**fleet>rework the splitter**") {
+		t.Fatalf("second tap said %q", hh.z.lastBody())
+	}
+}
+
+// TestBranchReactionRememberedPerConversation: the memory is keyed on
+// (conversation, message), so `!new` — which retires the conversation
+// and mints a fresh one for the same topic — does not leave the old
+// one's branch refusing the new one's.
+func TestBranchReactionRememberedPerConversation(t *testing.T) {
+	hh := branchReactHarness(t)
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+	hh.fork(t, humanID, id)
+	hh.deliver(t, "planning", "!new")
+
+	hh.fork(t, humanID, id)
+
+	if _, ok := hh.j.Lookup(journal.Channel(4, "rework the splitter (2)")); !ok {
+		t.Fatalf("the fresh conversation could not branch the same message; journal = %+v", hh.j.Convs())
+	}
+}
+
+// TestBranchReactionLeavesTheOriginTurnRunning is the property the
+// whole design rests on: a branch happens entirely in the NEW
+// conversation. The origin's turn is not superseded, its claim is not
+// taken, and the pointer line is the only thing written to it.
+func TestBranchReactionLeavesTheOriginTurnRunning(t *testing.T) {
+	hh := branchReactHarness(t)
+	origin, ok := hh.j.Lookup(journal.Channel(4, "planning"))
+	if !ok {
+		t.Fatal("no origin conversation")
+	}
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+
+	// The tap is delivered from INSIDE the origin's next turn, which
+	// is the only way to be sure the turn really is in flight when it
+	// lands. sync.Once keeps the branched turn's own Prompt from
+	// re-entering this.
+	var once sync.Once
+	var before, after *inflightEntry
+	hh.a.mu.Lock()
+	hh.a.during = func() {
+		once.Do(func() {
+			before = hh.inflightOf(origin.ID)
+			hh.h.Handle(context.Background(), reactionEvent(humanID, id, branchEmoji, zulipproto.ReactionAdd))
+			after = hh.inflightOf(origin.ID)
+		})
+	}
+	hh.a.mu.Unlock()
+
+	hh.deliver(t, "planning", mention("carry on"))
+
+	if before == nil {
+		t.Fatal("the origin turn held no claim to begin with")
+	}
+	if after != before {
+		t.Fatalf("the branch disturbed the origin's turn: claim %p → %p", before, after)
+	}
+	if _, ok := hh.j.Lookup(journal.Channel(4, "rework the splitter")); !ok {
+		t.Fatalf("nothing was branched; journal = %+v", hh.j.Convs())
+	}
+	// And the undisturbed turn delivered its answer, in the ORIGIN
+	// topic — the branched turn answers "done" too, in its own.
+	var answered bool
+	hh.z.mu.Lock()
+	for id, b := range hh.z.bodies {
+		if strings.Contains(b, "done") && hh.z.topics[id] == "planning" {
+			answered = true
+		}
+	}
+	hh.z.mu.Unlock()
+	if !answered {
+		t.Fatalf("the origin turn lost its answer; posted %q", hh.z.stored())
+	}
+}
+
+// TestBranchReactionRefusals covers every way a tap is consumed but
+// creates nothing. Each says why in the origin topic, because a
+// gesture that silently does nothing is indistinguishable from a bug.
+func TestBranchReactionRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(t *testing.T, hh *harness) int64
+		errSub string
+	}{
+		{
+			name: "a message with no text to branch",
+			setup: func(_ *testing.T, hh *harness) int64 {
+				return hh.plant("planning", "   \n ", 99, "Grace Hopper")
+			},
+			errSub: "no text in that message to branch",
+		},
+		{
+			name: "the message cannot be read back",
+			setup: func(_ *testing.T, hh *harness) int64 {
+				own := hh.z.lastID()
+				hh.z.mu.Lock()
+				hh.z.getErr = errors.New("boom")
+				hh.z.mu.Unlock()
+				return own
+			},
+			errSub: "could not read that message back",
+		},
+		{
+			// A refusal from the SHARED half: the tap is still
+			// consumed, and nothing is remembered, so tapping again
+			// once the channel answers is a real retry.
+			name: "the destination's topics cannot be listed",
+			setup: func(_ *testing.T, hh *harness) int64 {
+				id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+				hh.z.mu.Lock()
+				hh.z.topicsErr = errors.New("boom")
+				hh.z.mu.Unlock()
+				return id
+			},
+			errSub: "could not check which topics are already in that channel",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hh := branchReactHarness(t)
+			before := len(hh.j.Convs())
+			id := tc.setup(t, hh)
+
+			hh.fork(t, humanID, id)
+
+			if got := len(hh.j.Convs()); got != before {
+				t.Fatalf("conversations %d → %d: something was created", before, got)
+			}
+			if !strings.Contains(hh.z.lastBody(), tc.errSub) {
+				t.Fatalf("reply = %q, want one mentioning %q", hh.z.lastBody(), tc.errSub)
+			}
+			// Consumed: a refusal plus an ambient "someone reacted"
+			// would be noise on top of an answer.
+			if strings.HasPrefix(hh.lastPrompt(), "[reaction]") {
+				t.Fatalf("the refused reaction also reached the agent: %q", hh.lastPrompt())
+			}
+		})
+	}
+}
+
+// TestBranchReactionUnservedChannel drives the one refusal
+// handleReaction's own gates make unreachable: BranchReaction is called
+// directly with a conversation in a channel the relay does not serve,
+// which is what a subscription lost between the two checks would look
+// like.
+func TestBranchReactionUnservedChannel(t *testing.T) {
+	hh := branchReactHarness(t)
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+	conv := journal.Conv{ID: "c-gone", Key: journal.Channel(404, "elsewhere")}
+
+	if !hh.h.BranchReaction(context.Background(), conv, reactionEvent(humanID, id, branchEmoji, zulipproto.ReactionAdd), nil) {
+		t.Fatal("the reaction was not consumed")
+	}
+	if !strings.Contains(hh.z.lastBody(), "no longer serve this channel") {
+		t.Fatalf("reply = %q", hh.z.lastBody())
+	}
+}
+
+// TestBranchReactionAttributesTheTextToItsAuthor: the prompt's `[name]`
+// prefix is the person branching, but the text is somebody else's. The
+// agent must be told, because `allowed_user_ids` decides whose words
+// reach it — and one allowlisted tap can spin in a message from
+// somebody it would never have delivered.
+func TestBranchReactionAttributesTheTextToItsAuthor(t *testing.T) {
+	t.Run("somebody else's message", func(t *testing.T) {
+		hh := branchReactHarness(t)
+		id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+		hh.fork(t, humanID, id)
+		if !strings.Contains(hh.lastPrompt(), "written by Grace Hopper, not by Ada Lovelace") {
+			t.Fatalf("prompt = %q", hh.lastPrompt())
+		}
+	})
+	t.Run("the agent's own message", func(t *testing.T) {
+		hh := branchReactHarness(t)
+		hh.fork(t, humanID, hh.z.lastID())
+		if !strings.Contains(hh.lastPrompt(), "an earlier message of your own") {
+			t.Fatalf("prompt = %q", hh.lastPrompt())
+		}
+	})
+	t.Run("the reactor's own message carries no clause", func(t *testing.T) {
+		hh := branchReactHarness(t)
+		id := hh.plant("planning", "rework the splitter", humanID, "Ada Lovelace")
+		hh.fork(t, humanID, id)
+		if strings.Contains(hh.lastPrompt(), "written by") {
+			t.Fatalf("prompt = %q, want no attribution clause", hh.lastPrompt())
+		}
+	})
+}
+
+// TestBranchReactionDedupFollowsARename: the branched agent is told to
+// rename its topic as soon as it knows what the conversation is about,
+// so a link captured at branch time is stale almost immediately. The
+// memory stores the conv-id and resolves the location from it.
+func TestBranchReactionDedupFollowsARename(t *testing.T) {
+	hh := branchReactHarness(t)
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+	hh.fork(t, humanID, id)
+	// A rename as Zulip delivers one: the topic moves, and
+	// handleUpdate migrates the conversation with it.
+	hh.h.Handle(context.Background(), zulipproto.Event{
+		Type: zulipproto.EventUpdateMessage, StreamID: 4,
+		OrigTopic: "rework the splitter", Topic: "splitter rework",
+	})
+
+	hh.fork(t, humanID, id)
+
+	if !strings.Contains(hh.z.lastBody(), "already been branched → #**fleet>splitter rework**") {
+		t.Fatalf("second tap said %q, want the topic's CURRENT name", hh.z.lastBody())
+	}
+}
+
+// TestBranchReactionDedupForgetsARetiredBranch: `!new` in the branched
+// topic retires the conversation the memory points at. There is then
+// no live conversation to point anyone at, so a fresh tap is a fresh
+// branch rather than a link to nothing.
+func TestBranchReactionDedupForgetsARetiredBranch(t *testing.T) {
+	hh := branchReactHarness(t)
+	id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
+	hh.fork(t, humanID, id)
+	if _, _, _, err := hh.j.Retire(journal.Channel(4, "rework the splitter")); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	hh.fork(t, humanID, id)
+
+	// Retire mints a fresh conversation for the same key, so the
+	// original topic name is taken and the re-branch lands beside it.
+	if _, ok := hh.j.Lookup(journal.Channel(4, "rework the splitter (2)")); !ok {
+		t.Fatalf("nothing was re-branched; journal = %+v", hh.j.Convs())
+	}
+	if strings.Contains(hh.z.lastBody(), "already been branched") {
+		t.Fatalf("the tap was refused by a retired branch: %q", hh.z.lastBody())
 	}
 }
