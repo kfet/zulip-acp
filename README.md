@@ -136,6 +136,12 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   plan arrive mid-turn, so only the end of the answer can carry the final
   snapshot. The same line animates the live `Thinking…` placeholder. Turns that
   produce no output, and turns that fail, are not signed.
+- **A streaming answer says so.** While the turn is still running the message
+  ends in a `*(…)*` marker, dropped at the end of the turn where the signature
+  takes its place. The last line is therefore always a statement about the
+  turn — still going, or signed off — so a half-written answer never reads as a
+  finished one that stops mid-sentence. It costs no extra API calls: the marker
+  rides out on the streaming edits that were happening anyway.
 - **Restarts** are safe. An interrupted turn is marked
   `*(relay restarted — turn interrupted)*`, and the next message in the topic
   picks the session back up.

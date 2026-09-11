@@ -154,6 +154,15 @@ type Splitter struct {
 	// sealedEnd — i.e. the state the current tail starts in.
 	sealedFence fence
 	msgs        []*message
+	// liveSuffix is transient decoration on the TAIL message only: a
+	// marker saying "this answer is still being written". It is not
+	// part of the transcript, never reaches a sealed message, and is
+	// dropped by Close. See SetLiveSuffix.
+	liveSuffix string
+	// closed is set by Close. It makes SetLiveSuffix a no-op, so a
+	// late spinner frame can never re-add the marker to a finished
+	// answer.
+	closed bool
 	// seeded records that the first message was CREATED as a
 	// placeholder by Start, i.e. that it was born carrying no answer.
 	// Repost keys off it: a chain whose first message was created with
@@ -246,6 +255,38 @@ func (s *Splitter) Append(delta string) {
 	s.replan()
 }
 
+// SetLiveSuffix sets (or with "" clears) a transient marker appended
+// to the TAIL message while the turn is still running — the surface's
+// "still writing" indicator, e.g. "\n\n*(…)*".
+//
+// Properties that make it safe to leave armed for a whole turn:
+//
+//   - it is NOT transcript. RawSlices/Transcript are untouched, so the
+//     prefix invariant holds and a caller appending real text later
+//     simply pushes the marker further down;
+//   - it only ever decorates the tail, and only once the tail carries
+//     real text — a marker on an empty chain would fight the animated
+//     placeholder, and one on a bare continuation prefix would post a
+//     message with no content in it;
+//   - it is dropped by Close, so the final body — the one the
+//     end-of-turn repost copies — never carries it;
+//   - it costs no extra I/O by itself: the marker rides out on the
+//     next flush that was going to happen anyway. It does mark the
+//     tail dirty, so a caller that arms it mid-turn gets at most one
+//     edit out of it.
+//
+// A marker that would push the tail past Budget is silently dropped:
+// an indicator is never worth truncating an answer for.
+func (s *Splitter) SetLiveSuffix(suffix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.liveSuffix == suffix {
+		return
+	}
+	s.liveSuffix = suffix
+	s.replan()
+}
+
 // Pending reports whether any message's desired payload differs from
 // what the Poster has been told. Lets a caller skip a no-op Flush.
 func (s *Splitter) Pending() bool {
@@ -314,10 +355,12 @@ func (s *Splitter) Close(ctx context.Context, suffix string) error {
 	s.ioMu.Lock()
 	defer s.ioMu.Unlock()
 	s.mu.Lock()
+	s.closed = true
+	s.liveSuffix = ""
 	if strings.TrimSpace(s.raw) == "" {
 		s.raw = s.cfg.EmptyBody
-		s.replan()
 	}
+	s.replan()
 	s.mu.Unlock()
 	return s.flushLocked(ctx)
 }
@@ -531,7 +574,31 @@ func (s *Splitter) replan() {
 	}
 	t := s.tail()
 	t.raw = s.raw[s.sealedEnd:]
-	t.body = s.prefix() + t.raw
+	t.body = s.prefix() + t.raw + s.liveTail(t.raw)
+}
+
+// liveTail renders the live marker for the current tail, or "" when it
+// does not apply. Called with s.mu held.
+//
+// The marker is suppressed on a tail with no text of its own (nothing
+// to annotate yet) and when it would not fit the budget. When the raw
+// tail ends inside an open fenced block the marker is preceded by a
+// closing fence, exactly as a seal would do it — otherwise the
+// indicator would render as literal text inside the agent's code
+// block. The synthetic fence is decoration only and never feeds back
+// into sealedFence.
+func (s *Splitter) liveTail(raw string) string {
+	if s.liveSuffix == "" || strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	suffix := s.liveSuffix
+	if scanFence(s.sealedFence, raw).open {
+		suffix = "\n```" + suffix
+	}
+	if runes(s.prefix())+runes(raw)+runes(suffix) > s.cfg.Budget {
+		return ""
+	}
+	return suffix
 }
 
 // prefix is the decoration that opens the current tail message: the

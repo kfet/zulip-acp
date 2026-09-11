@@ -75,3 +75,13 @@ func TestWireContractReExports(t *testing.T) {
 		t.Fatalf("ShortModelName = %q", got)
 	}
 }
+
+// TestLive pins the streaming marker's shape: a blank line (so Zulip
+// does not fold it into the answer's last paragraph) then an italic
+// ellipsis, and nothing status-dependent — it says "still going", not
+// "who is going".
+func TestLive(t *testing.T) {
+	if got, want := Live(), "\n\n*(…)*"; got != want {
+		t.Fatalf("Live() = %q, want %q", got, want)
+	}
+}

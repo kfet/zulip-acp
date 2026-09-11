@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-progress marker on a streaming answer.** While a turn is running the tail
+  message ends in an italic `*(…)*`; it is dropped by `Close`, where the status
+  footer takes its place. The last line of a message is then always a statement
+  about the turn — still going, or signed off — instead of a half-written answer
+  that reads like a finished one cut mid-sentence.
+  - `rollover.Splitter.SetLiveSuffix` carries it: transient decoration on the
+    tail only, never part of the transcript, never on a sealed message, dropped
+    by `Close` (so the end-of-turn repost cannot immortalise it), suppressed on
+    a tail with no text of its own and when it would not fit the budget, and
+    preceded by a closing fence when the tail ends inside an open code block.
+  - Costs no extra API calls of its own: the marker rides out on the streaming
+    edits already happening. Quiet mode (`stream_edits: false`) is unaffected.
+
 ## [0.28.1] - 2026-09-09
 
 ### Fixed

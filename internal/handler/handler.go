@@ -1051,6 +1051,13 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	blocks := append([]acp.ContentBlock{acp.TextBlock(text + note)}, extra...)
 
 	if !h.cfg.BatchEdits {
+		// Arm the "still writing" marker for the whole turn. It costs
+		// nothing until the first chunk lands and is dropped by
+		// split.Close, where the status footer takes its place — so
+		// the tail message always ends in either "(…)" or the
+		// signature, and a reader on a phone can tell a turn that is
+		// still going from one that stopped mid-sentence.
+		split.SetLiveSuffix(statusline.Live())
 		go watchdog(wctx, split, h.cfg.EditInterval, func() { h.trackTail(conv.ID, split) })
 	}
 
