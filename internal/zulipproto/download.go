@@ -2,9 +2,11 @@ package zulipproto
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -37,9 +39,16 @@ var ErrUploadTooLarge = errors.New("zulip: upload exceeds the size cap")
 //     the path is appended to the API base like any other call. The
 //     realm-root spelling of the same path is a browser/session
 //     surface and is NOT part of the API.
-//   - The response is RAW BYTES, not a JSON envelope, so this cannot
-//     go through send: there is no {"result": "success"} to inspect
-//     and the status code is the only signal.
+//   - The response is usually RAW BYTES, not a JSON envelope, so this
+//     cannot go through send: there is normally no {"result":
+//     "success"} to inspect and the status code is the only signal.
+//     But NOT always: on some deployments the same endpoint answers
+//     with Zulip's temporary-URL envelope
+//     ({"result":"success","url":"/user_uploads/temporary/…"})
+//     instead of the file, and the bytes are only at that second URL.
+//     Writing the envelope to disk as if it were the file is the bug
+//     this indirection exists to avoid, so it is followed once,
+//     unauthenticated (the token in the path IS the credential).
 //   - With S3 storage the endpoint answers 302 to a signed URL on
 //     another host. Go's http.Client follows it and strips the
 //     Authorization header across hosts, which is exactly right — the
@@ -50,13 +59,38 @@ func (c *Client) DownloadUpload(ctx context.Context, uploadPath string, max int6
 	if !ok {
 		return nil, "", fmt.Errorf("zulip: %q is not a %s path", uploadPath, UploadPrefix)
 	}
-	req, err := c.newRequest(ctx, http.MethodGet, UploadPrefix+rest, nil, nil)
+	b, ct, err := c.fetchUpload(ctx, c.base+UploadPrefix+rest, true, uploadPath, max)
 	if err != nil {
 		return nil, "", err
 	}
+	// Follow the temporary-URL indirection at most once: the second
+	// hop serves the file itself and never another envelope.
+	if tmp, ok := temporaryUploadURL(b, ct); ok {
+		abs, err := c.realmURL(tmp)
+		if err != nil {
+			return nil, "", err
+		}
+		return c.fetchUpload(ctx, abs, false, uploadPath, max)
+	}
+	return b, ct, nil
+}
+
+// fetchUpload GETs one URL and returns its bytes under the same cap
+// rules as DownloadUpload. auth decides whether the bot's credentials
+// go along: they must for the API endpoint, and must NOT for a
+// temporary URL, whose one-shot token is itself the credential.
+// what is the original upload path, used only in error text.
+func (c *Client) fetchUpload(ctx context.Context, rawURL string, auth bool, what string, max int64) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("zulip: build request: %w", err)
+	}
+	if auth {
+		req.SetBasicAuth(c.email, c.apiKey)
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("zulip: GET %s: %w", uploadPath, err)
+		return nil, "", fmt.Errorf("zulip: GET %s: %w", what, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -68,12 +102,52 @@ func (c *Client) DownloadUpload(ctx context.Context, uploadPath string, max int6
 	}
 	b, err := io.ReadAll(r)
 	if err != nil {
-		return nil, "", fmt.Errorf("zulip: read %s: %w", uploadPath, err)
+		return nil, "", fmt.Errorf("zulip: read %s: %w", what, err)
 	}
 	if max > 0 && int64(len(b)) > max {
-		return nil, "", fmt.Errorf("%w: %s is over %d bytes", ErrUploadTooLarge, uploadPath, max)
+		return nil, "", fmt.Errorf("%w: %s is over %d bytes", ErrUploadTooLarge, what, max)
 	}
 	return b, resp.Header.Get("Content-Type"), nil
+}
+
+// realmURL resolves a realm-relative path (or an absolute URL) against
+// the realm root — the API base with its /api/v1 suffix removed.
+func (c *Client) realmURL(ref string) (string, error) {
+	root, err := url.Parse(strings.TrimSuffix(c.base, "/api/v1") + "/")
+	if err != nil {
+		return "", fmt.Errorf("zulip: parse realm root: %w", err)
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return "", fmt.Errorf("zulip: parse %q: %w", ref, err)
+	}
+	return root.ResolveReference(u).String(), nil
+}
+
+// temporaryUploadURL reports whether a download response is Zulip's
+// temporary-URL envelope rather than the file, returning the URL the
+// bytes actually live at.
+//
+// The test is deliberately narrow — JSON content type, a successful
+// envelope, and a url that is itself an upload path — because a user
+// may legitimately upload a .json file, and that file must never be
+// mistaken for an indirection.
+func temporaryUploadURL(body []byte, contentType string) (string, bool) {
+	mt, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mt != "application/json" {
+		return "", false
+	}
+	var env struct {
+		Result string `json:"result"`
+		URL    string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return "", false
+	}
+	if env.Result != "success" || !strings.Contains(env.URL, UploadPrefix) {
+		return "", false
+	}
+	return env.URL, true
 }
 
 // UploadRest splits the part of an upload path that follows
