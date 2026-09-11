@@ -3,6 +3,7 @@ package zulipproto
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,9 +48,10 @@ func TestDownloadUpload(t *testing.T) {
 	if ct != "image/jpeg" {
 		t.Fatalf("content type = %q", ct)
 	}
-	// The authenticated endpoint is under the API base, and the
-	// filename's original encoding is passed through untouched.
-	if gotPath != "/api/v1/user_uploads/2/ab/HASH/holiday%20snap.jpg" {
+	// The download is the REALM-ROOT path (the /api/v1 spelling is
+	// the temporary-URL endpoint, not the file), and the filename's
+	// original encoding is passed through untouched.
+	if gotPath != "/user_uploads/2/ab/HASH/holiday%20snap.jpg" {
 		t.Fatalf("path = %q", gotPath)
 	}
 	if gotUser != "bot@example.com" || gotPass != "key" {
@@ -206,11 +208,11 @@ func TestUploadName(t *testing.T) {
 	}
 }
 
-// TestDownloadUploadTemporaryURL pins the indirection some deployments
-// answer with: the API endpoint returns a temporary-URL envelope, and
-// the file is only at that second, unauthenticated URL. Writing the
-// envelope to disk instead of the file is the bug this guards.
-func TestDownloadUploadTemporaryURL(t *testing.T) {
+// TestDownloadUploadTemporaryURLFallback pins the fallback: when the
+// direct download does not yield a file, the documented
+// "get public temporary URL" endpoint under /api/v1 is asked, and the
+// URL it returns is fetched immediately and WITHOUT credentials.
+func TestDownloadUploadTemporaryURLFallback(t *testing.T) {
 	var hops []string
 	var tmpAuthed bool
 	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -219,10 +221,14 @@ func TestDownloadUploadTemporaryURL(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/user_uploads/"):
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			_, _ = w.Write([]byte(`{"result":"success","msg":"","url":"/user_uploads/temporary/tok/report.pdf"}`))
-		default:
+		case strings.HasPrefix(r.URL.Path, "/user_uploads/temporary/"):
 			_, _, tmpAuthed = r.BasicAuth()
 			w.Header().Set("Content-Type", "application/pdf")
 			_, _ = w.Write([]byte("%PDF-1.7"))
+		default:
+			// A proxy that answers the direct download with a page.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<html>log in</html>"))
 		}
 	})
 	c := rawClient(t, srv)
@@ -231,19 +237,89 @@ func TestDownloadUploadTemporaryURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadUpload: %v", err)
 	}
-	if string(b) != "%PDF-1.7" {
-		t.Fatalf("body = %q", b)
+	if string(b) != "%PDF-1.7" || ct != "application/pdf" {
+		t.Fatalf("body = %q, ct = %q", b, ct)
 	}
-	if ct != "application/pdf" {
-		t.Fatalf("content type = %q", ct)
+	want := []string{
+		"/user_uploads/2/ab/HASH/report.pdf",
+		"/api/v1/user_uploads/2/ab/HASH/report.pdf",
+		"/user_uploads/temporary/tok/report.pdf",
 	}
-	if len(hops) != 2 || hops[1] != "/user_uploads/temporary/tok/report.pdf" {
-		t.Fatalf("hops = %q", hops)
+	if len(hops) != 3 || hops[0] != want[0] || hops[1] != want[1] || hops[2] != want[2] {
+		t.Fatalf("hops = %q, want %q", hops, want)
 	}
-	// The token is the credential on the second hop; the bot's API key
+	// The token is the credential on the last hop; the bot's API key
 	// must not travel with it.
 	if tmpAuthed {
 		t.Fatal("temporary URL fetched with the bot's credentials")
+	}
+}
+
+// TestDownloadUploadRefusesLoginRedirect pins the failure mode that
+// started all this: an unauthorised upload request is answered with a
+// redirect to the login page, and following it would save an HTML
+// page under the attachment's name.
+func TestDownloadUploadRefusesLoginRedirect(t *testing.T) {
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/accounts/login") {
+			t.Error("login page must not be fetched")
+			return
+		}
+		http.Redirect(w, r, "/accounts/login/?next="+r.URL.Path, http.StatusFound)
+	})
+	_, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.pdf", 1024)
+	if err == nil || !strings.Contains(err.Error(), "not authorized") {
+		t.Fatalf("err = %v, want a refused login redirect", err)
+	}
+}
+
+// TestDownloadUploadNeitherEndpointServesAFile pins the honest
+// failure: the direct download returns a page and the fallback does
+// not hand back a temporary URL either, so nothing is written.
+func TestDownloadUploadNeitherEndpointServesAFile(t *testing.T) {
+	srv := rawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>nope</html>"))
+	})
+	_, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.pdf", 1024)
+	if err == nil || !strings.Contains(err.Error(), "not the file") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestDownloadUploadReportsDirectError pins that when the direct
+// download failed outright and the fallback is not an indirection
+// either, the caller hears about the FIRST, more meaningful failure.
+func TestDownloadUploadReportsDirectError(t *testing.T) {
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"result":"success","msg":"no url here"}`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+	_, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.pdf", 1024)
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != http.StatusForbidden {
+		t.Fatalf("err = %v, want the 403 from the direct download", err)
+	}
+}
+
+// TestDownloadUploadTooLargeSkipsFallback pins that the size cap is an
+// answer about the file, not a reason to try the other endpoint.
+func TestDownloadUploadTooLargeSkipsFallback(t *testing.T) {
+	var hops int
+	srv := rawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		hops++
+		_, _ = w.Write([]byte("0123456789"))
+	})
+	_, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.bin", 3)
+	if !errors.Is(err, ErrUploadTooLarge) {
+		t.Fatalf("err = %v", err)
+	}
+	if hops != 1 {
+		t.Fatalf("hops = %d, want 1", hops)
 	}
 }
 
@@ -303,5 +379,40 @@ func TestRealmURL(t *testing.T) {
 	}
 	if got := c.realmURL("https://s3.example.com/x?sig=1"); got != "https://s3.example.com/x?sig=1" {
 		t.Fatalf("absolute = %q", got)
+	}
+}
+
+// TestDownloadUploadFollowsBenignRedirect pins that the redirect
+// policy only blocks the login page: an S3 deployment in dev mode
+// answers 302 to a signed URL, and that hop must be followed.
+func TestDownloadUploadFollowsBenignRedirect(t *testing.T) {
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/signed/") {
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write([]byte("%PDF-1.4"))
+			return
+		}
+		http.Redirect(w, r, "/signed/blob?sig=abc", http.StatusFound)
+	})
+	b, ct, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.pdf", 1024)
+	if err != nil {
+		t.Fatalf("DownloadUpload: %v", err)
+	}
+	if string(b) != "%PDF-1.4" || ct != "application/pdf" {
+		t.Fatalf("body = %q, ct = %q", b, ct)
+	}
+}
+
+// TestDownloadUploadRedirectLoop pins the hop ceiling: a server that
+// redirects forever must end the attempt, not hang it.
+func TestDownloadUploadRedirectLoop(t *testing.T) {
+	n := 0
+	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n++
+		http.Redirect(w, r, fmt.Sprintf("/hop/%d", n), http.StatusFound)
+	})
+	_, _, err := rawClient(t, srv).DownloadUpload(context.Background(), "/user_uploads/2/ab/HASH/x.pdf", 1024)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("err = %v", err)
 	}
 }
