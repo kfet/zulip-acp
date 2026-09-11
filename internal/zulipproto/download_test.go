@@ -264,3 +264,44 @@ func TestDownloadUploadJSONFile(t *testing.T) {
 		t.Fatalf("body = %q", b)
 	}
 }
+
+// TestTemporaryUploadURL pins what is and is not an indirection: only
+// a JSON success envelope whose url is itself an upload path.
+func TestTemporaryUploadURL(t *testing.T) {
+	const env = `{"result":"success","url":"/user_uploads/temporary/tok/a.pdf"}`
+	cases := []struct {
+		name, body, ctype, want string
+		ok                      bool
+	}{
+		{"envelope", env, "application/json; charset=utf-8", "/user_uploads/temporary/tok/a.pdf", true},
+		{"absolute url", `{"result":"success","url":"https://s3/user_uploads/t/a.pdf"}`, "application/json", "https://s3/user_uploads/t/a.pdf", true},
+		{"not json", env, "application/pdf", "", false},
+		{"unparseable content type", env, "application/json; charset", "", false},
+		{"not json at all", "not json", "application/json", "", false},
+		{"error envelope", `{"result":"error","url":"/user_uploads/x/a.pdf"}`, "application/json", "", false},
+		{"no url", `{"result":"success","msg":"hi"}`, "application/json", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := temporaryUploadURL([]byte(tc.body), tc.ctype)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("got %q,%v want %q,%v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestRealmURL pins that a relative temporary URL hangs off the realm
+// root (the API base without /api/v1) and an absolute one is untouched.
+func TestRealmURL(t *testing.T) {
+	c, err := New(Config{Site: "https://zulip.example.com", Email: "b@e.com", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := c.realmURL("/user_uploads/temporary/tok/a.pdf"); got != "https://zulip.example.com/user_uploads/temporary/tok/a.pdf" {
+		t.Fatalf("relative = %q", got)
+	}
+	if got := c.realmURL("https://s3.example.com/x?sig=1"); got != "https://s3.example.com/x?sig=1" {
+		t.Fatalf("absolute = %q", got)
+	}
+}

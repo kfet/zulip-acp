@@ -66,11 +66,7 @@ func (c *Client) DownloadUpload(ctx context.Context, uploadPath string, max int6
 	// Follow the temporary-URL indirection at most once: the second
 	// hop serves the file itself and never another envelope.
 	if tmp, ok := temporaryUploadURL(b, ct); ok {
-		abs, err := c.realmURL(tmp)
-		if err != nil {
-			return nil, "", err
-		}
-		return c.fetchUpload(ctx, abs, false, uploadPath, max)
+		return c.fetchUpload(ctx, c.realmURL(tmp), false, uploadPath, max)
 	}
 	return b, ct, nil
 }
@@ -110,18 +106,15 @@ func (c *Client) fetchUpload(ctx context.Context, rawURL string, auth bool, what
 	return b, resp.Header.Get("Content-Type"), nil
 }
 
-// realmURL resolves a realm-relative path (or an absolute URL) against
-// the realm root — the API base with its /api/v1 suffix removed.
-func (c *Client) realmURL(ref string) (string, error) {
-	root, err := url.Parse(strings.TrimSuffix(c.base, "/api/v1") + "/")
-	if err != nil {
-		return "", fmt.Errorf("zulip: parse realm root: %w", err)
+// realmURL turns a temporary URL into something fetchable: Zulip
+// writes it realm-relative, so it is hung off the realm root — the API
+// base with its /api/v1 suffix removed. An absolute URL (what an S3
+// deployment hands back) is already fetchable and is left alone.
+func (c *Client) realmURL(ref string) string {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
 	}
-	u, err := url.Parse(ref)
-	if err != nil {
-		return "", fmt.Errorf("zulip: parse %q: %w", ref, err)
-	}
-	return root.ResolveReference(u).String(), nil
+	return strings.TrimSuffix(c.base, "/api/v1") + ref
 }
 
 // temporaryUploadURL reports whether a download response is Zulip's
