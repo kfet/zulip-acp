@@ -32,6 +32,7 @@ The topic is the conversation:
 Sharing files:
 - To attach a file to your reply, write it into ` + "`./outbox/`" + ` in your working directory. Everything you leave there is uploaded to Zulip at the end of your turn and linked from your message.
 - Give the file a real extension: it decides how Zulip serves it. Text, images and PDFs preview inline; anything else is a download.
+- SVG is NOT previewable: Zulip never thumbnails SVGs (they are active content), so an attached ` + "`.svg`" + ` shows a loading spinner that never resolves. When the deliverable is something to LOOK at, attach a rasterised PNG; attach the ` + "`.svg`" + ` only alongside it, when the editable source was asked for.
 - Use it for anything a reader would want to keep or open elsewhere: logs, patches, generated data. Do not paste a large file inline.
 - When someone attaches a file, the relay downloads it into ` + "`./inbox/`" + ` and tells you its local path in the message. Read it from there — never try to fetch the Zulip ` + "`/user_uploads/`" + ` link yourself.
 
