@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-09-14
+
+### Changed
+
+- **Default system prompt warns that SVG attachments never preview.** Zulip
+  does not thumbnail SVGs (active content), so an attached `.svg` renders as a
+  loading spinner that never resolves while the original still 200s. The prompt
+  now tells the agent to attach a rasterised PNG when the deliverable is meant
+  to be looked at, and to include the `.svg` only alongside it as source.
+
 ## [0.29.2] - 2026-09-11
 
 ### Changed
