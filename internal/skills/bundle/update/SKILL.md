@@ -302,13 +302,13 @@ the error and stop — do not paper over.
 ## Finish on the FLEET, not on one host
 
 **A deploy is done when the fleet is converged, not when a host is.** This relay
-is registered in the fleet registry (`poe-acp/bots/zulip-zbox.json`) as a
-**tracked** instance: the registry knows its host, unit and wanted version and
-reports drift, but `converge.sh` will not deploy it — deploying is this repo's
-job, above. Close every release/deploy/update with the read-only sweep:
+is listed in the fleet inventory (`~/sync/shared/fleet/inventory/zulip-zbox.json`).
+That inventory is shared across all three relays and belongs to none of
+them; deploying is this repo's job, above. Close every
+release/deploy/update with the read-only sweep:
 
 ```bash
-cd ~/src/poe-acp && ./scripts/converge.sh status      # or: ssh miki 'cd ~/src/poe-acp && ./scripts/converge.sh status'
+~/sync/shared/fleet/fleet.sh status        # runs from any host
 ```
 
 It reports every relay instance on every host — poe-acp, slack-acp and
@@ -316,10 +316,10 @@ zulip-acp — with wanted vs **running** version (read from the live process,
 never the on-disk binary) and drift. Do not say "released" or "deployed" until
 the `zulip-zbox` row is `ok`. Paste the output into your reply.
 
-After a release, also bump this relay's wanted version so the sweep tells the
-truth: `poe-acp/dist.lock` → `.relays["zulip-acp"]` (or run
-`poe-acp/scripts/converge.sh --tot`, which re-resolves it from the latest tag),
-and commit that.
+Nothing to bump after a release: the sweep takes this relay's wanted
+version from its latest git tag, so cutting the tag IS the declaration.
+(An instance can hold back with `.pin` in its inventory entry, which
+requires a `.notes` reason.)
 
 Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 `~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).
@@ -349,5 +349,5 @@ Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 - [ ] Relay recycled with `reload` (or `restart`, if unit-file/first-cutover/dead).
 - [ ] `/proc/<MainPID>/exe --version` matches target; service active; journal
       shows `resuming inherited event queue`.
-- [ ] **`poe-acp/scripts/converge.sh status` run, and the `zulip-zbox` row is `ok`** (one host is not the job).
-- [ ] `poe-acp/dist.lock` `.relays["zulip-acp"]` bumped to the released version.
+- [ ] **`fleet.sh status` run, and the `zulip-zbox` row is `ok`** (one host is not the job).
+- [ ] Nothing to bump — the sweep reads the wanted version from the git tag.
