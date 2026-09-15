@@ -6,6 +6,7 @@ require (
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/kfet/acp-kit v0.16.3
 	github.com/kfet/distkit v0.1.8
+	golang.org/x/image v0.31.0
 )
 
 require github.com/kfet/covgate v0.1.2 // indirect

@@ -507,6 +507,7 @@ func main() {
 		InboundAttachments:      cfg.GetInboundAttachments(),
 		MaxAttachmentBytes:      cfg.MaxAttachmentBytes,
 		MaxAttachmentTotalBytes: cfg.MaxAttachmentTotalBytes,
+		MaxInlineImagePixels:    cfg.GetMaxInlineImagePixels(),
 		// The reaction seam, wired to the two relay-side reaction
 		// controls. Capturing h is the same trick the loopback uses:
 		// it is assigned below, before any event can arrive.

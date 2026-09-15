@@ -6,3 +6,5 @@ github.com/kfet/covgate v0.1.2 h1:29q7vN+GJ8cJeXdDwohaqAT02cCZA4HlEkzjVq0MuAA=
 github.com/kfet/covgate v0.1.2/go.mod h1:M1BHQum2HvbavZoKfnIm8qBUjPDsOb0QLFtkF0OLzlM=
 github.com/kfet/distkit v0.1.8 h1:dN1QdISloBwPsUQT/EBUaSSuS82ZwlR0bKctp0Dn1Cc=
 github.com/kfet/distkit v0.1.8/go.mod h1:If052OZSCfi8X0bwThHutUPM5hBbN/WuD8e+zZPXsw8=
+golang.org/x/image v0.31.0 h1:mLChjE2MV6g1S7oqbXC0/UcKijjm5fnJLUYKIYrLESA=
+golang.org/x/image v0.31.0/go.mod h1:R9ec5Lcp96v9FTF+ajwaH3uGxPH4fKfHHAVbUILxghA=

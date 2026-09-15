@@ -30,6 +30,18 @@ Things deliberately not done in v1, with the reason.
 > still has its own `internal/selfupdate` to delete, and `slack-acp` still
 > has no self-update at all.
 
+- **`internal/imagefit` → `acp-kit` (a second consumer already exists).**
+  The pixel ceiling is a MODEL-provider fact, not a Zulip one: Anthropic
+  rejects a whole many-image request over 2000px a side, and `poe-acp`'s
+  `internal/router` inlines images through the same shape of code with the
+  same byte-only cap, so it has the identical latent bug. The package is
+  written with zero chat-protocol imports for exactly this reason — it is
+  `([]byte, mime, maxEdge) → ([]byte, mime)` and nothing else. Promotion is
+  held only by the release cycle, not by design doubt: promote it next to
+  `acp-kit/attachments`, delete this package, and fix poe-acp with the
+  bump. Until then the two must not be allowed to drift — if the default,
+  the JPEG quality or the EXIF handling changes here, it changes there.
+
 - **`internal/rollover` → `acp-kit/chunker`.** The splitter is written with
   zero Zulip imports precisely so it can move. It is not promoted in v1: a
   new, unproven design earns its API in one consumer first. Promote once a

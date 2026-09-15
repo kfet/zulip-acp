@@ -15,6 +15,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/statusline"
+	"github.com/kfet/zulip-acp/internal/imagefit"
 	"github.com/kfet/zulip-acp/internal/reload"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
@@ -33,6 +34,10 @@ const (
 	// no longer has a default to borrow; they are HTTP requests, not
 	// turns, and one wedged request must not hang the agent forever.
 	DefaultZulipCallTimeout = 2 * time.Minute
+	// minInlineImagePixels floors a non-zero max_inline_image_pixels.
+	// 64px on the long edge is already unreadable; below it the
+	// operator meant 0.
+	minInlineImagePixels = 64
 	// DefaultEditInterval coalesces streaming edits. Zulip sustains
 	// ~15 edits/sec without complaint, so this is a kindness to the
 	// reader (every edit re-renders the whole message, on the server
@@ -304,6 +309,23 @@ type Config struct {
 	MaxAttachmentBytes      int64 `json:"max_attachment_bytes,omitempty"`
 	MaxAttachmentTotalBytes int64 `json:"max_attachment_total_bytes,omitempty"`
 
+	// MaxInlineImagePixels caps the LONG EDGE, in pixels, of an image
+	// inlined into the prompt. Unset = 1568, Anthropic's recommended
+	// maximum useful dimension. 0 disables downscaling.
+	//
+	// A byte cap is not a pixel cap, and the providers enforce the
+	// latter: Anthropic refuses a whole request carrying several
+	// images when any one of them exceeds 2000 pixels on a side. A
+	// phone photo is 5712x4284 and compresses small enough to pass
+	// every byte budget, so without this it kills the turn — and every
+	// later turn in the topic, because the oversized image stays in
+	// the session's history.
+	//
+	// Only the INLINED copy is downscaled. The file in `inbox/` is
+	// always the original, because an agent doing detail work reads it
+	// from disk.
+	MaxInlineImagePixels *int `json:"max_inline_image_pixels,omitempty"`
+
 	// RelayMCP enables the agent→relay loopback: the relay hosts an
 	// MCP server on a private unix socket and advertises it to the
 	// agent, so the agent can read its own status, switch model, post
@@ -375,6 +397,13 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxAttachmentBytes < 0 || c.MaxAttachmentTotalBytes < 0 {
 		return fmt.Errorf("attachment size caps must be >= 0")
+	}
+	// A positive-but-tiny ceiling is a mistake worth naming: below
+	// this the downscaled image carries no legible detail at all, and
+	// the operator almost certainly meant 0 (off).
+	if c.MaxInlineImagePixels != nil && *c.MaxInlineImagePixels != 0 && *c.MaxInlineImagePixels < minInlineImagePixels {
+		return fmt.Errorf("max_inline_image_pixels (%d) must be 0 (no downscaling) or >= %d — anything smaller reaches the model as an unreadable thumbnail",
+			*c.MaxInlineImagePixels, minInlineImagePixels)
 	}
 	// A per-message total below the per-file cap is not an error but
 	// it is certainly a mistake: the first attachment would be capped
@@ -568,6 +597,16 @@ func (c *Config) GetArchiveChannel() string {
 // a human attaches to a message. Unset means true.
 func (c *Config) GetInboundAttachments() bool {
 	return c.InboundAttachments == nil || *c.InboundAttachments
+}
+
+// GetMaxInlineImagePixels reports the long-edge ceiling for an inlined
+// image. Unset means imagefit.DefaultMaxEdge; an explicit 0 means
+// downscaling is off.
+func (c *Config) GetMaxInlineImagePixels() int {
+	if c.MaxInlineImagePixels == nil {
+		return imagefit.DefaultMaxEdge
+	}
+	return *c.MaxInlineImagePixels
 }
 
 // ResolveArchiveChannel maps the configured archive channel onto a
