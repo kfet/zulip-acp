@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-09-15
+
+### Changed
+
+- **The fleet sweep moved out of poe-acp; the skills follow it.** Closing a
+  deploy is now `~/sync/shared/fleet/fleet.sh status`, which runs from any
+  host and belongs to no single relay repo — instead of a path into a
+  sibling clone that had to exist beside this one. The "bump
+  `poe-acp/dist.lock .relays[zulip-acp]` after releasing" step is gone: the
+  sweep takes this relay's wanted version from its latest git tag, so
+  cutting the tag IS the declaration.
+
 ## [0.30.0] - 2026-09-15
 
 ### Fixed
