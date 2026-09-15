@@ -63,6 +63,10 @@ internal/handler/       event → ACP prompt; streaming sink; topic poster; comm
                         opts.go = the `!opts` options panel;
                         inbox.go = INBOUND attachment ingestion (the mirror of
                         the outbox upload in handler.go)
+internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
+                        photo (NO Zulip imports) — a provider rejects a
+                        many-image request over 2000px a side; promotion
+                        candidate for acp-kit, see BACKLOG.md
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
@@ -124,7 +128,9 @@ Zulip wire protocol it stays here.
 - **`internal/rollover` must never import anything Zulip-specific.** It is a
   promotion candidate for `acp-kit/chunker` (see `BACKLOG.md`); the import
   graph is what keeps that option open. HTTP code must never make a split
-  decision.
+  decision. **`internal/imagefit` is under the same rule** and for the same
+  reason: the pixel ceiling is a model-provider fact every relay that inlines
+  an image needs, and `poe-acp` has the identical latent bug.
 - **The `!command` broker lives in `acp-kit/command`, shared with `poe-acp`.**
   Do not add a command, an alias or a rendering tweak here that belongs there —
   both relays must offer the same surface. What stays in

@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -834,5 +837,163 @@ func TestInboundLyingContentTypeIsNotInlined(t *testing.T) {
 	// Still downloaded and still named: the agent decides what it is.
 	if !strings.Contains(hh.a.prompted()[0], filepath.Join(hh.inboxDir(t, "photos"), "a.png")) {
 		t.Fatal("prompt does not name the local path")
+	}
+}
+
+// --- pixel ceiling -------------------------------------------------------
+
+// realPNG is a decodable image of the given size, unlike pngBytes,
+// which is only a header the sniffer accepts.
+func realPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		row := img.Pix[y*img.Stride : y*img.Stride+w*4]
+		for x := range w {
+			p := row[x*4 : x*4+4]
+			p[0], p[1], p[2], p[3] = uint8(x), uint8(y), 0x40, 0xFF
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// noisePNG is realPNG with incompressible pixels, for the cases that
+// need a file genuinely over the inline byte cap.
+func noisePNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	r := rand.New(rand.NewPCG(1, 2))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(r.UintN(256))
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func inlineDims(t *testing.T, b acp.ContentBlock) (int, int) {
+	t.Helper()
+	if b.Image == nil {
+		t.Fatalf("block is not an image: %#v", b)
+	}
+	raw, err := base64.StdEncoding.DecodeString(b.Image.Data)
+	if err != nil {
+		t.Fatalf("image block is not base64: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("image block does not decode: %v", err)
+	}
+	return cfg.Width, cfg.Height
+}
+
+// TestInboundImageIsDownscaledForTheModel is the bug this exists for:
+// a phone photo passes every BYTE budget and is still rejected by the
+// provider for its PIXEL dimensions, which kills the turn — and every
+// later turn in the topic, because the oversized image stays in the
+// session's history.
+func TestInboundImageIsDownscaledForTheModel(t *testing.T) {
+	a := newAgent("ok")
+	a.imageCap = true
+	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 1568 })
+	original := realPNG(t, 2400, 1800)
+	hh.z.addUpload("/user_uploads/2/20/H/book.png", "image/png", original)
+
+	hh.deliver(t, "photos", mention("![book.png](/user_uploads/2/20/H/book.png)"))
+
+	blocks := hh.a.promptedBlocks()[0]
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %#v, want text + image", blocks)
+	}
+	w, h := inlineDims(t, blocks[1])
+	if w != 1568 || h != 1176 {
+		t.Fatalf("inlined at %dx%d, want 1568x1176", w, h)
+	}
+	// The FILE is untouched: an agent reading a page of text out of a
+	// photo opens it from disk and must get what the human sent.
+	local := filepath.Join(hh.inboxDir(t, "photos"), "book.png")
+	onDisk, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !bytes.Equal(onDisk, original) {
+		t.Fatalf("the file on disk is not the original (%d bytes vs %d)", len(onDisk), len(original))
+	}
+	// And the agent is TOLD, so it knows to open the file for detail.
+	if !strings.Contains(hh.a.prompted()[0], "shown to you downscaled to") {
+		t.Fatalf("prompt does not say the inline copy was reduced:\n%s", hh.a.prompted()[0])
+	}
+}
+
+// TestInboundDownscalingDisabled pins the escape hatch: 0 means the
+// bytes reach the model exactly as they arrived.
+func TestInboundDownscalingDisabled(t *testing.T) {
+	a := newAgent("ok")
+	a.imageCap = true
+	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 0 })
+	original := realPNG(t, 2400, 1800)
+	hh.z.addUpload("/user_uploads/2/20/H/book.png", "image/png", original)
+
+	hh.deliver(t, "photos", mention("![book.png](/user_uploads/2/20/H/book.png)"))
+
+	blocks := hh.a.promptedBlocks()[0]
+	if w, h := inlineDims(t, blocks[1]); w != 2400 || h != 1800 {
+		t.Fatalf("inlined at %dx%d, want the original 2400x1800", w, h)
+	}
+	if strings.Contains(hh.a.prompted()[0], "downscaled") {
+		t.Fatal("claimed a downscale that did not happen")
+	}
+}
+
+// TestInboundByteBudgetIsChargedAfterDownscaling: an image over the
+// inline byte cap at full resolution routinely fits once resized, and
+// measuring first would skip a picture the agent could have had.
+func TestInboundByteBudgetIsChargedAfterDownscaling(t *testing.T) {
+	a := newAgent("ok")
+	a.imageCap = true
+	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 256 })
+	// Noise, so the PNG cannot compress its way under the cap.
+	big := noisePNG(t, 1600, 1200)
+	if len(big) <= inlineImageMax {
+		t.Fatalf("test image is only %d bytes, not over the %d inline cap", len(big), inlineImageMax)
+	}
+	hh.z.addUpload("/user_uploads/2/20/H/huge.png", "image/png", big)
+
+	hh.deliver(t, "photos", mention("![huge.png](/user_uploads/2/20/H/huge.png)"))
+
+	blocks := hh.a.promptedBlocks()[0]
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %#v, want text + image — it fits once downscaled", blocks)
+	}
+	if w, _ := inlineDims(t, blocks[1]); w != 256 {
+		t.Fatalf("inlined at width %d, want 256", w)
+	}
+}
+
+// TestInboundUndecodableImageStillInlines: a file the sniffer calls an
+// image but no decoder understands must reach the model as it is, the
+// way it did before the pixel ceiling existed. A resize that cannot
+// happen is never a reason to withhold an attachment.
+func TestInboundUndecodableImageStillInlines(t *testing.T) {
+	a := newAgent("ok")
+	a.imageCap = true
+	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 64 })
+	hh.z.addUpload("/user_uploads/2/20/H/a.png", "image/png", pngBytes(32))
+
+	hh.deliver(t, "photos", mention("![a.png](/user_uploads/2/20/H/a.png)"))
+
+	blocks := hh.a.promptedBlocks()[0]
+	if len(blocks) != 2 || blocks[1].Image == nil {
+		t.Fatalf("blocks = %#v, want text + image", blocks)
+	}
+	got, _ := base64.StdEncoding.DecodeString(blocks[1].Image.Data)
+	if !bytes.Equal(got, pngBytes(32)) {
+		t.Fatal("the undecodable image was not passed through unchanged")
 	}
 }

@@ -127,7 +127,11 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   saying it cannot see the attachment. On by default
   (`"inbound_attachments": false` to disable); capped by
   `max_attachment_bytes` (20 MB) and `max_attachment_total_bytes` (60 MB), with
-  anything over cap skipped and named rather than failing the turn. Inbound
+  anything over cap skipped and named rather than failing the turn. Inlined
+  images are **downscaled** to `max_inline_image_pixels` (1568) on the long
+  edge first — a provider rejects a whole many-image request over 2000px a
+  side, which a phone photo exceeds while passing every byte budget — and only
+  the inlined copy is resized, never the file on disk. Inbound
   files persist alongside the conversation's other state; `!new` starts a fresh
   conversation with an empty `inbox/` and leaves the old files on disk.
 - **Every answer is signed** with a one-line italic footer naming the model and
@@ -340,6 +344,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
 | `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
 | `max_attachment_total_bytes` | `62914560` (60 MB) | cap on one message's worth of inbound attachments; must be ≥ `max_attachment_bytes` |
+| `max_inline_image_pixels` | `1568` | long-edge ceiling, in pixels, for an image inlined into the prompt; `0` disables downscaling. The file in `inbox/` is always the original |
 | `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
 | `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
 | `max_schedules_total` | `100` | schedules armed at once across the relay |

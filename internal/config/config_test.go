@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/statusline"
+	"github.com/kfet/zulip-acp/internal/imagefit"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -93,6 +94,8 @@ func TestValidate(t *testing.T) {
 		{"negative per-file attachment cap", Config{MaxAttachmentBytes: -1}},
 		{"negative per-message attachment cap", Config{MaxAttachmentTotalBytes: -1}},
 		{"message attachment budget below one file's cap", Config{MaxAttachmentBytes: 100, MaxAttachmentTotalBytes: 99}},
+		{"negative inline image ceiling", Config{MaxInlineImagePixels: intPtr(-1)}},
+		{"unreadable inline image ceiling", Config{MaxInlineImagePixels: intPtr(16)}},
 	}
 	for _, c := range bad {
 		if err := c.cfg.Validate(); err == nil {
@@ -143,6 +146,44 @@ func TestInboundAttachments(t *testing.T) {
 	// error has to name both numbers.
 	err := (&Config{MaxAttachmentBytes: 100, MaxAttachmentTotalBytes: 99}).Validate()
 	if err == nil || !strings.Contains(err.Error(), "max_attachment_total_bytes") {
+		t.Fatalf("error text = %v", err)
+	}
+}
+
+// TestMaxInlineImagePixels covers the three states of the pixel
+// ceiling. It is not a byte cap by another name: a provider rejects a
+// whole request carrying an image over 2000px a side, so the DEFAULT
+// has to be a real number rather than "unlimited", and 0 has to remain
+// a way out for an operator who knows their model does not care.
+func TestMaxInlineImagePixels(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want int
+	}{
+		{"unset defaults to the recommended maximum", `{}`, imagefit.DefaultMaxEdge},
+		{"explicit ceiling", `{"max_inline_image_pixels":800}`, 800},
+		{"zero disables downscaling", `{"max_inline_image_pixels":0}`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.GetMaxInlineImagePixels(); got != c.want {
+				t.Fatalf("GetMaxInlineImagePixels() = %d, want %d", got, c.want)
+			}
+		})
+	}
+	// A positive-but-tiny ceiling reads as a typo, and the error has
+	// to point at the 0 the operator probably meant.
+	err := (&Config{MaxInlineImagePixels: intPtr(16)}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_inline_image_pixels") {
 		t.Fatalf("error text = %v", err)
 	}
 }

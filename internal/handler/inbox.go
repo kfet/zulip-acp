@@ -43,6 +43,11 @@
 //   - inlineImageMax bounds what may be base64'd into the prompt
 //     itself. A 20 MB image is a legal attachment and an illegal
 //     prompt.
+//   - MaxInlineImagePixels bounds the PIXEL dimensions of that inline
+//     copy, which no byte cap can do: a provider rejects an entire
+//     request over 2000px a side, so a phone photo small enough to
+//     pass every byte budget would otherwise kill the turn, and every
+//     later turn in the topic. See internal/imagefit.
 //   - attachTimeout bounds the whole ingestion, so a wedged download
 //     cannot eat a turn's budget.
 //
@@ -68,6 +73,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/kfet/zulip-acp/internal/imagefit"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -93,9 +99,10 @@ const (
 	// maxAttachments bounds how many files one message can pull in.
 	maxAttachments = 10
 	// inlineImageMax bounds an image sent as a ContentBlock::Image, in
-	// bytes before base64. Anything bigger is still downloaded and
-	// still named — the agent reads it from disk instead of carrying
-	// ~1.4x its size through the prompt.
+	// bytes before base64, and is measured on the DOWNSCALED copy.
+	// Anything still bigger is on disk and named — the agent reads it
+	// from there instead of carrying ~1.4x its size through the
+	// prompt.
 	inlineImageMax = 5 << 20
 	// inlineTotalMax bounds what ONE message may inline in total. The
 	// per-image cap alone is not enough: ten images each just under it
@@ -348,12 +355,39 @@ func (h *Handler) renderAttachments(results []ingested) (string, []acp.ContentBl
 			lines = append(lines, fmt.Sprintf("- %s — %s. Zulip link: %s", r.name, r.skip, r.ref.Path))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- %s — local path: %s (%s, %s). Zulip link: %s",
-			r.name, r.local, r.mime, humanBytes(int64(r.size)), r.ref.Path))
-		if inline && r.size <= inlineLeft && inlineable(r.mime, r.size, r.data) {
-			inlineLeft -= r.size
-			blocks = append(blocks, acp.ImageBlock(base64.StdEncoding.EncodeToString(r.data), r.mime))
+		line := fmt.Sprintf("- %s — local path: %s (%s, %s). Zulip link: %s",
+			r.name, r.local, r.mime, humanBytes(int64(r.size)), r.ref.Path)
+		if inline && inlineLeft > 0 && imagelike(r.mime, r.data) {
+			// Downscale FIRST, then charge the budget. The pixel
+			// ceiling is not an optimisation, it is what keeps the
+			// request legal (see internal/imagefit), and a photo that
+			// was over the byte cap at full size routinely fits once
+			// resized — so measuring before the resize would skip an
+			// image the agent could have had.
+			//
+			// Resizing costs real CPU, and anyone in the realm can
+			// post ten images. The work per message is bounded by
+			// maxAttachments decodes of at most imagefit's own pixel
+			// limit each, serially — the inline budget below does NOT
+			// bound it, because an image too big to inline was still
+			// decoded to find that out. That is the same order of
+			// cost as the ten 20 MB downloads the relay already
+			// permits, on the turn of the conversation that asked
+			// for it.
+			data, mimeType := imagefit.Fit(r.data, r.mime, h.cfg.MaxInlineImagePixels)
+			if len(data) <= inlineImageMax && len(data) <= inlineLeft {
+				inlineLeft -= len(data)
+				blocks = append(blocks, acp.ImageBlock(base64.StdEncoding.EncodeToString(data), mimeType))
+				if len(data) != r.size {
+					// Say so, because the agent must know the version
+					// it can SEE is not the version on disk: fine
+					// detail — a page of text in a photo — is in the
+					// file, not in the block.
+					line += fmt.Sprintf(" [shown to you downscaled to %s; open the local path for full resolution]", humanBytes(int64(len(data))))
+				}
+			}
 		}
+		lines = append(lines, line)
 	}
 	note := "\n\n[relay] This message has attachments. They have been downloaded into this " +
 		"conversation's working directory — read them from the local paths below, do not fetch the Zulip links.\n" +
@@ -448,8 +482,9 @@ func safeName(name string) string {
 	return name
 }
 
-// inlineable reports whether an attachment may be base64'd into the
-// prompt as a ContentBlock::Image.
+// imagelike reports whether an attachment may be considered for an
+// inline ContentBlock::Image. It is a TYPE test only — the byte
+// budget is applied afterwards, against the downscaled copy.
 //
 // The declared type is not enough on its own. Zulip stores and serves
 // back the Content-Type declared at UPLOAD, verbatim — see
@@ -457,8 +492,8 @@ func safeName(name string) string {
 // whoever posted the file, and anyone in the realm could use it to put
 // megabytes of arbitrary bytes into the agent's context window. The
 // bytes must AGREE: net/http's sniffer has to call it an image too.
-func inlineable(mimeType string, size int, data []byte) bool {
-	if !strings.HasPrefix(mimeType, "image/") || size > inlineImageMax {
+func imagelike(mimeType string, data []byte) bool {
+	if !strings.HasPrefix(mimeType, "image/") {
 		return false
 	}
 	head := data

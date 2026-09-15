@@ -287,6 +287,11 @@ type Config struct {
 	// fills a zero with the default.
 	MaxAttachmentBytes      int64
 	MaxAttachmentTotalBytes int64
+	// MaxInlineImagePixels caps the long edge, in pixels, of an image
+	// base64'd into the prompt; 0 disables downscaling. Only the
+	// inlined copy is resized — the file in <cwd>/inbox is always the
+	// original. See internal/imagefit.
+	MaxInlineImagePixels int
 
 	// Reactions delivers emoji reactions into the owning conversation
 	// as an ambient synthetic turn. See reaction.go for why every gate

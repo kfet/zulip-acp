@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An inbound photo is downscaled before it is inlined into the prompt.**
+  The inbox capped BYTES only, and a pixel ceiling is a separate thing: a
+  provider rejects an entire request carrying several images when any one
+  of them exceeds 2000 pixels on a side (`image.source.base64.data: At
+  least one of the image dimensions exceed max allowed size for many-image
+  requests: 2000 pixels`). A 5712x4284 phone photo compresses to well under
+  every byte budget, so it killed the turn — and every LATER turn in the
+  topic, because the oversized image stayed in the session's history. The
+  inlined copy is now resampled (CatmullRom) so its long edge is at most
+  `max_inline_image_pixels`, default 1568 — Anthropic's own recommended
+  maximum useful dimension, above which an image costs tokens for no added
+  detail. EXIF orientation is baked in, since re-encoding drops the tag.
+  The file in `inbox/` is always the ORIGINAL: an agent doing detail work
+  reads it from disk, and the prompt now says so when the two differ.
+  WebP is decoded too (`golang.org/x/image/webp`): Android screenshots
+  arrive in it, and a format the relay cannot decode is one it cannot
+  shrink.
+
+### Added
+
+- **`max_inline_image_pixels`** (default `1568`, `0` disables downscaling)
+  caps the long edge of an image base64'd into the prompt. The inline byte
+  budget is now charged AFTER downscaling, so a photo that was over the cap
+  at full size reaches the agent instead of being skipped.
+
 ## [0.29.3] - 2026-09-14
 
 ### Changed
