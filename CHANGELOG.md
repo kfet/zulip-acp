@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-15
+
 ### Fixed
 
 - **An inbound photo is downscaled before it is inlined into the prompt.**
@@ -1442,7 +1444,8 @@ file; `ambient_channels`, which had only ever existed in an unpushed local
   round-trips and event-queue semantics. Excluded from the coverage gate.
 - `docs/zulip-acp-design.md` and `docs/zulip-protocol-reference.md`.
 
-[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/kfet/zulip-acp/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/kfet/zulip-acp/compare/v0.29.3...v0.30.0
 [0.29.0]: https://github.com/kfet/zulip-acp/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/kfet/zulip-acp/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/kfet/zulip-acp/compare/v0.27.0...v0.28.0
