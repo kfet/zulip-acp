@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-16
+
 ### Added
 
 - `!opts` now posts a **model poll** beside the panel — the one control surface
