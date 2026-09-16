@@ -35,7 +35,11 @@ func TestIsBranchCommand(t *testing.T) {
 		{"  !branch  padded  ", " padded", true},
 		{"!branch", "", true},
 		{"/branch slash form", "slash form", true},
+		{"!br short form", "short form", true},
+		{"!BR shouting short", "shouting short", true},
+		{"!br", "", true},
 		{"!branching out", "", false},
+		{"!brunch", "", false},
 		{"!archive", "", false},
 		{"branch without a sigil", "", false},
 	} {

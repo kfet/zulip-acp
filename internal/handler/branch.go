@@ -97,11 +97,12 @@ import (
 )
 
 const (
-	// branchVerb is the typed form. There is deliberately no alias:
-	// `!br` would shadow nothing today but reads as an abbreviation of
-	// half a dozen plausible words, and a command that creates a topic
-	// should be spelled out.
-	branchVerb = "branch"
+	// branchVerb and branchAlias are the typed forms. `!br` is short
+	// enough to read as an abbreviation of several words, but it
+	// shadows nothing and branching is cheap — the worst case of a
+	// mistyped branch is one extra topic, not a lost message.
+	branchVerb  = "branch"
+	branchAlias = "br"
 	branchHelp = "- `" + command.DisplaySigil + branchVerb + " [#**channel**] <text>` — spin `<text>` out into a new topic that can read this one (or react :" + branchEmoji + ": on a message to spin that message out)\n"
 
 	// branchEmoji is the reaction form. A fork in the road, near
@@ -147,7 +148,7 @@ func isBranchCommand(text string) (string, bool) {
 	if i := strings.IndexAny(body, " \t\n"); i >= 0 {
 		verb, rest = body[:i], body[i+1:]
 	}
-	if !strings.EqualFold(verb, branchVerb) {
+	if !strings.EqualFold(verb, branchVerb) && !strings.EqualFold(verb, branchAlias) {
 		return "", false
 	}
 	return rest, true
