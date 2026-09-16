@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-09-16
+
+### Added
+
+- **`!br` is short for `!branch`.** The verb now accepts the two-letter alias,
+  the way `!archive` has always accepted `!arch`. Branching destroys nothing —
+  the worst case of a mistyped `!br` is one extra topic — so the abbreviation
+  costs nothing and saves six characters on a phone keyboard. Help text still
+  advertises the long form.
+
 ## [0.31.0] - 2026-09-16
 
 ### Added
