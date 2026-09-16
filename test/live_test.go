@@ -542,3 +542,130 @@ func TestMovePermissionIsReadable(t *testing.T) {
 	// refuses up front rather than half-archiving.
 	t.Logf("%s as it applies to this bot: %s", zulipproto.RealmMoveBetweenChannelsLimit, policy.Limit)
 }
+
+// otherClient is a SECOND account, used to prove the things the bot
+// cannot prove against itself: that somebody else's reaction reaches
+// the bot's queue, and that the bot cannot take it back.
+//
+// Optional on purpose. The rest of this suite needs one set of
+// credentials, and requiring two everywhere would make the whole file
+// unrunnable on a server where only the bot has an API key.
+func otherClient(t *testing.T) *zulipproto.Client {
+	t.Helper()
+	site := os.Getenv("ZULIP_SITE")
+	email, key := os.Getenv("ZULIP_OTHER_EMAIL"), os.Getenv("ZULIP_OTHER_API_KEY")
+	if email == "" || key == "" {
+		t.Skip("set ZULIP_OTHER_EMAIL / ZULIP_OTHER_API_KEY (a second, non-bot account subscribed to ZULIP_CHANNEL) to run this test")
+	}
+	c, err := zulipproto.New(zulipproto.Config{Site: site, Email: email, APIKey: key})
+	if err != nil {
+		t.Fatalf("second client: %v", err)
+	}
+	return c
+}
+
+// TestOptionsPanelChipEmojiExist is the guard on the `!opts` reaction
+// menu's one hard dependency: every chip name must be in the server's
+// emoji set. Zulip answers an unknown name with 400 "Emoji ... does
+// not exist", and a seed that half-fails leaves a panel whose digits
+// no longer line up with the model list they label.
+//
+// The rejected names are asserted too, because they are the ones that
+// LOOK right: `information_source`, `arrows_counterclockwise` and
+// `mag` are all absent from Zulip 12.2's set, and each was a first
+// guess at the status chip. Do not reinstate one without this test
+// going green.
+func TestOptionsPanelChipEmojiExist(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+
+	id, err := c.SendMessage(ctx, streamID, topicFor(t), "options-panel chip emoji probe")
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	for _, e := range []string{"one", "two", "three", "four", "five", "six", "new", "octagonal_sign", "bar_chart"} {
+		if err := c.AddReaction(ctx, id, e); err != nil {
+			t.Errorf(":%s: is not a usable chip: %v", e, err)
+		}
+	}
+	for _, e := range []string{"information_source", "arrows_counterclockwise", "mag"} {
+		if err := c.AddReaction(ctx, id, e); err == nil {
+			t.Errorf(":%s: is accepted now — the chip table may be widened, but only deliberately", e)
+		}
+	}
+}
+
+// TestAnotherUsersReactionReachesTheBot is the evidence the whole
+// reaction menu rests on, and it cannot be gathered from the bot
+// alone: a reaction added by SOMEBODY ELSE to a message the BOT sent
+// is delivered to the bot's own event queue, carrying the reacting
+// user's id.
+//
+// It also pins the limit that makes op=remove a no-op in the relay: a
+// bot CANNOT remove another user's reaction. The DELETE comes back
+// success — it removed the bot's own, of which there was none — and
+// the other user's reaction is still there. So an un-tap is
+// un-undoable, which is why the panel footer says so.
+func TestAnotherUsersReactionReachesTheBot(t *testing.T) {
+	c, streamID := liveClient(t)
+	other := otherClient(t)
+	ctx := context.Background()
+
+	id, err := c.SendMessage(ctx, streamID, topicFor(t), "non-sender reaction probe")
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// Registered BEFORE the reaction, or the event predates the queue.
+	res, err := c.Register(ctx, []string{zulipproto.EventReaction}, nil, 0)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	defer func() { _ = c.DeleteQueue(context.Background(), res.QueueID) }()
+
+	if err := other.AddReaction(ctx, id, "one"); err != nil {
+		t.Fatalf("the other account could not react: %v", err)
+	}
+
+	// GetEvents long-polls, so this blocks until the event arrives
+	// rather than sleeping and hoping.
+	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	evs, err := c.GetEvents(pollCtx, res.QueueID, res.LastEventID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var got *zulipproto.Event
+	for i, ev := range evs {
+		if ev.Type == zulipproto.EventReaction && ev.MessageID == id {
+			got = &evs[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no reaction event for message %d in %+v", id, evs)
+	}
+	if got.Op != zulipproto.ReactionAdd || got.EmojiName != "one" {
+		t.Fatalf("event = %+v, want op=add :one:", *got)
+	}
+	me, err := c.Me(ctx)
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	if got.UserID == 0 || got.UserID == me.UserID {
+		t.Fatalf("user_id = %d, want the OTHER account's id (bot is %d)", got.UserID, me.UserID)
+	}
+
+	// The bot's DELETE succeeds and yet changes nothing: it can only
+	// remove its own reaction.
+	if err := c.RemoveReaction(ctx, id, "one"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	m, err := c.GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !strings.Contains(fmt.Sprint(m.Reactions), "one") {
+		t.Fatalf("the other user's :one: was removed by the bot after all: %+v — "+
+			"op=remove could then be honoured, and the panel footer is wrong", m.Reactions)
+	}
+}

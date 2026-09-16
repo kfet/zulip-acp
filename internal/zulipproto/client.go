@@ -217,6 +217,16 @@ type Message struct {
 	// Client is the posting client's name ("website", "curl", and
 	// "Internal" for server-generated messages).
 	Client string `json:"client"`
+	// Reactions is the emoji currently on the message, each naming the
+	// user who added it.
+	//
+	// It is the only way to ask what a message WEARS: a reaction event
+	// reports a change, never the state, and a relay that has been
+	// away has no way to reconstruct one from the other. zulip-acp
+	// reads it to prove a limit it depends on — a bot's DELETE removes
+	// only the bot's OWN reaction, so somebody else's tap cannot be
+	// taken back, which is why `!opts` treats op=remove as a no-op.
+	Reactions []Reaction `json:"reactions"`
 }
 
 // Message type strings. Zulip still calls a direct message "private"
@@ -903,6 +913,26 @@ type Event struct {
 	// ReactionType is "unicode_emoji", "realm_emoji" or "zulip_extra_emoji".
 	ReactionType string `json:"reaction_type"`
 
+	// SubmessageID, MsgType, SenderID and Content describe a
+	// submessage event — an interaction with a message's widget. See
+	// EventSubmessage for the measured shape.
+	//
+	// Content is a JSON document carried AS A STRING, so it is left
+	// raw here for the same reason Value is: the payload shape depends
+	// on msg_type and on the widget, and a typed field would fail to
+	// decode the whole /events response the first time Zulip shipped a
+	// widget this relay does not know.
+	SubmessageID int64  `json:"submessage_id"`
+	MsgType      string `json:"msg_type"`
+	// SenderID is who interacted with the widget. It is NOT the
+	// message's sender: a poll is voted on by everybody but its
+	// author. A reaction event spells the same fact `user_id`.
+	SenderID int64 `json:"sender_id"`
+	// Content is the submessage payload. On an update_message event
+	// Zulip also sends a `content` — the message's new body — which is
+	// a string too, so the two share this field harmlessly.
+	Content string `json:"content"`
+
 	// Property and Value describe a stream op=update. Value is left
 	// raw on purpose: Zulip sends a string, a bool or a number
 	// depending on the property, and a typed field would fail to
@@ -925,6 +955,17 @@ func (e Event) RenamedTo() (string, bool) {
 	return name, true
 }
 
+// Reaction is one emoji on a message, as GET /messages returns it.
+// UserID is who added it — a message's reactions are the only place
+// the server states that, since a reaction EVENT reports a change and
+// not the resulting state.
+type Reaction struct {
+	EmojiName    string `json:"emoji_name"`
+	EmojiCode    string `json:"emoji_code"`
+	ReactionType string `json:"reaction_type"`
+	UserID       int64  `json:"user_id"`
+}
+
 // Event type strings.
 const (
 	EventMessage       = "message"
@@ -944,6 +985,29 @@ const (
 	// produce them faster than you would ever want to ask about them.
 	EventReaction  = "reaction"
 	EventHeartbeat = "heartbeat"
+	// EventSubmessage is an interaction with a message's WIDGET — a
+	// vote on a /poll, a tick on a /todo. Zulip's widget subsystem
+	// stores each interaction as a submessage appended to the message
+	// that carries the widget, and this event is how one is announced.
+	//
+	// Measured on Zulip 12.2, a poll vote arrives as:
+	//
+	//	{"type":"submessage","msg_type":"widget","message_id":2333,
+	//	 "submessage_id":22,"sender_id":8,
+	//	 "content":"{\"type\":\"vote\",\"key\":\"9,1\",\"vote\":1}"}
+	//
+	// Note what is and is not there. Content is a JSON string that has
+	// to be decoded a second time, and it names the option by INDEX
+	// into a poll whose question and options live on the original
+	// message — so a relay that wants to know what was voted for must
+	// fetch that message. The vote key is "<canvas-sender-id>,<option
+	// index>". There is no channel, no topic and no emoji: like
+	// EventReaction, it is an id and nothing else, and the queue's
+	// narrow does not filter it either.
+	//
+	// zulip-acp subscribes to these so they are observable, and does
+	// nothing with them yet; see BACKLOG.md.
+	EventSubmessage = "submessage"
 )
 
 // Reaction event ops.

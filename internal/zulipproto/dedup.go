@@ -86,6 +86,16 @@ func eventKey(ev Event) (string, bool) {
 		// is the whole event.
 		return "reaction:" + strconv.FormatInt(ev.MessageID, 10) + ":" +
 			strconv.FormatInt(ev.UserID, 10) + ":" + ev.EmojiName + ":" + ev.Op, true
+	case EventSubmessage:
+		if ev.SubmessageID == 0 {
+			return "", false
+		}
+		// submessage_id is realm-global and assigned once, per
+		// interaction — a second vote by the same user on the same
+		// poll is a NEW submessage with a new id. So it is the whole
+		// identity, and unlike a reaction nothing else needs to go
+		// into the key.
+		return "submessage:" + strconv.FormatInt(ev.SubmessageID, 10), true
 	}
 	return "", false
 }

@@ -44,14 +44,17 @@ import (
 //
 // # The relay-side triggers
 //
-// Two emoji are the relay's own and never reach the agent:
-// :wastebasket: on the relay's last message arms an archive
+// Before anything reaches the agent, three emoji paths are the relay's
+// own. A chip on the conversation's LIVE `!opts` panel is a command
+// and is run as one (opts.go, optsReaction) — that is what makes the
+// options menu usable on a phone, where zform buttons do not render.
+// Then :wastebasket: on the relay's last message arms an archive
 // (archive.go), and :fork_and_knife: on any message spins that message
-// out into its own topic (branch.go). Both are RELAY actions rather
-// than agent turns — a destructive control, and a topic-creating one,
-// must not depend on the model choosing to call a tool — so both hook
-// in at reactionTrigger below, which sees the resolved conversation
-// and the resolved message before anything is handed to the agent.
+// out into its own topic (branch.go). All three are RELAY actions
+// rather than agent turns — a command, a destructive control, and a
+// topic-creating one must not depend on the model choosing to call a
+// tool — so they hook in before the agent is involved, seeing the
+// resolved conversation and the resolved message.
 
 const (
 	// reactionExcerptRunes bounds the quoted excerpt of the
@@ -205,15 +208,35 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 		// relay has nothing to do with is not an error.
 		return
 	}
-	if h.reactionTrigger(ctx, conv, ev, msg) {
-		return
-	}
-	// The last gate, and the only one that costs a call: BotSenderIDs
-	// is a startup snapshot, so a bot that appeared since — or a
-	// cross-realm system bot, which is in no user list — is recognised
-	// only here, while resolving the name the prompt needs anyway.
+	// The bot gate, and the only one that costs a call: BotSenderIDs is
+	// a startup snapshot, so a bot that appeared since — or a
+	// cross-realm system bot, which is in no user list — is
+	// recognisable only here, while resolving the name the prompt
+	// needs anyway. One lookup per user for the life of the process.
+	//
+	// It runs BEFORE the relay-side triggers, not after, and that
+	// ordering is a fix rather than a preference. The triggers run
+	// COMMANDS — an `!opts` chip is `!new` or `!stop`, and
+	// :wastebasket: archives a topic — so leaving them upstream of the
+	// only gate that can recognise a newly created bot let one bypass
+	// it, in exactly the place where the consequences are destructive
+	// rather than merely noisy. The cost of moving it is one
+	// already-cached call earlier in the path.
 	who, isBot := h.reactor(ctx, ev.UserID)
 	if isBot {
+		return
+	}
+	// The options panel's chips come first, ahead of the other
+	// relay-side triggers and long before the agent. A tap on the LIVE
+	// panel is a COMMAND, not a conversational signal: it must not
+	// also be narrated to the model as "kfet added :one: to your own
+	// message 123". The gate is exact — this conversation's current
+	// panel id — so everything else, a reaction on a retired panel
+	// included, falls straight through to the paths below.
+	if h.optsReaction(ctx, conv, ev) {
+		return
+	}
+	if h.reactionTrigger(ctx, conv, ev, msg) {
 		return
 	}
 	h.enqueueReaction(ctx, conv, reactionLine(who, ev, msg, h.cfg.BotUserID))

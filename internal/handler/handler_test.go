@@ -3347,3 +3347,71 @@ func TestLiveMarkerWhileStreamingThenFooter(t *testing.T) {
 		t.Fatalf("live marker survived the turn: %q", hh.z.stored())
 	}
 }
+
+// --- submessage events ---------------------------------------------------
+
+// submessageEvent is the shape measured on the live server (Zulip
+// 12.2): a poll vote, naming its option by index into a message the
+// event does not carry.
+func submessageEvent(subID, msgID, sender int64, msgType, content string) zulipproto.Event {
+	return zulipproto.Event{
+		Type: zulipproto.EventSubmessage, SubmessageID: subID, MessageID: msgID,
+		SenderID: sender, MsgType: msgType, Content: content,
+	}
+}
+
+// TestSubmessageIsObservedAndNothingElse: the relay subscribes to
+// widget interactions so a real deployment can show whether anyone
+// votes in the agent's polls. It must reach no agent, post nothing and
+// start no turn — see BACKLOG.md for the design this is evidence for.
+func TestSubmessageIsObservedAndNothingElse(t *testing.T) {
+	hh := newHarness(t, newAgent("hello"), func(c *Config) { c.Reactions = true })
+	hh.deliver(t, "t", mention("hi"))
+	ours := hh.z.lastID()
+	hh.z.reset()
+	before := hh.promptCount()
+
+	hh.h.Handle(context.Background(), submessageEvent(22, ours, humanID, "widget",
+		`{"type":"vote","key":"9,1","vote":1}`))
+
+	if !hh.logged(fmt.Sprintf("widget submessage 22 on message %d", ours)) {
+		t.Fatal("the vote was not observable in the log")
+	}
+	if !hh.logged(`"type":"vote"`) {
+		t.Fatal("the log does not carry the payload")
+	}
+	if got := hh.promptCount(); got != before {
+		t.Fatalf("a widget vote reached the agent: %q", hh.lastPrompt())
+	}
+	if got := hh.z.count(); got != 0 {
+		t.Fatalf("a widget vote posted %d message(s)", got)
+	}
+}
+
+// TestSubmessageOnAStrangersMessageIsDropped is the flood gate. A
+// submessage event has the same id-only shape that makes reaction
+// events expensive, and the /register narrow does not filter it
+// either, so the relay sees the whole realm's widget traffic. Logging
+// all of it would be the reaction flood re-routed into the journal.
+func TestSubmessageOnAStrangersMessageIsDropped(t *testing.T) {
+	hh := newHarness(t, newAgent("hello"), nil)
+	hh.deliver(t, "t", mention("hi"))
+
+	hh.h.Handle(context.Background(), submessageEvent(24, 999999, humanID, "widget", "{}"))
+
+	if hh.logged("submessage 24") {
+		t.Fatal("a vote on a message the relay knows nothing about was logged")
+	}
+}
+
+// TestSubmessageWithoutATypeIsIgnored: msg_type is what says which
+// widget was touched, and a submessage event without one describes
+// nothing this relay could ever report.
+func TestSubmessageWithoutATypeIsIgnored(t *testing.T) {
+	hh := newHarness(t, newAgent("hello"), nil)
+	hh.deliver(t, "t", mention("hi"))
+	hh.h.Handle(context.Background(), submessageEvent(23, hh.z.lastID(), humanID, "", "{}"))
+	if hh.logged("submessage 23") {
+		t.Fatal("a typeless submessage was reported")
+	}
+}

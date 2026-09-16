@@ -300,7 +300,7 @@ func main() {
 		log.Printf("zulip-acp: the event queue is not narrowed (%d channels served); the channel allowlist filters", served.Len())
 	}
 
-	eventTypes := []string{zulipproto.EventMessage, zulipproto.EventUpdateMessage}
+	eventTypes := []string{zulipproto.EventMessage, zulipproto.EventUpdateMessage, zulipproto.EventSubmessage}
 	if cfg.GetReactions() {
 		// Reaction events are NOT filtered by the queue's narrow and
 		// carry no channel or topic, so this subscribes to the whole

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -721,5 +722,434 @@ func TestModelLabel(t *testing.T) {
 		if got := modelLabel(tc.in); got != tc.want {
 			t.Fatalf("modelLabel(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// --- the reaction chips --------------------------------------------------
+
+// chipHarness is optsHarness with reactions on, which is the only
+// configuration in which the panel wears chips at all.
+func chipHarness(t *testing.T) *harness {
+	t.Helper()
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), func(c *Config) {
+		c.Reactions = true
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	return hh
+}
+
+// chipsOn returns the emoji seeded on message id, in the order they
+// were added — which is the order Zulip renders them in, and therefore
+// the order the digits must line up with.
+func chipsOn(hh *harness, id int64) []string {
+	added, _ := hh.z.reactions()
+	prefix := fmt.Sprintf("%d:", id)
+	out := []string{}
+	for _, a := range added {
+		if rest, ok := strings.CutPrefix(a, prefix); ok {
+			out = append(out, rest)
+		}
+	}
+	return out
+}
+
+// tap feeds the reaction event a thumb produces on the panel.
+func tap(t *testing.T, hh *harness, id int64, emoji string) {
+	t.Helper()
+	hh.h.Handle(context.Background(), reactionEvent(humanID, id, emoji, zulipproto.ReactionAdd))
+}
+
+// TestPanelSeedsItsChipsInOrder is the load-bearing assertion of the
+// whole feature: Zulip renders a message's reactions in first-added
+// order, so `one`..`six` must be seeded in exactly modelChoices order
+// or the digits name the wrong models.
+func TestPanelSeedsItsChipsInOrder(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	panel := lastMsg(t, hh)
+	want := []string{"one", "two", optsNewEmoji, optsStopEmoji, optsStatusEmoji}
+	if got := chipsOn(hh, panel); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("chips = %v, want %v", got, want)
+	}
+	body := hh.z.body(panel)
+	// Two models, so the legend must say "1-2" — a footer naming six
+	// chips over a row of two is the same lie as a dead button.
+	if !strings.Contains(body, optsReactionFooter(2)) {
+		t.Fatalf("panel %q does not explain its chips", body)
+	}
+}
+
+// TestChipsMatchTheButtons: a chip and the zform button beside it must
+// carry the SAME command, or the two surfaces mean different things.
+func TestChipsMatchTheButtons(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	_, replies := panelWidget(t, hh, lastMsg(t, hh))
+	_, _, _, choices := hh.h.panelState(hh.j.Convs()[0].Key)
+	chips := hh.h.optsChips(choices)
+	if len(chips) != len(replies) {
+		t.Fatalf("%d chips against %d buttons", len(chips), len(replies))
+	}
+	for i, c := range chips {
+		if c.reply != replies[i] {
+			t.Fatalf("chip %d is %q but button %d is %q", i, c.reply, i, replies[i])
+		}
+	}
+}
+
+// TestNoChipsWhenReactionsAreOff: with "reactions": false the relay
+// does not subscribe to reaction events at all, so a seeded chip would
+// be a button that provably cannot work. None is seeded, and the
+// footer that would explain them is not promised either.
+func TestNoChipsWhenReactionsAreOff(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if got := chipsOn(hh, lastMsg(t, hh)); len(got) != 0 {
+		t.Fatalf("chips = %v, want none", got)
+	}
+	if body := hh.z.body(lastMsg(t, hh)); strings.Contains(body, "Tap a chip") {
+		t.Fatalf("panel %q promises chips it did not seed", body)
+	}
+}
+
+// TestTappingAModelChipChangesTheModel walks the whole point of the
+// feature end to end: a tap runs the same command the button would
+// have sent, acknowledges with the same reaction, and repaints.
+func TestTappingAModelChipChangesTheModel(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+
+	tap(t, hh, panel, "two")
+
+	convID := hh.j.Convs()[0].ID
+	if id, ok := hh.h.modelOverride(convID); !ok || id != "b/two" {
+		t.Fatalf("model override = %q/%v, want b/two", id, ok)
+	}
+	added, _ := hh.z.reactions()
+	if !slices.Contains(added, fmt.Sprintf("%d:%s", panel, optsAckEmoji)) {
+		t.Fatalf("reactions = %v — the tap was not acknowledged on the panel", added)
+	}
+	if lastMsg(t, hh) == panel {
+		t.Fatal("the panel was not repainted")
+	}
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("the tap was ALSO narrated to the agent (%d buffered)", n)
+	}
+}
+
+// TestTappingASessionChipRunsTheCommand: the three constant chips go
+// through the broker exactly as the typed commands do.
+func TestTappingASessionChipRunsTheCommand(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+
+	tap(t, hh, panel, optsStatusEmoji)
+
+	if !hh.logged("running \"!status\"") {
+		t.Fatal("the status chip did not dispatch")
+	}
+	if got := hh.z.body(lastMsg(t, hh)); !strings.Contains(got, "**Status**") {
+		t.Fatalf("no status reply was posted: %q", got)
+	}
+}
+
+// TestTappingNewChipResetsTheConversation covers the one chip that
+// destroys the conversation it is tapped in — and with it the panel
+// id, which is what makes the leftover chips inert.
+func TestTappingNewChipResetsTheConversation(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	before := hh.j.Convs()[0].ID
+
+	tap(t, hh, panel, optsNewEmoji)
+
+	// Retire keeps the old entry and mints a new id, so the test asks
+	// the question `!new` actually answers: is this place's LIVE
+	// conversation a different one now?
+	key := hh.j.Convs()[0].Key
+	fresh, ok := hh.j.Lookup(key)
+	if !ok || fresh.ID == before {
+		t.Fatalf("live conversation is %q/%v, want a fresh id (was %s)", fresh.ID, ok, before)
+	}
+}
+
+// TestUnTappingIsANoOp pins the measured limit that shapes the design:
+// a bot cannot remove another user's reaction, so an un-tap can never
+// be undone and must therefore never mean anything.
+func TestUnTappingIsANoOp(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	after := msgIDs(hh)
+
+	hh.h.Handle(context.Background(), reactionEvent(humanID, panel, "two", zulipproto.ReactionRemove))
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("removing :two: changed the model to %q", id)
+	}
+	// Swallowed entirely, not forwarded: "kfet removed :two: from your
+	// own message" is noise the agent would try to interpret, about a
+	// control the user has already used.
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("buffered %d, want the un-tap swallowed", n)
+	}
+	if len(msgIDs(hh)) != len(after) {
+		t.Fatal("the un-tap posted something")
+	}
+}
+
+// TestARetiredPanelIsInert: a repaint deletes the old panel, but a
+// realm that forbids deletion leaves it in the scrollback with its
+// chips on it. Tapping one must not reconfigure anything.
+func TestARetiredPanelIsInert(t *testing.T) {
+	hh := chipHarness(t)
+	hh.z.deleteErr = &zulipproto.APIError{Status: 400, Msg: "not permitted", Code: "BAD_REQUEST"}
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	old := lastMsg(t, hh)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	if lastMsg(t, hh) == old {
+		t.Fatal("the panel was not replaced")
+	}
+
+	tap(t, hh, old, "two")
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a stale chip changed the model to %q", id)
+	}
+}
+
+// TestANonChipOnThePanelStillReachesTheAgent: the panel is a message,
+// and a human reacting to it with something that is not a chip is
+// saying something. Only the chip emoji are consumed.
+func TestANonChipOnThePanelStillReachesTheAgent(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	tap(t, hh, lastMsg(t, hh), "tada")
+
+	if n := hh.pendingReactions(); n != 1 {
+		t.Fatalf("buffered %d, want the non-chip reaction forwarded", n)
+	}
+	hh.h.DropPendingReactions()
+}
+
+// TestTheRelaysOwnSeedingDoesNotTriggerItself is the loop guard: the
+// bot adds the chips itself, and every one of those is a reaction
+// event on the panel with a chip emoji on it.
+func TestTheRelaysOwnSeedingDoesNotTriggerItself(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+
+	for _, e := range chipsOn(hh, panel) {
+		hh.h.Handle(context.Background(), reactionEvent(botID, panel, e, zulipproto.ReactionAdd))
+	}
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("the relay's own seeding tapped its own chip (%q)", id)
+	}
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("the relay narrated its own chips to the agent (%d)", n)
+	}
+}
+
+// TestAFailedChipSeedLosesOneChipNotTheMenu: an emoji a realm lacks
+// must cost exactly that chip.
+func TestAFailedChipSeedLosesOneChipNotTheMenu(t *testing.T) {
+	hh := chipHarness(t)
+	hh.z.reactErr = fmt.Errorf("no such emoji")
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if got := chipsOn(hh, lastMsg(t, hh)); len(got) != 5 {
+		t.Fatalf("attempted %v — seeding stopped at the first refusal", got)
+	}
+	if !hh.logged("seeding :one:") {
+		t.Fatal("the refusal was not logged")
+	}
+}
+
+// TestChipsNeverOutnumberTheDigits: optsModelCap and the digit table
+// are one fact spelled twice, and a panel may never offer a model it
+// cannot name.
+func TestChipsNeverOutnumberTheDigits(t *testing.T) {
+	hh := chipHarness(t)
+	many := make([]zulipproto.ZFormChoice, 0, len(optsDigitEmoji)+3)
+	for i := range cap(many) {
+		many = append(many, zulipproto.Choice("m", "m", fmt.Sprintf("!model m/%d", i)))
+	}
+	chips := hh.h.optsChips(many)
+	if got, want := len(chips), len(optsDigitEmoji)+3; got != want {
+		t.Fatalf("%d chips from %d choices, want %d", got, len(many), want)
+	}
+	for i, c := range chips[:len(optsDigitEmoji)] {
+		if c.emoji != optsDigitEmoji[i] {
+			t.Fatalf("chip %d is :%s:, want :%s:", i, c.emoji, optsDigitEmoji[i])
+		}
+	}
+}
+
+// TestAChipThatStoppedBeingACommandIsLoggedNotForwarded: the chip
+// table and the parser are two files, and the failure mode if they
+// ever part company is a bare "!stop" reaching the agent as prose.
+func TestAChipThatStoppedBeingACommandIsLoggedNotForwarded(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	// Removing the broker is the only way to make dispatch refuse
+	// every command, which is precisely the drift being guarded
+	// against.
+	hh.h.cfg.Commands = nil
+
+	tap(t, hh, panel, optsStopEmoji)
+
+	if !hh.logged("which is no longer a command") {
+		t.Fatal("the drift was not logged")
+	}
+	if n := hh.pendingReactions(); n != 0 {
+		t.Fatalf("the chip was forwarded to the agent anyway (%d buffered)", n)
+	}
+}
+
+// TestTheChipLegendCountsTheChipsItHas: a footer naming six digit
+// chips over a row of two is the same lie as a button that does
+// nothing. All three phrasings are reachable — an agent with no models
+// still gets the three session chips, so the panel still has a legend.
+func TestTheChipLegendCountsTheChipsItHas(t *testing.T) {
+	for _, tc := range []struct {
+		models []string
+		want   string
+	}{
+		{nil, "no models"},
+		{[]string{"a/one"}, "1 model,"},
+		{[]string{"a/one", "b/two"}, "1-2 models"},
+	} {
+		a := newAgent("x")
+		if len(tc.models) > 0 {
+			a = withModels(a, tc.models[0], tc.models...)
+		}
+		hh := dmCmdHarness(t, a, func(c *Config) { c.Reactions = true })
+		hh.deliverDM(t, humanID, "hello", humanID, botID)
+		hh.z.reset()
+		hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+		if body := hh.z.body(lastMsg(t, hh)); !strings.Contains(body, tc.want) {
+			t.Fatalf("%d model(s): panel %q does not say %q", len(tc.models), body, tc.want)
+		}
+	}
+}
+
+// TestAChipMeansWhatItMeantWhenItWasSeeded is the drift guard. The
+// mapping also depends on the agent's model LIST, which can be
+// re-probed — after `!login`, or when a provider is connected —
+// without anything repainting the panel. A recomputed table would make
+// :one: point at whatever now sorts first, on a panel that still says
+// otherwise in its own text.
+func TestAChipMeansWhatItMeantWhenItWasSeeded(t *testing.T) {
+	a := withModels(newAgent("x"), "a/one", "a/one", "b/two")
+	hh := dmCmdHarness(t, a, func(c *Config) { c.Reactions = true })
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	body := hh.z.body(panel)
+
+	// The agent re-probes and now reports the models the other way up.
+	// Nothing repainted the panel, so its text still reads as before.
+	a.models = []client.ModelInfo{{ID: "b/two"}, {ID: "a/one"}}
+	if got := hh.z.body(panel); got != body {
+		t.Fatal("the panel repainted itself — this test no longer proves anything")
+	}
+
+	tap(t, hh, panel, "one")
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/one" {
+		t.Fatalf("model = %q/%v, want the a/one the panel still names beside :one:", id, ok)
+	}
+}
+
+// TestAPanelSurvivesLosingItsChipTable: the table is in memory, so a
+// restart loses it while the journal still remembers the panel's id.
+// Recomputing is the fallback — a panel that went dead across a reload
+// would be worse, since the chips are still sitting on the message and
+// a thumb has no way to know.
+func TestAPanelSurvivesLosingItsChipTable(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	hh.h.forgetChips(panel)
+
+	tap(t, hh, panel, "two")
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "b/two" {
+		t.Fatalf("model = %q/%v, want b/two from the recomputed table", id, ok)
+	}
+}
+
+// TestARetiredPanelForgetsItsChips: the table must not outlive the
+// panel it describes, or the relay holds memory for a message it will
+// never honour a tap on.
+func TestARetiredPanelForgetsItsChips(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	old := lastMsg(t, hh)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	hh.h.chipMu.Lock()
+	defer hh.h.chipMu.Unlock()
+	if _, ok := hh.h.panelChips[old]; ok {
+		t.Fatal("the retired panel's chip table is still held")
+	}
+	if n := len(hh.h.panelChips); n != 1 {
+		t.Fatalf("%d chip tables held, want exactly the live panel's", n)
+	}
+}
+
+// TestABotCannotTapAChip: a chip is a command, and `!new` or `!stop`
+// run by a bot that appeared since startup — so it is in no
+// BotSenderIDs snapshot — would be a gate bypass in the one place the
+// consequences are destructive rather than noisy.
+func TestABotCannotTapAChip(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel := lastMsg(t, hh)
+	const laterBot = int64(77)
+	hh.z.users[laterBot] = zulipproto.User{UserID: laterBot, FullName: "Late Bot", IsBot: true}
+
+	hh.h.Handle(context.Background(), reactionEvent(laterBot, panel, "two", zulipproto.ReactionAdd))
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a bot tapped a chip and set the model to %q", id)
+	}
+}
+
+// TestAnUnengagedPanelSeedsNoChips: `!opts` before the conversation
+// exists posts a panel whose every control answers "there is none".
+// Buttons are rendered anyway — they cost nothing — but a chip costs
+// an HTTP call to place, would sit there looking live, and could never
+// be honoured: nothing records the message as THE panel, so no tap can
+// match. It must also leave no chip table behind, since no retirement
+// is ever coming to drop one.
+func TestAnUnengagedPanelSeedsNoChips(t *testing.T) {
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one"), func(c *Config) {
+		c.Reactions = true
+	})
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if got := chipsOn(hh, lastMsg(t, hh)); len(got) != 0 {
+		t.Fatalf("chips = %v on a panel nothing can tap", got)
+	}
+	if body := hh.z.body(lastMsg(t, hh)); strings.Contains(body, "Tap a chip") {
+		t.Fatalf("panel %q promises chips it did not seed", body)
+	}
+	hh.h.chipMu.Lock()
+	defer hh.h.chipMu.Unlock()
+	if n := len(hh.h.panelChips); n != 0 {
+		t.Fatalf("%d chip table(s) held for a panel nothing will ever retire", n)
 	}
 }

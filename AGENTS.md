@@ -60,7 +60,9 @@ dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
-                        opts.go = the `!opts` options panel;
+                        opts.go = the `!opts` options panel — zform buttons
+                        for the web, seeded emoji chips for every other client,
+                        both converging on one `!` parser;
                         inbox.go = INBOUND attachment ingestion (the mirror of
                         the outbox upload in handler.go)
 internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
@@ -213,6 +215,11 @@ fix, then make it pass.
 Live-server tests live in `test/` and only run with `ZULIP_LIVE=1` plus
 `ZULIP_SITE` / `ZULIP_EMAIL` / `ZULIP_API_KEY` set. They are excluded from
 the coverage gate: they are evidence about the *server*, not about our code.
+
+A couple of tests additionally need a second, non-bot account
+(`ZULIP_OTHER_EMAIL` / `ZULIP_OTHER_API_KEY`) subscribed to the same channel —
+the bot cannot prove anything about *somebody else's* reaction by adding one
+itself. They skip without it.
 
 They post **real messages** to `ZULIP_CHANNEL`. Always use the dedicated
 `zulip-acp-tests` channel — never `fleet` or any channel humans read. The
