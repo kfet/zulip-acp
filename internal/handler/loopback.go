@@ -180,7 +180,53 @@ func (h *Handler) PostTo(token, text string) error {
 	// wedged Zulip request hang the agent's turn forever.
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
 	defer cancel()
-	return split.Close(ctx, text)
+	err = split.Close(ctx, text)
+	// Record what went up, exactly as every other posting path does
+	// (the turn tail, the archive warning, the archive notice, the
+	// branch seed). A message the relay posted but did not remember is
+	// invisible to the two FREE ownership tiers — ownMsgs and the
+	// journal's message index — and handleSubmessage gates on precisely
+	// those, so a widget interaction on an agent-posted `/poll` was
+	// dropped in silence. The archive gesture degraded the same way:
+	// fetchLastOwn could still recover the id by querying the server,
+	// so that one survived at the cost of an API round trip.
+	//
+	// AFTER Close, not instead of returning its error: a partial chain
+	// still put real messages on the surface, and those are ours
+	// whether or not the last write failed.
+	h.rememberPosted(key, split)
+	return err
+}
+
+// rememberPosted indexes every message a loopback post actually put on
+// the surface against the conversation that owns it.
+//
+// PostTo holds a journal.Key, not a conv-id, so the conversation is
+// resolved here. A key with no conversation in the journal is a
+// legitimate no-op — there is nothing to remember it against, and
+// allocating a conversation for a bare post would invent state the
+// user never asked for.
+//
+// Every id, not just the tail: Close may emit several messages when the
+// post is long enough to roll over, and a submessage can arrive on any
+// of them. rememberOwn's max rule makes the oldest-first order
+// harmless, so the newest id is what ends up recorded as LastOwn. The
+// journal can hold only ONE own-id per conversation, so across a
+// restart a rolled-over post is remembered by its newest message only —
+// the same limit trackTail has always had for a rolled-over answer, and
+// not one worth a schema change.
+func (h *Handler) rememberPosted(key journal.Key, split *rollover.Splitter) {
+	ids := split.IDs()
+	if len(ids) == 0 {
+		return
+	}
+	conv, ok := h.cfg.Journal.Lookup(key)
+	if !ok {
+		return
+	}
+	for _, id := range ids {
+		h.rememberOwn(conv.ID, id)
+	}
 }
 
 // --- command.Scheduler ---------------------------------------------------
