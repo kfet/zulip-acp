@@ -346,7 +346,7 @@ and is announced on the queue as:
 ```json
 {"type":"submessage","msg_type":"widget","message_id":2333,
  "submessage_id":22,"sender_id":8,
- "content":"{\"type\":\"vote\",\"key\":\"9,1\",\"vote\":1}"}
+ "content":"{\"type\":\"vote\",\"key\":\"canned,3\",\"vote\":1}"}
 ```
 
 Measured on Zulip 12.2. Note the shape:
@@ -355,9 +355,18 @@ Measured on Zulip 12.2. Note the shape:
 - `sender_id` is who *interacted*, not the message's author. (A `reaction`
   event spells the same fact `user_id`.)
 - the vote names its option by **index**: `key` is
-  `"<canvas-sender-id>,<option-index>"`, and the question and options live on
-  the original message — so knowing what was voted *for* costs a
-  `GET /messages/{id}`.
+  `"canned,<option-index>"` for every option the poll was *created* with, and
+  `"<user-id>,<option-index>"` for one a participant added later. The question
+  and the option texts live on the original message — so knowing what was voted
+  *for* costs a `GET /messages/{id}`.
+
+  An earlier revision of this document gave the key as
+  `"<sender-id>,<option-index>"` unconditionally. That was wrong, and wrong in
+  a way a hand-built probe could not catch: `POST /api/v1/submessage` accepts
+  an arbitrary key string, so a synthetic `"9,1"` was stored and echoed back
+  happily. Only a vote cast by a human through the client shows the real shape
+  (measured on Zulip 12.2: message 2524 submessages 26-32, message 2537
+  submessage 34 — all `"key":"canned,N"`).
 - there is no channel, no topic and no body. Like `reaction`, the `/register`
   narrow does **not** filter these.
 - `submessage_id` is realm-global and assigned once per interaction, so it is a

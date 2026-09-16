@@ -278,8 +278,9 @@ Things deliberately not done in v1, with the reason.
   reasons:
 
   - **A vote names its option by INDEX**, not by text: the event's `key` is
-    `"<canvas-sender-id>,<option-index>"` and the question and options live on
-    the poll message. Resolving a tap to a command means a `GET /messages/{id}`
+    `"canned,<option-index>"` for an option the poll was created with (and
+    `"<user-id>,<option-index>"` for one a participant added later) and the
+    question and options live on the poll message. Resolving a tap to a command means a `GET /messages/{id}`
     per vote, or a per-conversation cache of poll layouts that has to survive a
     restart — where a reaction carries its own meaning in the emoji name and
     resolves with no call at all.

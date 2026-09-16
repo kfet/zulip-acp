@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -286,6 +287,81 @@ func TestLoopbackPostDoesNotFeedItselfBack(t *testing.T) {
 	}
 	if got := len(lh.a.prompts); got != before {
 		t.Fatalf("the relay answered its own post: %d new prompt(s): %q", got-before, lh.a.prompts)
+	}
+}
+
+// TestLoopbackPostIsRememberedAsOurOwnMessage is the regression that
+// made v0.31.0's submessage logging structurally dead code.
+//
+// Every other posting path — the turn tail, the archive warning, the
+// archive notice, the branch seed — records what it posted via
+// rememberOwn. PostTo did not, so a message the agent put up through
+// the `post` tool existed on the surface while being unknown to both
+// free ownership tiers. handleSubmessage gates on exactly those two,
+// and the only OTHER widget messages the relay posts are `!opts`
+// panels — whose zform buttons yield a message, not a submessage — so
+// nothing in a real deployment could ever satisfy the gate. Measured
+// live: an agent-posted /poll took a real vote and the relay logged
+// nothing.
+func TestLoopbackPostIsRememberedAsOurOwnMessage(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), nil)
+	conv := lh.engage(t, "loopback")
+
+	if err := lh.h.PostTo(chanToken("loopback"), "/poll which model?"); err != nil {
+		t.Fatalf("PostTo: %v", err)
+	}
+	posted := lh.z.lastID()
+	if posted == 0 {
+		t.Fatal("PostTo put nothing on the surface")
+	}
+
+	// Tier 1: the in-memory index, which is what resolves a gesture
+	// without an API call.
+	if owner, ours := lh.h.ownMsgs.get(posted); !ours || owner != conv.ID {
+		t.Fatalf("message %d is not indexed as ours (owner %q, ours=%v)", posted, owner, ours)
+	}
+	// Tier 2: the journal, which is what makes it survive a restart or
+	// a reload — and what the archive gesture falls back on before it
+	// resorts to querying the server.
+	if c, known := lh.j.LookupMessage(posted); !known || c.ID != conv.ID {
+		t.Fatalf("message %d is not in the journal's message index (conv %q, known=%v)", posted, c.ID, known)
+	}
+	if c, _ := lh.j.LookupID(conv.ID); c.LastOwnID != posted {
+		t.Fatalf("LastOwnID is %d, want the post %d", c.LastOwnID, posted)
+	}
+
+	// And the consequence the bug actually cost: a real vote on that
+	// poll is now observed rather than dropped. The key shape is the
+	// live one — `canned,<option-index>` for an option the poll was
+	// created with.
+	lh.h.Handle(context.Background(), submessageEvent(34, posted, humanID, "widget",
+		`{"type":"vote","key":"canned,3","vote":1}`))
+	if !lh.logged(fmt.Sprintf("widget submessage 34 on message %d", posted)) {
+		t.Fatal("a vote on an agent-posted poll was dropped in silence")
+	}
+}
+
+// TestLoopbackPostInAConversationTheJournalHasForgottenRemembersNothing:
+// PostTo holds a journal.Key, not a conv-id, so there is a resolution
+// step — and it must be a no-op when the key names no conversation.
+// Allocating one would invent state nobody asked for, purely so a bare
+// post had somewhere to be filed.
+func TestLoopbackPostInAConversationTheJournalHasForgottenRemembersNothing(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), nil)
+	before := len(lh.j.Convs())
+
+	if err := lh.h.PostTo(chanToken("never-engaged"), "hi"); err != nil {
+		t.Fatalf("PostTo: %v", err)
+	}
+	posted := lh.z.lastID()
+	if posted == 0 {
+		t.Fatal("PostTo put nothing on the surface")
+	}
+	if _, ours := lh.h.ownMsgs.get(posted); ours {
+		t.Fatalf("message %d was indexed against a conversation that does not exist", posted)
+	}
+	if got := len(lh.j.Convs()); got != before {
+		t.Fatalf("a bare post allocated a conversation: %d, want %d", got, before)
 	}
 }
 

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A message the agent posts through the loopback `post` tool is remembered as
+  the relay's own.** `Handler.PostTo` was the one posting path that never
+  called `rememberOwn`, so what it put on the surface was absent from both free
+  ownership tiers — the in-memory index and the journal's message index. The
+  cost was that v0.31.0's submessage logging **could never fire in practice**:
+  `handleSubmessage` gates on exactly those two tiers, and the only other
+  widget messages the relay posts are `!opts` panels, whose zform buttons yield
+  a message rather than a submessage — so nothing in a real deployment ever
+  satisfied the gate. Measured live on Zulip 12.2: the relay posted a `/poll`
+  via the tool, a human voted, the server recorded the submessage, and the
+  relay logged nothing. The `:wastebasket:` archive gesture on an agent-posted
+  message was degraded by the same omission rather than broken — `fetchLastOwn`
+  could still recover the id, at the cost of an API round trip it should not
+  have needed. Every message a rolled-over post emits is recorded, not just the
+  tail; a key the journal does not know is a no-op and never allocates a
+  conversation.
+- **The documented shape of a poll vote's `key` was wrong.** It is
+  `canned,<option-index>` for an option the poll was created with — not
+  `<sender-id>,<option-index>`; a participant-added option is the one keyed by
+  that user's id. The error came from a hand-built probe:
+  `POST /api/v1/submessage` accepts an arbitrary key string, so the synthetic
+  value was stored and echoed back without complaint. Corrected in
+  `docs/zulip-protocol-reference.md` and `BACKLOG.md`.
+
 ## [0.31.2] - 2026-09-16
 
 ### Added
