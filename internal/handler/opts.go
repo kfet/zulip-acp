@@ -16,13 +16,34 @@
 // # The phone is the default reader
 //
 // zform renders as buttons in the Zulip WEB app and nowhere else — the
-// phone app shows the message's plain markdown. So the markdown body
-// is the product and the widget is decoration on top of it: the body
-// must be complete, current and usable with a thumb, and is written
-// first. If the server rejects the widget outright, the panel still
-// posts (see postPanel).
+// phone app shows the message's plain markdown. So the body must be
+// complete, current and usable with a thumb, and is written first. If
+// the server rejects the widget outright, the panel still posts (see
+// postPanel).
 //
-// # One panel per conversation, and why it is re-posted rather than edited
+// What this comment USED to say — that the markdown body is "the
+// product" and the widget mere decoration — is false, and was false
+// when written. MEASURED on Zulip 12.2: when a message carries
+// widget_content the WEB client hides the markdown body ENTIRELY and
+// renders only the widget. So the body is the product on every client
+// that does not render widgets, and invisible on the one that does.
+// Both halves have to stand alone; neither is decoration.
+//
+// # One panel per conversation — and a poll beside it
+//
+// `!opts` posts a PAIR of messages: the panel proper, and a model
+// poll (poll.go). They are posted together, retired together, and
+// recorded together in the journal (journal.SetOpts takes both ids).
+//
+// The split is forced by the wire: a message carries at most one
+// widget_content, and the two controls need different widgets. It is
+// also the right split. Choosing a model is the one control with more
+// than three options and the one a phone reader actually reaches for,
+// and a poll is the only Zulip widget MEASURED to render AND be
+// votable on iOS. The panel keeps the session controls, which are
+// three fixed actions and fit a chip each.
+//
+// # Why it is re-posted rather than edited
 //
 // A widget message CANNOT BE EDITED. Measured on Zulip 12.2: a PATCH
 // on a message carrying widget_content comes back 400 "Widgets cannot
@@ -47,25 +68,46 @@
 // zform is a web-only surface, which left the phone reader — the
 // DEFAULT reader, see above — with markdown they had to retype by
 // thumb. Reactions are the one interactive control Zulip renders on
-// EVERY client, so the panel seeds its own emoji chips: `one`..`six`
-// for the model choices in modelChoices order, `new`, `octagonal_sign`
-// for stop, and `bar_chart` for status. Tapping a chip produces a
-// reaction event, which reaction.go routes back through optsReaction
-// below into the SAME `!` dispatch a typed command and a zform click
-// walk. Three surfaces, one parser; see optsChips.
+// EVERY client, so the panel seeds its own emoji chips: `new`,
+// `octagonal_sign` for stop, and `bar_chart` for status. Tapping a
+// chip produces a reaction event, which reaction.go routes back
+// through optsReaction below into the SAME `!` dispatch a typed
+// command and a zform click walk. Three surfaces, one parser; see
+// optsChips.
 //
-// Two things about this were measured and are load-bearing:
+// There used to be `one`..`six` digit chips for the model choices too,
+// and they are GONE. Two reasons, either sufficient:
+//
+//   - They did not work. MEASURED: with all nine chips present on the
+//     server (confirmed by API read), the iOS client drew the row
+//     starting at `three` — `:one:` and `:two:` never appeared, which
+//     is to say the current model and the one below it were
+//     unreachable by thumb, on the client the chips existed for. Cause
+//     unknown; not a count limit, not a seeding failure.
+//   - They are redundant. The model poll is a better surface on every
+//     measured axis: it renders and votes on iOS, and each option
+//     carries its own TEXT label, so nothing depends on a glyph
+//     drawing or on a positional emoji↔model mapping a footer has to
+//     explain.
+//
+// The three session chips survive because the poll has no equivalent
+// for them: `!new`, `!stop` and `!status` are actions, not a choice
+// among alternatives, and a poll option that fires one would be a
+// checkbox pretending to be a button.
+//
+// Two things about the remaining chips were measured and are
+// load-bearing:
 //
 //   - The chips must be added SEQUENTIALLY. Zulip renders the chip row
-//     in first-added order, so a concurrent seed would scramble
-//     `one`..`six` against the model list they name.
+//     in first-added order, so a concurrent seed would scramble them
+//     against the legend that names them.
 //   - A bot CANNOT remove somebody else's reaction. The DELETE
 //     succeeds and removes only the bot's own, so an un-tap can never
 //     be undone — which is why op=remove is consumed and dropped here
 //     and why optsReactionFooter says so out loud. A chip left behind
-//     is cosmetic: a model-change tap repaints, and the repaint
-//     deletes the whole panel, chips and all. A `!stop` or `!status`
-//     tap does not repaint, and its chip simply stays lit.
+//     is cosmetic: a model change repaints, and the repaint deletes
+//     the whole panel, chips and all. A `!stop` or `!status` tap does
+//     not repaint, and its chip simply stays lit.
 package handler
 
 import (
@@ -92,21 +134,13 @@ const optsVerb = "opts"
 // every other decoration.
 const optsAckEmoji = "check"
 
-// optsModelCap bounds how many model buttons the panel offers.
+// optsModelCap bounds how many model options the poll offers.
 //
-// An agent can advertise a hundred models and a panel is not a
+// An agent can advertise a hundred models and a menu is not a
 // catalogue — on a phone it has to fit on one screen. The current
 // model is always among them (see modelChoices), and `!model <filter>`
 // remains the way to reach the rest.
 const optsModelCap = 6
-
-// optsDigitEmoji are the chips that stand for the model choices, in
-// modelChoices order. There are exactly optsModelCap of them, which is
-// not a coincidence and must not become one: the panel may never offer
-// a model it cannot name with a chip. `one`..`six` are all in Zulip's
-// built-in set (verified against Zulip 12.2 — AddReaction accepted
-// every one of them).
-var optsDigitEmoji = [optsModelCap]string{"one", "two", "three", "four", "five", "six"}
 
 // The session chips. Each is the exact analogue of the zform button
 // below it, and carries the same reply string, so a tap and a click
@@ -140,8 +174,7 @@ type optsChip struct {
 	reply string
 }
 
-// optsReactionFooter is the panel's one-line legend for its chips,
-// where models is how many digit chips it actually has.
+// optsReactionFooter is the panel's one-line legend for its chips.
 //
 // It says the mapping because a phone reader sees a row of bare emoji
 // with nothing to explain them, and it says un-tapping does nothing
@@ -149,20 +182,11 @@ type optsChip struct {
 // own reaction, and a bot cannot undo it, so the chip vanishes while
 // the relay does nothing at all. Better to say so than to look broken.
 //
-// The digit range is counted rather than fixed at optsModelCap: an
-// agent reporting two models gets a panel that says "1-2", because a
-// legend naming chips that are not there is the same lie as a button
-// that does nothing.
-func optsReactionFooter(models int) string {
-	digits := fmt.Sprintf("1-%d models", models)
-	switch models {
-	case 0:
-		digits = "no models"
-	case 1:
-		digits = "1 model"
-	}
-	return fmt.Sprintf("*Tap a chip to choose — %s, :%s: new, :%s: stop, :%s: status. (Un-tapping does nothing.)*",
-		digits, optsNewEmoji, optsStopEmoji, optsStatusEmoji)
+// It no longer takes a model count: the models live in the poll, whose
+// options label themselves.
+func optsReactionFooter() string {
+	return fmt.Sprintf("*Tap a chip — :%s: new, :%s: stop, :%s: status. (Un-tapping does nothing.)*",
+		optsNewEmoji, optsStopEmoji, optsStatusEmoji)
 }
 
 // supersededPanel is what an old panel is rewritten to when it cannot
@@ -258,17 +282,17 @@ func (h *Handler) refreshPanel(ctx context.Context, key journal.Key) {
 	h.showPanel(ctx, key, "")
 }
 
-// showPanel posts a fresh panel at the bottom of the conversation and
-// retires whatever panel it replaces. note is optional prose shown
-// above it — it is how an unknown command explains itself.
+// showPanel posts a fresh control pair at the bottom of the
+// conversation and retires whatever pair it replaces. note is optional
+// prose shown above it — it is how an unknown command explains itself.
 //
 // Serialised across the whole relay by optsMu, because post → retire →
-// remember is a read-modify-write over one message id and there are two
-// callers on different goroutines: a human's command on the event loop,
-// and the agent's own `select_model` tool mid-turn. Interleaved, both
-// would delete the same old panel and only one of the two NEW panels
-// would be remembered — leaving a live panel nothing will ever retire.
-// The section is three HTTP calls long and uncontended in practice.
+// remember is a read-modify-write over the recorded message ids and
+// there are two callers on different goroutines: a human's command on
+// the event loop, and the agent's own `select_model` tool mid-turn.
+// Interleaved, both would delete the same old pair and only one of the
+// two NEW ones would be remembered — leaving a live panel nothing will
+// ever retire.
 func (h *Handler) showPanel(ctx context.Context, key journal.Key, note string) {
 	id, chips, ok := h.placePanel(ctx, key, note)
 	if !ok {
@@ -278,106 +302,73 @@ func (h *Handler) showPanel(ctx context.Context, key journal.Key, note string) {
 	h.seedChips(ctx, id, chips)
 }
 
-// placePanel is showPanel's locked half: post the new panel, retire the
-// old one, and record which message is now the live panel. It returns
-// the new panel's id and the chips it should wear.
+// placePanel is showPanel's locked half: post the model poll and the
+// new panel, retire the old pair, and record which messages are now
+// live. It returns the new panel's id and the chips it should wear.
+//
+// The POLL is posted first and the panel under it, which is the
+// opposite of the reading order you would guess and is load-bearing
+// twice over. The panel is the state readout, so it belongs nearest
+// the reader — the same reason the pair is re-posted at the bottom
+// rather than edited in place. And the panel's own text says whether
+// there is a poll to vote in, which cannot be known until the poll has
+// actually gone up: rendering the panel first would mean pointing at a
+// control that the next call then fails to post, which is exactly the
+// kind of lie a panel that doubles as a status line must not tell.
+//
+// If the panel fails, the poll just posted is deleted rather than left
+// behind. An orphan poll is not a degraded control: the old pair is
+// still live and still recorded, so the topic would show two polls and
+// only one of them would resolve a vote.
 func (h *Handler) placePanel(ctx context.Context, key journal.Key, note string) (int64, []optsChip, bool) {
 	h.optsMu.Lock()
 	defer h.optsMu.Unlock()
 
-	body, widget, chips := h.renderPanel(key, note)
+	models, effective, engaged, choices := h.panelState(key)
 	post := &convPoster{client: h.cfg.Client, key: key}
+	pollID := h.postModelPoll(ctx, post, key, engaged, effective, choices)
+
+	body, widget, chips := h.renderPanel(key, note, models, effective, engaged, pollID != 0, choices)
 	id, err := h.postPanel(ctx, post, body, widget)
 	if err != nil {
 		h.cfg.Logf("handler: posting options panel to %s: %v", h.describe(key), err)
+		if pollID != 0 {
+			h.retireMessage(ctx, key, pollID, "orphaned model poll")
+		}
 		return 0, nil, false
 	}
 	h.retirePrevious(ctx, key)
-	if !h.rememberPanel(key, id) {
-		// Nothing recorded this message as THE panel, so no tap on it
-		// can ever be honoured (optsReaction matches conv.OptsID
-		// exactly) — and there is no retirement coming that would drop
-		// a pinned chip table again. Post it, seed nothing, hold
-		// nothing. renderPanel has already withheld the chips and the
-		// legend for the same reason.
+	if !h.rememberPanel(key, id, pollID, pollModelIDs(choices)) {
+		// Nothing recorded these messages as THE control pair, so no
+		// tap and no vote on them can ever be honoured (optsReaction
+		// and pollVote match conv.OptsID / conv.PollID exactly). Post
+		// them and seed nothing. renderPanel has already withheld the
+		// chips and the legend, and postModelPoll the poll, for the
+		// same reason.
 		return id, nil, true
 	}
-	// The chip table is recorded BEFORE the caller starts seeding, and
-	// before the panel's id is reachable by a tap, because a tap is
-	// only honoured on the id the journal currently calls the panel
-	// (see optsReaction). Seeding is a chip per HTTP call, so the
-	// window in which an eager thumb hits a chip the relay has not
-	// finished placing is not theoretical.
-	h.rememberChips(id, chips)
 	return id, chips, true
-}
-
-// rememberChips records what a panel's chips MEAN, and forgets the
-// panel they replace.
-//
-// This is not a cache, it is the answer. Recomputing the table at tap
-// time was the obvious implementation and is wrong: the mapping also
-// depends on the agent's model LIST, which can be re-probed — after
-// `!login`, or when a provider is connected — without anything
-// repainting the panel. A list that reordered between seeding and the
-// tap would leave `two` pointing at a model other than the one written
-// on the line beside it, on a panel that is still live. So the table
-// is pinned to the message it was seeded on.
-//
-// Bounded by construction: one entry per conversation, replaced when
-// its panel is. It is in memory only, so a restart loses it — see
-// chipsFor for what happens then.
-func (h *Handler) rememberChips(id int64, chips []optsChip) {
-	h.chipMu.Lock()
-	defer h.chipMu.Unlock()
-	h.panelChips[id] = chips
-}
-
-// forgetChips drops a retired panel's chip table.
-func (h *Handler) forgetChips(id int64) {
-	h.chipMu.Lock()
-	defer h.chipMu.Unlock()
-	delete(h.panelChips, id)
-}
-
-// chipsFor returns what the chips on panel id mean.
-//
-// On a miss — the relay restarted since the panel was posted, and the
-// journal remembers the id where memory does not — it falls back to
-// recomputing from the panel's current state. That can only be wrong
-// in the narrow way rememberChips describes, and the alternative is a
-// panel that goes dead across a reload, which is worse: the id is
-// still live, the chips are still on the message, and a thumb has no
-// way to know the relay has forgotten them.
-func (h *Handler) chipsFor(key journal.Key, id int64) []optsChip {
-	h.chipMu.Lock()
-	chips, ok := h.panelChips[id]
-	h.chipMu.Unlock()
-	if ok {
-		return chips
-	}
-	_, _, _, choices := h.panelState(key)
-	return h.optsChips(choices)
 }
 
 // seedChips places the panel's tappable chips, in order, one call each.
 //
 // SEQUENTIAL is the requirement, not an implementation detail: Zulip
 // renders a message's reactions in the order they were added, so
-// firing these concurrently would draw the row out of order — `three`
-// sitting where the reader expects `one`, above a list that says
+// firing these concurrently would draw the row out of order — `stop`
+// sitting where the reader expects `new`, above a legend that says
 // otherwise. A tap is resolved by emoji NAME, so a scrambled row is a
 // readability failure rather than a wrong command, which is exactly
 // why it has to be fixed here and cannot be papered over later. The
-// cost is a handful of serial round-trips after the panel is already
-// visible and its zform already tappable.
+// cost is three serial round-trips after the panel is already visible
+// and its zform already tappable.
 //
 // Deliberately called with optsMu RELEASED. The lock exists for the
-// post → retire → remember read-modify-write over one message id;
-// seeding touches none of that, and holding it across nine round-trips
-// would block the agent's own `select_model` for no correctness gain.
-// If a second panel replaces this one mid-seed the remaining calls
-// simply fail against a deleted message and are logged.
+// post → retire → remember read-modify-write over the recorded message
+// ids; seeding touches none of that, and holding it across the
+// round-trips would block the agent's own `select_model` for no
+// correctness gain. If a second panel replaces this one mid-seed the
+// remaining calls simply fail against a deleted message and are
+// logged.
 //
 // A refusal is logged and the rest still go: a realm missing one emoji
 // should lose one chip, not the whole menu. Nothing here is retried,
@@ -391,45 +382,32 @@ func (h *Handler) seedChips(ctx context.Context, msgID int64, chips []optsChip) 
 	}
 }
 
-// optsChips is the panel's chip table: which emoji means which command,
-// in the order they are seeded and therefore rendered.
+// optsChips is the panel's chip table: which emoji means which
+// command, in the order they are seeded and therefore rendered.
 //
-// It is derived from exactly what renderPanel shows, and it is the ONE
-// place the mapping exists — both the seeding side and the tap side
-// call it, so a chip can never come to mean something other than the
-// line above it.
+// It is CONSTANT, and that is the point of having moved the models to
+// a poll. The table used to depend on the agent's model list, which
+// can be re-probed — after `!login`, or when a provider is connected —
+// without anything repainting the panel, so it had to be pinned to the
+// message it was seeded on and recomputed only as a post-restart
+// fallback. `!new`, `!stop` and `!status` depend on nothing, so the
+// pinning, its lock, its map and its restart fallback are all gone.
 //
 // Empty when reactions are off. A chip is only half a control: the
 // other half is the reaction event, and with "reactions": false the
 // relay does not even subscribe to those (see cmd/zulip-acp/main.go).
 // Seeding a row of buttons that provably cannot do anything is worse
 // than showing none.
-//
-// It is built at RENDER time and then pinned to the message it was
-// seeded on (rememberChips), never recomputed to answer a tap. The
-// mapping depends on the agent's model list, which can be re-probed
-// without anything repainting the panel; chipsFor falls back to
-// calling this again only when a restart has lost the pinned table.
-func (h *Handler) optsChips(choices []zulipproto.ZFormChoice) []optsChip {
+func (h *Handler) optsChips() []optsChip {
 	if !h.cfg.Reactions {
 		return nil
 	}
-	chips := make([]optsChip, 0, len(choices))
-	for i, c := range choices {
-		if i >= len(optsDigitEmoji) {
-			// Unreachable while optsModelCap bounds the choices, and
-			// kept anyway: the alternative to a dropped chip is a
-			// panic or a chip with no emoji.
-			break
-		}
-		chips = append(chips, optsChip{emoji: optsDigitEmoji[i], reply: c.Reply})
-	}
 	s := command.DisplaySigil
-	return append(chips,
-		optsChip{emoji: optsNewEmoji, reply: s + "new"},
-		optsChip{emoji: optsStopEmoji, reply: s + "stop"},
-		optsChip{emoji: optsStatusEmoji, reply: s + "status"},
-	)
+	return []optsChip{
+		{emoji: optsNewEmoji, reply: s + "new"},
+		{emoji: optsStopEmoji, reply: s + "stop"},
+		{emoji: optsStatusEmoji, reply: s + "status"},
+	}
 }
 
 // postPanel posts the panel, degrading gracefully if the widget is
@@ -454,28 +432,40 @@ func (h *Handler) postPanel(ctx context.Context, post *convPoster, body, widget 
 	return post.Post(ctx, body)
 }
 
-// retirePrevious removes the panel this conversation had before the one
-// just posted, so exactly one is ever live.
+// retirePrevious removes the control pair this conversation had before
+// the one just posted, so exactly one panel and one poll are ever live.
 //
-// DELETE first, because a panel carrying a widget cannot be edited at
-// all. Deleting one's own message is a realm policy and is time-limited
-// (message_content_delete_limit_seconds), so a refusal is expected
-// rather than exceptional: fall back to rewriting the body to a pointer
-// line, which works for a panel posted without its widget. If both are
-// refused the old panel simply stays — stale, but harmless, since every
-// button on it is still a valid command.
+// DELETE first, because a message carrying a widget cannot be edited
+// at all. Deleting one's own message is a realm policy and is
+// time-limited (message_content_delete_limit_seconds), so a refusal is
+// expected rather than exceptional: fall back to rewriting the body to
+// a pointer line, which works for a message posted without its widget.
+// It never works for the POLL — a poll always carries a submessage, so
+// it is sealed by construction — which is why a realm that forbids
+// deletion simply leaves the old poll in the scrollback. That is safe
+// rather than merely tolerable: the vote path matches conv.PollID
+// exactly, so a poll that is no longer the live one is inert.
+// If both are refused the old message simply stays — stale, but
+// harmless, since every button on it is still a valid command.
 func (h *Handler) retirePrevious(ctx context.Context, key journal.Key) {
 	conv, ok := h.cfg.Journal.Lookup(key)
-	if !ok || conv.OptsID == 0 {
+	if !ok {
 		return
 	}
-	// Unconditionally, before any of the ways this can fail: the old
-	// panel stops being THE panel here regardless of whether its
-	// message could be removed, and a chip table that outlived its
-	// panel is memory held for a message nothing will ever honour a
-	// tap on.
-	h.forgetChips(conv.OptsID)
-	err := h.cfg.Client.DeleteMessage(ctx, conv.OptsID)
+	// The poll goes first: a stale poll is the more misleading of the
+	// two, because its options still look votable.
+	if conv.PollID != 0 {
+		h.retireMessage(ctx, key, conv.PollID, "model poll")
+	}
+	if conv.OptsID != 0 {
+		h.retireMessage(ctx, key, conv.OptsID, "options panel")
+	}
+}
+
+// retireMessage deletes one retired control message, falling back to
+// an edit and then to leaving it alone. what names it in the log.
+func (h *Handler) retireMessage(ctx context.Context, key journal.Key, id int64, what string) {
+	err := h.cfg.Client.DeleteMessage(ctx, id)
 	switch {
 	case err == nil:
 		return
@@ -486,33 +476,43 @@ func (h *Handler) retirePrevious(ctx context.Context, key journal.Key) {
 	case !zulipproto.RejectedByServer(err):
 		// Not a refusal: the server could not be reached, so the edit
 		// would fail identically.
-		h.cfg.Logf("handler: deleting options panel %d in %s: %v", conv.OptsID, h.describe(key), err)
+		h.cfg.Logf("handler: deleting %s %d in %s: %v", what, id, h.describe(key), err)
 		return
 	}
-	if err := h.cfg.Client.EditMessage(ctx, conv.OptsID, supersededPanel); err != nil {
-		h.cfg.Logf("handler: retiring options panel %d in %s: %v", conv.OptsID, h.describe(key), err)
+	if err := h.cfg.Client.EditMessage(ctx, id, supersededPanel); err != nil {
+		h.cfg.Logf("handler: retiring %s %d in %s: %v", what, id, h.describe(key), err)
 	}
 }
 
-// rememberPanel persists the panel's message id, and reports whether
-// anything now calls this message the conversation's panel.
+// rememberPanel persists the control pair's message ids, and reports
+// whether anything now calls these messages the conversation's
+// controls.
 //
 // A conversation the relay has never answered in has no journal entry,
 // and commands deliberately do not allocate one — `!opts` in a fresh
 // topic must leave nothing on disk. The panel still posts; it is
 // simply a one-off that the first real turn's panel replaces. The
-// false it returns is what stops the caller pinning an in-memory chip
-// table for a panel that nothing will ever retire.
-func (h *Handler) rememberPanel(key journal.Key, id int64) bool {
+// false it returns is what stops the caller pinning an in-memory
+// option table for a poll that nothing will ever retire.
+func (h *Handler) rememberPanel(key journal.Key, id, pollID int64, pollModels []string) bool {
 	conv, ok := h.cfg.Journal.Lookup(key)
 	if !ok {
 		return false
 	}
-	if err := h.cfg.Journal.SetOpts(conv.ID, id); err != nil {
-		// Still true: the id did not reach disk, but the journal's
-		// in-memory view has it, so a tap resolves and the eventual
-		// retirement drops the chips. Only a restart loses the panel,
-		// and chipsFor already handles that.
+	if pollID == 0 {
+		// No poll went up, so nothing means anything: recording an
+		// option table for a poll that does not exist would leave the
+		// PREVIOUS poll's meaning attached to a conversation that has
+		// none.
+		pollModels = nil
+	}
+	if err := h.cfg.Journal.SetOpts(conv.ID, id, pollID, pollModels); err != nil {
+		// Journal.commit ROLLS BACK its in-memory state when the write
+		// fails, so this pair is not recorded anywhere: no tap and no
+		// vote on it will resolve, and the next `!opts` replaces it.
+		// That is the safe direction and the reason this is logged
+		// rather than retried — the alternative to an inert control is
+		// resolving a vote against a table nobody wrote down.
 		h.cfg.Logf("handler: recording options panel for %s: %v", conv.ID, err)
 	}
 	return true
@@ -520,12 +520,15 @@ func (h *Handler) rememberPanel(key journal.Key, id int64) bool {
 
 // renderPanel builds the panel's markdown body and its widget payload.
 //
-// The body comes first and stands alone, because most readers never
-// see the widget. The header doubles as the current-state readout, so
-// the panel is the menu and the status line at once.
-func (h *Handler) renderPanel(key journal.Key, note string) (body, widget string, chips []optsChip) {
-	models, effective, engaged, choices := h.panelState(key)
-
+// Both halves have to stand alone: a client that renders widgets shows
+// ONLY the widget, and a client that does not shows only the markdown.
+// The header doubles as the current-state readout, so the panel is the
+// menu and the status line at once.
+//
+// The MODELS are not here. They are the poll posted underneath (see
+// postModelPoll) — one control, one surface, and a model name that a
+// phone can read and tap.
+func (h *Handler) renderPanel(key journal.Key, note string, models []client.ModelInfo, effective string, engaged, poll bool, choices []zulipproto.ZFormChoice) (body, widget string, chips []optsChip) {
 	var sb strings.Builder
 	if note != "" {
 		sb.WriteString(note + "\n\n")
@@ -534,8 +537,25 @@ func (h *Handler) renderPanel(key journal.Key, note string) (body, widget string
 	fmt.Fprintf(&sb, "**⚙️ %s**\n", modelLabel(effective))
 	fmt.Fprintf(&sb, "*`%s%s` to change · `%shelp` for everything*\n", s, optsVerb, s)
 
-	if len(choices) > 0 {
-		sb.WriteString("\n**Model**\n")
+	// The model list lives HERE, not on the poll, and that is forced
+	// by the wire: a poll message's content IS the `/poll` slash
+	// command (see zulipproto.PollContent), so a client that does not
+	// render widgets shows the reader a literal "/poll …" line and
+	// nothing they can use. The panel is the only place a typable list
+	// can go.
+	//
+	// Whether it points at the poll depends on whether the poll ABOVE
+	// actually went up, which is why the poll is posted first: a panel
+	// that doubles as a status line may not point at a control that is
+	// not there.
+	if len(choices) == 0 {
+		fmt.Fprintf(&sb, "\nNo models available — connect a provider with `%slogin`.\n", s)
+	} else {
+		sb.WriteString("\n**Model**")
+		if poll {
+			sb.WriteString(" — vote in the poll above, or:")
+		}
+		sb.WriteString("\n")
 		for _, c := range choices {
 			marker := ""
 			if c.Reply == modelReply(effective) {
@@ -546,8 +566,6 @@ func (h *Handler) renderPanel(key journal.Key, note string) (body, widget string
 		if n := len(models) - len(choices); n > 0 {
 			fmt.Fprintf(&sb, "- …and %d more — `%smodel <filter>`\n", n, s)
 		}
-	} else {
-		fmt.Fprintf(&sb, "\nNo models available — connect a provider with `%slogin`.\n", s)
 	}
 
 	sb.WriteString("\n**Session**\n")
@@ -565,11 +583,7 @@ func (h *Handler) renderPanel(key journal.Key, note string) (body, widget string
 		sb.WriteString("\n*No conversation here yet — " + startHint(key) + " first; these controls need one.*\n")
 	}
 
-	// The chip table is built from the MODEL choices alone: the three
-	// session chips are constant and optsChips appends them itself.
-	// Built before the session buttons are appended below, which is
-	// why that append cannot be hoisted.
-	chips = h.optsChips(choices)
+	chips = h.optsChips()
 	if !engaged {
 		// No conversation here yet, so every control on this panel
 		// answers "there is none" — and in a channel a button's reply
@@ -577,27 +591,28 @@ func (h *Handler) renderPanel(key journal.Key, note string) (body, widget string
 		// a message that does not mention the bot. The buttons are
 		// rendered anyway because they cost nothing; a chip costs an
 		// HTTP call each and would sit there looking live. The hint
-		// below says what to do instead.
+		// above says what to do instead.
 		chips = nil
 	}
 
 	// The footer names the chip mapping, and only when there are
 	// chips. On a phone the reaction row is the sole tappable thing on
-	// the message, and a row of bare digits with nothing to explain it
+	// the message, and a row of bare emoji with nothing to explain it
 	// is a puzzle; with reactions off there is no row and the line
 	// would be a promise the relay does not keep.
 	if len(chips) > 0 {
-		sb.WriteString("\n" + optsReactionFooter(len(choices)) + "\n")
+		sb.WriteString("\n" + optsReactionFooter() + "\n")
 	}
 
 	// The session buttons repeat the lines above so the web reader can
-	// tap them; the markdown reader has already read them.
-	choices = append(choices,
+	// tap them — and on web they are all the reader gets, since the
+	// widget hides the body entirely.
+	buttons := []zulipproto.ZFormChoice{
 		zulipproto.Choice("new", "Fresh context", s+"new"),
 		zulipproto.Choice("stop", "Interrupt the turn", s+"stop"),
 		zulipproto.Choice("status", "Full detail", s+"status"),
-	)
-	return sb.String(), zulipproto.ZForm("⚙️ Options", choices), chips
+	}
+	return sb.String(), zulipproto.ZForm("⚙️ "+modelLabel(effective), buttons), chips
 }
 
 // panelState reads everything the panel is a rendering of: the agent's
@@ -632,9 +647,9 @@ func (h *Handler) panelState(key journal.Key) (models []client.ModelInfo, effect
 //     panel usually takes them, but a realm that forbids deletion
 //     leaves the whole message), and a tap on a month-old menu must
 //     not reconfigure a live conversation.
-//   - the emoji must be in the chip table this panel WAS seeded with.
-//     Anything else — a human's own :+1: on the panel — is not ours
-//     and falls through to the agent as ordinary ambient signal.
+//   - the emoji must be in the chip table (optsChips). Anything else —
+//     a human's own :+1: on the panel — is not ours and falls through
+//     to the agent as ordinary ambient signal.
 //   - only then, op=add. A removal is consumed and DROPPED rather than
 //     passed on: a bot cannot remove another user's reaction (the
 //     DELETE succeeds and takes only its own), so an un-tap is
@@ -648,15 +663,14 @@ func (h *Handler) panelState(key journal.Key) (models []client.ModelInfo, effect
 // is the point — a chip may not be a way around the allowlist.
 //
 // Acknowledgement is whatever the dispatched command already does: a
-// `check` reaction and a repainted panel for a model change, a posted
-// reply for the rest. The repaint re-posts the panel and deletes the
-// old one, which disposes of the stale chips.
+// posted reply. The chips are `!new`, `!stop` and `!status` — none of
+// them repaints the panel, so their chips simply stay lit.
 func (h *Handler) optsReaction(ctx context.Context, conv journal.Conv, ev zulipproto.Event) bool {
 	if conv.OptsID == 0 || ev.MessageID != conv.OptsID {
 		return false
 	}
 	reply := ""
-	for _, c := range h.chipsFor(conv.Key, conv.OptsID) {
+	for _, c := range h.optsChips() {
 		if c.emoji == ev.EmojiName {
 			reply = c.reply
 			break

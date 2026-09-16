@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,9 +63,39 @@ func liveClient(t *testing.T) (*zulipproto.Client, int64) {
 	return nil, 0
 }
 
+// topicFor mints a unique topic for one test, WITHIN Zulip's
+// MAX_TOPIC_LENGTH.
+//
+// The length is not cosmetic and the old version of this helper was a
+// real bug. Zulip truncates an over-long topic to 60 code points and
+// answers {"result":"success"} — SILENTLY, exactly as it does for an
+// over-long message body. A test that sends to a 73-character topic
+// therefore stores its messages under a 60-character one, and any
+// narrow built from the name it THINKS it used matches nothing. That
+// is precisely how TestBeforeIDPagesBackwardsExclusively came to fail
+// against a perfectly working pagination API: the test name is long,
+// the topic overflowed, and the search returned an empty page.
+//
+// So the suffix that provides uniqueness is kept and the NAME is what
+// gives way: the tail of the test name survives, because that is the
+// half that distinguishes one test from another.
 func topicFor(t *testing.T) string {
 	t.Helper()
-	return fmt.Sprintf("zulip-acp live: %s %d", t.Name(), time.Now().UnixNano())
+	const prefix = "live: "
+	suffix := " " + strconv.FormatInt(time.Now().UnixNano()%1e9, 10)
+	room := zulipproto.MaxTopicLength - utf8.RuneCountInString(prefix) - utf8.RuneCountInString(suffix)
+	name := []rune(t.Name())
+	if len(name) > room {
+		name = name[len(name)-room:]
+	}
+	topic := prefix + string(name) + suffix
+	if n := utf8.RuneCountInString(topic); n > zulipproto.MaxTopicLength {
+		// Unreachable by construction, and asserted anyway: the whole
+		// failure mode this guards against is the server accepting the
+		// topic and quietly storing a different one.
+		t.Fatalf("topic %q is %d code points, over Zulip's %d", topic, n, zulipproto.MaxTopicLength)
+	}
+	return topic
 }
 
 // TestSilentTruncationIsStillReal codifies the single most important
@@ -454,6 +485,82 @@ func TestBeforeIDPagesBackwardsExclusively(t *testing.T) {
 	}
 	if len(prev) != 2 || prev[0].ID != ids[0] || prev[1].ID != ids[1] {
 		t.Fatalf("previous page = %+v, want %v oldest first and no overlap", prev, ids[:2])
+	}
+}
+
+// TestPollIsMadeFromContentNotWidgetContent pins the two server facts
+// the model menu stands on, and the first of them cost a whole
+// implementation:
+//
+//   - A BOT CANNOT ATTACH A POLL AS widget_content. POST /messages
+//     with widget_type "poll" is refused 400 "Widgets: unknown widget
+//     type: poll" — widget_content accepts `zform` and nothing else.
+//     A poll is created by sending the `/poll` SLASH COMMAND as the
+//     message content and letting Zulip build the widget. The first
+//     version of this feature marshalled a poll into widget_content
+//     because that is what zform does, it passed every unit test, and
+//     the live server rejected it outright.
+//   - A poll message is then sealed against edits exactly as a zform
+//     is, so the control pair in internal/handler/opts.go must be
+//     re-posted and retired rather than PATCHed.
+//
+// What this test deliberately does NOT do is cast a vote. A synthetic
+// POST /api/v1/submessage accepts an ARBITRARY key string and echoes
+// it back, so it can only ever confirm whatever was guessed — which is
+// how the wrong key shape got written into this repo's docs in the
+// first place. The key format is evidence from a real client's vote
+// (measured: "canned,<index>") and is pinned in
+// internal/zulipproto/poll_test.go.
+func TestPollIsMadeFromContentNotWidgetContent(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+
+	// The way that does NOT work, asserted so nobody "simplifies"
+	// PollContent back into a widget payload.
+	bogus := `{"widget_type":"poll","extra_data":{"question":"Model","options":["opus","sonnet"]}}`
+	if _, err := c.SendMessageWidget(ctx, streamID, topic, "**Model**", bogus); err == nil {
+		t.Fatal("the server accepted a poll as widget_content — PollContent could be a widget payload after all")
+	} else if !zulipproto.RejectedByServer(err) {
+		t.Fatalf("the widget_content poll failed for the wrong reason: %v", err)
+	} else {
+		t.Logf("as expected, widget_content refused the poll: %v", err)
+	}
+
+	// The way that does.
+	content := zulipproto.PollContent("⚙️ Model", []string{"opus", "sonnet", "haiku"})
+	id, err := c.SendMessage(ctx, streamID, topic, content)
+	if err != nil {
+		t.Fatalf("posting the /poll command: %v", err)
+	}
+	m, err := c.GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("reading the poll back: %v", err)
+	}
+	found := ""
+	for _, sm := range m.Submessages {
+		if sm.MsgType == zulipproto.WidgetMsgType {
+			found = sm.Content
+		}
+	}
+	if !strings.Contains(found, `"`+zulipproto.WidgetTypePoll+`"`) {
+		t.Fatalf("message %d carries no poll submessage: %q — the /poll command was not expanded", id, found)
+	}
+	t.Logf("poll %d built by the server: %s", id, found)
+
+	if err := c.EditMessage(ctx, id, "edited body"); err == nil {
+		t.Fatal("the server accepted an edit on a poll message — the re-post lifecycle " +
+			"in internal/handler/opts.go would be unnecessary")
+	} else if !zulipproto.RejectedByServer(err) {
+		t.Fatalf("edit failed for the wrong reason: %v", err)
+	} else {
+		t.Logf("as expected, the server refused the edit: %v", err)
+	}
+
+	// Retirement is by deletion, and the relay degrades around a realm
+	// that forbids it, so this only reports.
+	if err := c.DeleteMessage(ctx, id); err != nil {
+		t.Logf("deleting the poll was refused (%v) — the relay falls back to an edit", err)
 	}
 }
 

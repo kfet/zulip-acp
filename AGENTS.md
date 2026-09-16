@@ -60,9 +60,10 @@ dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
-                        opts.go = the `!opts` options panel — zform buttons
-                        for the web, seeded emoji chips for every other client,
-                        both converging on one `!` parser;
+                        opts.go = the `!opts` control PAIR — zform buttons for
+                        the web plus seeded session chips everywhere;
+                        poll.go = the MODEL poll, the one surface measured to
+                        render AND vote on iOS; all converge on one `!` parser;
                         inbox.go = INBOUND attachment ingestion (the mirror of
                         the outbox upload in handler.go)
 internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
@@ -158,12 +159,18 @@ Zulip wire protocol it stays here.
   agent's context window.
 - **`!opts` is the ONE command that stays here, and it stays here for a
   reason.** It adds no capability: it renders the broker's existing actions
-  onto `zform`, a Zulip-only button widget, and every button's `reply` is a
-  command a human could have typed. Do not move it to acp-kit (poe-acp has no
-  widgets), and do not let a button reach past `command.Broker`'s exported
-  actions — a click and a typed command must be one code path. Do not add a
-  knob the agent has not reported (see the thinking-level note in the design
-  doc): a button that silently fails is worse than no button.
+  onto Zulip-only widgets — `zform` buttons and a `poll` — and every button's
+  `reply`, every chip and every poll option resolves to a command a human could
+  have typed. Do not move it to acp-kit (poe-acp has no widgets), and do not
+  let a button, a chip or a VOTE reach past `command.Broker`'s exported
+  actions — all four surfaces must be one code path. Do not add a knob the
+  agent has not reported (see the thinking-level note in the design doc): a
+  control that silently fails is worse than no control.
+- **The digit reaction chips are GONE and must not come back.** MEASURED: iOS
+  did not draw `:one:`/`:two:` even with every reaction held by the server, so
+  the current model was untappable on the client the chips existed for. The
+  model menu is the poll; the chips that remain are the three session actions,
+  which have no poll equivalent.
 - **A loopback tool must never destroy the turn that is calling it.** That is
   why there is no `stop` tool, why `new_session` is deferred to
   `Handler.endTurn`, and why `rename_topic` is deferred to the same place — a

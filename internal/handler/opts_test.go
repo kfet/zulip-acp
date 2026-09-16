@@ -75,6 +75,80 @@ func lastMsg(t *testing.T, hh *harness) int64 {
 	return ids[len(ids)-1]
 }
 
+// isPoll reports whether message id is the model poll. A poll is
+// identified by its CONTENT, because a bot cannot attach one as
+// widget_content — the message body IS the `/poll` slash command and
+// Zulip builds the widget from it (see zulipproto.PollContent).
+// `!opts` posts a PAIR — the poll, then the panel — so every assertion
+// about "the panel" has to say which of the two it means.
+func isPoll(hh *harness, id int64) bool {
+	return strings.HasPrefix(hh.z.body(id), "/poll ")
+}
+
+// panelMsg is the id of the live options panel: the last message that
+// is not a poll.
+func panelMsg(t *testing.T, hh *harness) int64 {
+	t.Helper()
+	ids := msgIDs(hh)
+	for i := len(ids) - 1; i >= 0; i-- {
+		if !isPoll(hh, ids[i]) {
+			return ids[i]
+		}
+	}
+	t.Fatal("no panel was posted")
+	return 0
+}
+
+// panelBody is the live panel's markdown.
+func panelBody(t *testing.T, hh *harness) string {
+	t.Helper()
+	return hh.z.body(panelMsg(t, hh))
+}
+
+// pollMsg is the id of the live model poll, or 0 when none was posted.
+func pollMsg(hh *harness) int64 {
+	ids := msgIDs(hh)
+	for i := len(ids) - 1; i >= 0; i-- {
+		if isPoll(hh, ids[i]) {
+			return ids[i]
+		}
+	}
+	return 0
+}
+
+// pollWidget reads back the poll Zulip would build from message id,
+// so a test can assert what a PHONE reader would be able to vote on.
+// It parses the `/poll` command exactly as the server does: the rest
+// of the first line is the question, every further line is an option.
+func pollWidget(t *testing.T, hh *harness, id int64) (question string, options []string) {
+	t.Helper()
+	body := hh.z.body(id)
+	rest, ok := strings.CutPrefix(body, "/poll ")
+	if !ok {
+		t.Fatalf("message %d is not a poll: %q", id, body)
+	}
+	lines := strings.Split(rest, "\n")
+	for _, o := range lines[1:] {
+		if o == "" {
+			t.Fatal("an unlabelled poll option is unreadable")
+		}
+		options = append(options, o)
+	}
+	if len(options) == 0 {
+		t.Fatalf("poll %d has no options: %q", id, body)
+	}
+	return lines[0], options
+}
+
+// castVote feeds the submessage event a real client's vote produces.
+// The key shape is the MEASURED one: "canned,<index>" for an option
+// the poll shipped with.
+func castVote(t *testing.T, hh *harness, voter, id int64, option, updown int) {
+	t.Helper()
+	hh.h.Handle(context.Background(), submessageEvent(1, id, voter,
+		"widget", fmt.Sprintf(`{"type":"vote","key":"canned,%d","vote":%d}`, option, updown)))
+}
+
 // optsHarness is an engaged DM conversation with two models, which is
 // the state most panel assertions want.
 func optsHarness(t *testing.T) *harness {
@@ -87,18 +161,396 @@ func optsHarness(t *testing.T) *harness {
 
 // --- the panel -----------------------------------------------------------
 
-// TestOptsPostsAPanelThatReadsOnAPhone: the markdown body is the
-// product, because zform renders only in the web app. Everything a
-// button offers must also be typeable from the text.
-func TestOptsPostsAPanelThatReadsOnAPhone(t *testing.T) {
+// TestOptsPostsAPairThatReadsOnAPhone: neither widget renders
+// everywhere, so between them the two markdown bodies must carry every
+// control — a client that draws no widget at all still has to be able
+// to type its way to all of it.
+func TestOptsPostsAPairThatReadsOnAPhone(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	body := hh.only(t)
-	for _, want := range []string{"⚙️", "one", "`!model a/one`", "`!model b/two`", "`!new`", "`!stop`", "`!status`", "`!help`"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("panel %q is missing %s", body, want)
+	panel := panelBody(t, hh)
+	for _, want := range []string{"⚙️", "one", "`!new`", "`!stop`", "`!status`", "`!help`"} {
+		if !strings.Contains(panel, want) {
+			t.Fatalf("panel %q is missing %s", panel, want)
 		}
+	}
+	// The typable list is on the PANEL, not on the poll: a poll
+	// message's body is the literal `/poll` command, which is what a
+	// client that renders no widget would show the reader.
+	for _, want := range []string{"`!model a/one`", "`!model b/two`"} {
+		if !strings.Contains(panel, want) {
+			t.Fatalf("panel %q is missing %s", panel, want)
+		}
+	}
+	if !strings.HasPrefix(hh.z.body(pollMsg(hh)), "/poll ") {
+		t.Fatalf("poll body = %q, want the slash command", hh.z.body(pollMsg(hh)))
+	}
+}
+
+// TestModelPollIsVotableAndSelfLabelling is the whole reason the menu
+// moved off chips: a poll renders and votes on iOS, and each option
+// carries its own TEXT, so nothing depends on a glyph drawing or on a
+// positional emoji↔model mapping.
+func TestModelPollIsVotableAndSelfLabelling(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	id := pollMsg(hh)
+	if id == 0 {
+		t.Fatal("no model poll was posted")
+	}
+	question, options := pollWidget(t, hh, id)
+	if !strings.Contains(question, "one") {
+		t.Fatalf("question %q does not name the current model", question)
+	}
+	if strings.Join(options, "|") != "one|two" {
+		t.Fatalf("options = %v, want the model labels current-first", options)
+	}
+	if got := hh.j.Convs()[0].PollID; got != id {
+		t.Fatalf("journal points at poll %d, want %d", got, id)
+	}
+}
+
+// TestAVoteChangesTheModel walks the feature end to end: a vote runs
+// the same `!model <id>` a human could type, is acknowledged with the
+// same reaction, and repaints the pair.
+func TestAVoteChangesTheModel(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+
+	castVote(t, hh, humanID, poll, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "b/two" {
+		t.Fatalf("model override = %q/%v, want b/two", id, ok)
+	}
+	added, _ := hh.z.reactions()
+	if !slices.Contains(added, fmt.Sprintf("%d:%s", poll, optsAckEmoji)) {
+		t.Fatalf("reactions = %v — the vote was not acknowledged on the poll", added)
+	}
+	if pollMsg(hh) == poll {
+		t.Fatal("the pair was not repainted")
+	}
+	if got := panelBody(t, hh); !strings.Contains(got, "**⚙️ two**") {
+		t.Fatalf("new panel does not show the new state: %q", got)
+	}
+}
+
+// TestAnUnVoteMeansNothing pins the measured toggle: a poll vote
+// arrives as +1, then -1 when it is taken back. The selection is the
+// latest POSITIVE vote — reading a -1 as a choice would let un-ticking
+// an option mean "no model", which is not a state the relay has.
+func TestAnUnVoteMeansNothing(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+	before := msgIDs(hh)
+
+	castVote(t, hh, humanID, poll, 1, -1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("an un-vote set the model to %q", id)
+	}
+	if len(msgIDs(hh)) != len(before) {
+		t.Fatal("the un-vote posted something")
+	}
+}
+
+// TestAVoteRespectsTheAllowlist: a vote is a command, and a command
+// surface may never be a way around the gates a typed message walks.
+func TestAVoteRespectsTheAllowlist(t *testing.T) {
+	const stranger = int64(4242)
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), func(c *Config) {
+		c.AllowedUsers = map[int64]struct{}{humanID: {}}
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+
+	castVote(t, hh, stranger, poll, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a user the allowlist does not name set the model to %q", id)
+	}
+}
+
+// TestABotCannotVote: the bot-sender snapshot is taken at startup, so
+// a bot created since is recognisable only by the lookup the reaction
+// path already makes. A vote runs a command, so it needs the same gate.
+func TestABotCannotVote(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+	const laterBot = int64(77)
+	hh.z.users[laterBot] = zulipproto.User{UserID: laterBot, FullName: "Late Bot", IsBot: true}
+
+	castVote(t, hh, laterBot, poll, 1, 1)
+	castVote(t, hh, botID, poll, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a bot voted and set the model to %q", id)
+	}
+}
+
+// TestAStartupSnapshotBotCannotVote: BotSenderIDs is the cheap gate,
+// checked before the lookup that catches a bot created since.
+func TestAStartupSnapshotBotCannotVote(t *testing.T) {
+	const otherBot = int64(66)
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), func(c *Config) {
+		c.BotSenderIDs = map[int64]struct{}{otherBot: {}}
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	castVote(t, hh, otherBot, pollMsg(hh), 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a known bot voted and set the model to %q", id)
+	}
+}
+
+// TestAWidgetEventOnARetiredConversationsMessageIsDropped: the relay's
+// own message index outlives the conversation it belongs to — the
+// entry maps a message id to a conv id, and `!new` retires that
+// conversation without touching the index. A retired conversation
+// answers to nothing.
+func TestAWidgetEventOnARetiredConversationsMessageIsDropped(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "hello again", humanID, botID)
+	own := lastMsg(t, hh)
+	hh.deliverDM(t, humanID, "!new", humanID, botID)
+	hh.z.reset()
+
+	hh.h.Handle(context.Background(), submessageEvent(1, own, humanID,
+		"widget", `{"type":"vote","key":"canned,0","vote":1}`))
+
+	if hh.logged("widget submessage") {
+		t.Fatal("a widget event on a retired conversation's message was resolved")
+	}
+}
+
+// TestAnOrphanedPollIsDeleted: the poll goes up first, so a panel that
+// then fails to post would leave a second live poll in the topic —
+// with the OLD pair still recorded, so only one of the two would
+// resolve a vote.
+func TestAnOrphanedPollIsDeleted(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	before := msgIDs(hh)
+	// Fail exactly the panel: the poll above it has already gone up.
+	hh.z.sendHook = func(content string) error {
+		if strings.Contains(content, "**Session**") {
+			return fmt.Errorf("zulip is down")
+		}
+		return nil
+	}
+
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if got := msgIDs(hh); len(got) != len(before) {
+		t.Fatalf("%d messages, want the original pair and no orphan: %q", len(got), hh.z.stored())
+	}
+	if !hh.logged("posting options panel") {
+		t.Fatal("the failure was not logged")
+	}
+	conv := hh.j.Convs()[0]
+	if conv.OptsID != before[1] || conv.PollID != before[0] {
+		t.Fatalf("journal moved to %d/%d, want the original %v", conv.OptsID, conv.PollID, before)
+	}
+}
+
+// TestARetiredPollIsInert: a repaint deletes the old poll, but a realm
+// that forbids deletion leaves it in the scrollback, still votable. A
+// vote in a stale menu must not reconfigure a live conversation.
+func TestARetiredPollIsInert(t *testing.T) {
+	hh := optsHarness(t)
+	hh.z.deleteErr = &zulipproto.APIError{Status: 400, Msg: "not permitted", Code: "BAD_REQUEST"}
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	old := pollMsg(hh)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	if pollMsg(hh) == old {
+		t.Fatal("the poll was not replaced")
+	}
+
+	castVote(t, hh, humanID, old, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a stale poll changed the model to %q", id)
+	}
+}
+
+// TestAVoteMeansWhatItMeantWhenThePollWasPosted is the drift guard.
+// The option→model mapping depends on the agent's model LIST, which
+// can be re-probed — after `!login`, or when a provider is connected —
+// without anything repainting the poll. A recomputed table would make
+// option 2 select whatever now sorts second, on a poll whose own text
+// says otherwise.
+func TestAVoteMeansWhatItMeantWhenThePollWasPosted(t *testing.T) {
+	a := withModels(newAgent("x"), "a/one", "a/one", "b/two")
+	hh := dmCmdHarness(t, a, nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+
+	// The agent re-probes and now reports the models the other way up.
+	a.models = []client.ModelInfo{{ID: "b/two"}, {ID: "a/one"}}
+
+	castVote(t, hh, humanID, poll, 0, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/one" {
+		t.Fatalf("model = %q/%v, want the a/one the poll still names first", id, ok)
+	}
+}
+
+// TestAPollSurvivesAReload is why the option table is PERSISTED rather
+// than held in memory. A graceful reload execs in place and loses every
+// map on the Handler, including the per-conversation model override —
+// so a relay that recomputed the table would order the options by a
+// DIFFERENT effective model than the poll was posted with, and resolve
+// a vote to a model other than the one written on the option.
+//
+// The journal is what survives, so the meaning travels with the id.
+func TestAPollSurvivesAReload(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+	// The poll was posted with b/two current, so b/two is option 0 and
+	// a/one is option 1.
+	if got := hh.j.Convs()[0].PollModels; !slices.Equal(got, []string{"b/two", "a/one"}) {
+		t.Fatalf("poll models = %v, want b/two first", got)
+	}
+
+	// Everything in memory goes, exactly as an exec would take it.
+	hh.h.modelMu.Lock()
+	hh.h.modelChoices = map[string]modelChoice{}
+	hh.h.modelMu.Unlock()
+
+	castVote(t, hh, humanID, poll, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/one" {
+		t.Fatalf("model = %q/%v, want the a/one the poll's option 1 names", id, ok)
+	}
+}
+
+// TestAVoteForAnOptionThePollNeverHadIsDropped: a vote naming an index
+// the recorded table does not have — a hand-crafted submessage, or a
+// journal write that failed. Switching to whatever happens to sit at
+// that index is exactly the mis-selection the recorded table prevents.
+func TestAVoteForAnOptionThePollNeverHadIsDropped(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	castVote(t, hh, humanID, pollMsg(hh), 9, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a vote past the end of the list set the model to %q", id)
+	}
+	if !hh.logged("which offers 2") {
+		t.Fatal("the dropped vote was not logged")
+	}
+}
+
+// TestARetiredPollsOptionsAreReplaced: the recorded table describes
+// the LIVE poll and nothing else. A repaint that left the previous
+// poll's meaning in place would resolve a vote against the wrong list.
+func TestARetiredPollsOptionsAreReplaced(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
+
+	conv := hh.j.Convs()[0]
+	if conv.PollID != pollMsg(hh) {
+		t.Fatalf("journal poll %d is not the live one %d", conv.PollID, pollMsg(hh))
+	}
+	if !slices.Equal(conv.PollModels, []string{"b/two", "a/one"}) {
+		t.Fatalf("poll models = %v, want the repainted poll's order", conv.PollModels)
+	}
+}
+
+// TestASubmessageThatIsNotAVoteIsDropped: a poll also emits
+// "new_option" and "question" submessages, and a participant-added
+// option is keyed by user id rather than by an index of ours.
+func TestASubmessageThatIsNotAVoteIsDropped(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+
+	for _, content := range []string{
+		`{"type":"new_option","idx":1,"option":"mine"}`,
+		`{"type":"vote","key":"9,1","vote":1}`,
+		`not json at all`,
+	} {
+		hh.h.Handle(context.Background(), submessageEvent(1, poll, humanID, "widget", content))
+	}
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatalf("a non-vote submessage set the model to %q", id)
+	}
+}
+
+// TestAVoteThatStoppedBeingACommandIsLoggedNotForwarded: the poll
+// table and the parser are two files, and drift between them must be
+// said out loud rather than sending "!model x" to the agent as prose.
+func TestAVoteThatStoppedBeingACommandIsLoggedNotForwarded(t *testing.T) {
+	hh := optsHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	poll := pollMsg(hh)
+	// Removing the broker is the only way to make dispatch refuse
+	// every command, which is precisely the drift being guarded
+	// against.
+	hh.h.cfg.Commands = nil
+
+	castVote(t, hh, humanID, poll, 1, 1)
+
+	if !hh.logged("which is no longer a command") {
+		t.Fatal("the drift was not logged")
+	}
+}
+
+// TestNoPollWithoutAConversation: a vote is resolved against
+// conv.PollID, and `!opts` in a place with no journal entry allocates
+// nothing. A poll nobody could act on is worse than none, because
+// unlike a zform button it looks live on every client.
+func TestNoPollWithoutAConversation(t *testing.T) {
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one"), nil)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if id := pollMsg(hh); id != 0 {
+		t.Fatalf("poll %d posted where no vote could ever be honoured", id)
+	}
+	if got := hh.j.Convs(); len(got) != 0 {
+		t.Fatalf("the panel allocated %v", got)
+	}
+}
+
+// TestPollPostFailureLeavesThePanel: the poll is the better surface,
+// not the only one — every model it offers is still typeable.
+func TestPollPostFailureLeavesThePanel(t *testing.T) {
+	hh := optsHarness(t)
+	// Fail exactly the poll: the panel goes up first and must stand.
+	hh.z.sendHook = func(content string) error {
+		if strings.HasPrefix(content, "/poll ") {
+			return fmt.Errorf("zulip is down")
+		}
+		return nil
+	}
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	if id := pollMsg(hh); id != 0 {
+		t.Fatalf("poll %d was posted after all", id)
+	}
+	if !strings.Contains(panelBody(t, hh), "`!model a/one`") {
+		t.Fatalf("the panel did not carry the models itself: %q", panelBody(t, hh))
+	}
+	if !hh.logged("posting model poll") {
+		t.Fatal("the failure was not logged")
+	}
+	conv := hh.j.Convs()[0]
+	if conv.PollID != 0 || conv.PollModels != nil {
+		t.Fatalf("journal records poll %d meaning %v, though none was posted", conv.PollID, conv.PollModels)
 	}
 }
 
@@ -109,15 +561,15 @@ func TestOptsButtonsAreOnlyEverTypeableCommands(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	heading, replies := panelWidget(t, hh, lastMsg(t, hh))
+	heading, replies := panelWidget(t, hh, panelMsg(t, hh))
 	if heading == "" {
 		t.Fatal("widget has no heading")
 	}
-	want := []string{"!model a/one", "!model b/two", "!new", "!stop", "!status"}
+	want := []string{"!new", "!stop", "!status"}
 	if strings.Join(replies, "|") != strings.Join(want, "|") {
 		t.Fatalf("replies = %v, want %v", replies, want)
 	}
-	body := hh.z.body(lastMsg(t, hh))
+	body := panelBody(t, hh)
 	for _, r := range replies {
 		if !strings.Contains(body, "`"+r+"`") {
 			t.Fatalf("button %q has no markdown equivalent in %q", r, body)
@@ -138,21 +590,20 @@ func TestOptsNeverOffersAModelTheAgentLacks(t *testing.T) {
 	hh.z.reset()
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	_, replies := panelWidget(t, hh, lastMsg(t, hh))
-	models := replies[:len(replies)-3] // the three session buttons
-	if len(models) != optsModelCap {
-		t.Fatalf("%d model buttons, want the %d cap", len(models), optsModelCap)
+	poll := pollMsg(hh)
+	_, options := pollWidget(t, hh, poll)
+	if len(options) != optsModelCap {
+		t.Fatalf("%d poll options, want the %d cap", len(options), optsModelCap)
 	}
-	if models[0] != "!model p/m4" {
-		t.Fatalf("current model is not first: %v", models)
+	if options[0] != "m4" {
+		t.Fatalf("current model is not first: %v", options)
 	}
-	for _, r := range models {
-		id := strings.TrimPrefix(r, "!model ")
+	for _, id := range hh.j.Convs()[0].PollModels {
 		if !strings.HasPrefix(id, "p/m") {
-			t.Fatalf("button offers unknown model %q", id)
+			t.Fatalf("poll offers unknown model %q", id)
 		}
 	}
-	if body := hh.z.body(lastMsg(t, hh)); !strings.Contains(body, "and 3 more") {
+	if body := panelBody(t, hh); !strings.Contains(body, "and 3 more") {
 		t.Fatalf("panel %q does not say how to reach the rest", body)
 	}
 }
@@ -170,6 +621,11 @@ func TestOptsWithNoModelsPointsAtLogin(t *testing.T) {
 	if !strings.Contains(body, "No models available") || !strings.Contains(body, "!login") {
 		t.Fatalf("panel = %q", body)
 	}
+	// No models means no poll: a menu with nothing in it is not a
+	// degraded menu, it is a broken one.
+	if id := pollMsg(hh); id != 0 {
+		t.Fatalf("an empty model poll %d was posted", id)
+	}
 	// Session buttons still make sense with no provider.
 	if _, replies := panelWidget(t, hh, lastMsg(t, hh)); len(replies) != 3 {
 		t.Fatalf("replies = %v, want only the session buttons", replies)
@@ -184,11 +640,10 @@ func TestOptsShowsTheConversationsOwnModel(t *testing.T) {
 	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	body := hh.only(t)
-	if !strings.Contains(body, "**⚙️ two**") {
+	if body := panelBody(t, hh); !strings.Contains(body, "**⚙️ two**") {
 		t.Fatalf("panel header does not show the override: %q", body)
 	}
-	if !strings.Contains(body, "`!model b/two` ←") {
+	if body := panelBody(t, hh); !strings.Contains(body, "`!model b/two` ←") {
 		t.Fatalf("panel does not mark the current model: %q", body)
 	}
 }
@@ -218,13 +673,13 @@ func TestAWidgetPanelCanNeverBeEdited(t *testing.T) {
 func TestKnobChangeReplacesThePanel(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	first := lastMsg(t, hh)
+	first := panelMsg(t, hh)
 	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
 
-	if got := hh.z.count(); got != 1 {
-		t.Fatalf("%d panels live, want exactly one: %q", got, hh.z.stored())
+	if got := hh.z.count(); got != 2 {
+		t.Fatalf("%d messages live, want exactly one panel and one poll: %q", got, hh.z.stored())
 	}
-	second := lastMsg(t, hh)
+	second := panelMsg(t, hh)
 	if second == first {
 		t.Fatal("the panel was not replaced")
 	}
@@ -245,11 +700,11 @@ func TestTheAgentsOwnModelChangeUpdatesThePanel(t *testing.T) {
 	if err := hh.h.SetModelOverride(journal.DM([]int64{humanID, botID}).Token(), "b/two"); err != nil {
 		t.Fatalf("SetModelOverride: %v", err)
 	}
-	if got := hh.z.body(lastMsg(t, hh)); !strings.Contains(got, "**⚙️ two**") {
+	if got := panelBody(t, hh); !strings.Contains(got, "**⚙️ two**") {
 		t.Fatalf("panel = %q", got)
 	}
-	if got := hh.z.count(); got != 1 {
-		t.Fatalf("%d panels live, want one", got)
+	if got := hh.z.count(); got != 2 {
+		t.Fatalf("%d messages live, want one panel and one poll", got)
 	}
 }
 
@@ -269,21 +724,23 @@ func TestKnobChangeWithNoPanelStaysQuiet(t *testing.T) {
 func TestAskingAgainMovesThePanelToTheBottom(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	first := lastMsg(t, hh)
+	first := panelMsg(t, hh)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
 	ids := msgIDs(hh)
-	if len(ids) != 1 {
-		t.Fatalf("%d panels live, want one: %q", len(ids), hh.z.stored())
+	if len(ids) != 2 {
+		t.Fatalf("%d messages live, want one panel and one poll: %q", len(ids), hh.z.stored())
 	}
-	if ids[0] == first {
+	panel := panelMsg(t, hh)
+	if panel == first {
 		t.Fatal("the panel did not move")
 	}
-	if !strings.Contains(hh.z.body(ids[0]), "**⚙️") {
-		t.Fatalf("new panel = %q", hh.z.body(ids[0]))
+	if !strings.Contains(hh.z.body(panel), "**⚙️") {
+		t.Fatalf("new panel = %q", hh.z.body(panel))
 	}
-	if got := hh.j.Convs()[0].OptsID; got != ids[0] {
-		t.Fatalf("journal points at panel %d, want %d", got, ids[0])
+	conv := hh.j.Convs()[0]
+	if conv.OptsID != panel || conv.PollID != pollMsg(hh) {
+		t.Fatalf("journal points at %d/%d, want %d/%d", conv.OptsID, conv.PollID, panel, pollMsg(hh))
 	}
 }
 
@@ -301,8 +758,8 @@ func TestPanelIsRewrittenWhenItCannotBeDeleted(t *testing.T) {
 	if got := hh.z.body(first); got != supersededPanel {
 		t.Fatalf("old panel = %q, want the pointer line", got)
 	}
-	if got := hh.z.count(); got != 2 {
-		t.Fatalf("%d messages, want the pointer plus the new panel", got)
+	if got := hh.z.count(); got != 4 {
+		t.Fatalf("%d messages, want both pointers plus the new pair: %q", got, hh.z.stored())
 	}
 }
 
@@ -316,8 +773,8 @@ func TestPanelIsLeftAloneWhenNeitherDeleteNorEditWorks(t *testing.T) {
 	hh.z.deleteErr = &zulipproto.APIError{Status: 400, Msg: "not permitted", Code: "BAD_REQUEST"}
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	if got := hh.z.count(); got != 2 {
-		t.Fatalf("%d messages, want the stale panel plus the new one", got)
+	if got := hh.z.count(); got != 4 {
+		t.Fatalf("%d messages, want the stale pair plus the new one", got)
 	}
 	if !hh.logged("retiring options panel") {
 		t.Fatal("the failure was not logged")
@@ -331,13 +788,15 @@ func TestPanelIsLeftAloneWhenNeitherDeleteNorEditWorks(t *testing.T) {
 func TestRetiringAnAlreadyDeletedPanelIsSilent(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	if err := hh.z.DeleteMessage(context.Background(), lastMsg(t, hh)); err != nil {
-		t.Fatalf("pre-delete: %v", err)
+	for _, id := range msgIDs(hh) {
+		if err := hh.z.DeleteMessage(context.Background(), id); err != nil {
+			t.Fatalf("pre-delete: %v", err)
+		}
 	}
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	if got := hh.z.count(); got != 1 {
-		t.Fatalf("%d messages, want just the new panel", got)
+	if got := hh.z.count(); got != 2 {
+		t.Fatalf("%d messages, want just the new pair", got)
 	}
 	if hh.logged("options panel") {
 		t.Fatal("a panel that was already gone was reported as a failure")
@@ -355,8 +814,11 @@ func TestPanelRetirementSurvivesAnUnreachableServer(t *testing.T) {
 	if !hh.logged("deleting options panel") {
 		t.Fatal("the failure was not logged")
 	}
-	if got := hh.z.count(); got != 2 {
-		t.Fatalf("%d messages, want the undeleted panel plus the new one", got)
+	if !hh.logged("deleting model poll") {
+		t.Fatal("the poll's retirement failure was not logged")
+	}
+	if got := hh.z.count(); got != 4 {
+		t.Fatalf("%d messages, want the undeleted pair plus the new one", got)
 	}
 }
 
@@ -365,17 +827,18 @@ func TestPanelRetirementSurvivesAnUnreachableServer(t *testing.T) {
 func TestPanelSurvivesNew(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel, poll := panelMsg(t, hh), pollMsg(hh)
 	hh.deliverDM(t, humanID, "!new", humanID, botID)
 
 	for _, c := range hh.j.Convs() {
 		if c.Retired {
-			if c.OptsID != 0 {
-				t.Fatalf("retired conversation kept panel %d", c.OptsID)
+			if c.OptsID != 0 || c.PollID != 0 {
+				t.Fatalf("retired conversation kept the control pair %d/%d", c.OptsID, c.PollID)
 			}
 			continue
 		}
-		if want := msgIDs(hh)[0]; c.OptsID != want {
-			t.Fatalf("fresh conversation panel = %d, want %d", c.OptsID, want)
+		if c.OptsID != panel || c.PollID != poll {
+			t.Fatalf("fresh conversation controls = %d/%d, want %d/%d", c.OptsID, c.PollID, panel, poll)
 		}
 	}
 }
@@ -389,12 +852,20 @@ func TestPanelPostsWithoutItsWidget(t *testing.T) {
 	hh.z.widgetErr = &zulipproto.APIError{Status: 400, Msg: "widgets are disabled", Code: "BAD_REQUEST"}
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	body := hh.only(t)
+	// The POLL is untouched by this: its content is the `/poll` slash
+	// command, so it needs no widget_content at all and a server with
+	// widgets disabled still gets a votable menu. Only the panel's
+	// zform is lost, and the panel still carries every command as
+	// markdown.
+	body := panelBody(t, hh)
 	if !strings.Contains(body, "`!model a/one`") {
 		t.Fatalf("panel = %q", body)
 	}
-	if got := hh.z.widget(lastMsg(t, hh)); got != "" {
+	if got := hh.z.widget(panelMsg(t, hh)); got != "" {
 		t.Fatalf("widget was sent after all: %q", got)
+	}
+	if id := pollMsg(hh); id == 0 {
+		t.Fatal("the poll was lost with the zform, though it needs no widget_content")
 	}
 	if !hh.logged("widget refused") {
 		t.Fatal("the degradation was not logged")
@@ -442,8 +913,8 @@ func TestPanelIDPersistenceFailureIsLogged(t *testing.T) {
 	hh.breakJournal(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	if got := hh.z.count(); got != 1 {
-		t.Fatalf("the panel was not posted: %q", hh.z.stored())
+	if got := hh.z.count(); got != 2 {
+		t.Fatalf("the pair was not posted: %q", hh.z.stored())
 	}
 	if !hh.logged("recording options panel") {
 		t.Fatal("the failure was not logged")
@@ -496,8 +967,8 @@ func TestPanelSaysWhenThereIsNoConversationYet(t *testing.T) {
 func TestEngagedPanelDropsTheHint(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	if strings.Contains(hh.only(t), "No conversation here yet") {
-		t.Fatalf("panel = %q", hh.only(t))
+	if body := panelBody(t, hh); strings.Contains(body, "No conversation here yet") {
+		t.Fatalf("panel = %q", body)
 	}
 }
 
@@ -510,16 +981,19 @@ func TestUnknownCommandTeaches(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!frobnicate", humanID, botID)
 
-	body := hh.only(t)
+	body := panelBody(t, hh)
 	for _, want := range []string{"Unknown command `!frobnicate`", "!!frobnicate", "**⚙️", "`!model a/one`"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("reply %q is missing %s", body, want)
 		}
 	}
+	if id := pollMsg(hh); id == 0 {
+		t.Fatal("the menu came without its model poll")
+	}
 	if got := hh.a.prompts; len(got) != 1 {
 		t.Fatalf("the typo burned an agent turn: %q", got)
 	}
-	if got := hh.j.Convs()[0].OptsID; got != lastMsg(t, hh) {
+	if got := hh.j.Convs()[0].OptsID; got != panelMsg(t, hh) {
 		t.Fatalf("the menu was not adopted as the panel (OptsID %d)", got)
 	}
 }
@@ -600,8 +1074,8 @@ func TestPanelAndKnobsWinOverAPendingLogin(t *testing.T) {
 	hh.z.reset()
 
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	if !strings.Contains(hh.only(t), "**⚙️") {
-		t.Fatalf("mid-login !opts = %q", hh.only(t))
+	if body := panelBody(t, hh); !strings.Contains(body, "**⚙️") {
+		t.Fatalf("mid-login !opts = %q", body)
 	}
 	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
 	if _, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok {
@@ -694,10 +1168,10 @@ func TestKnobAckSurvivesAReactionFailure(t *testing.T) {
 	}
 }
 
-// TestModelButtonFallsBackToTheID: an agent that reports a model with
-// no human name still gets a labelled button — an unlabelled one is
-// untappable.
-func TestModelButtonFallsBackToTheID(t *testing.T) {
+// TestModelOptionFallsBackToTheID: an agent that reports a model with
+// no human name still gets a labelled poll option — an unlabelled one
+// is unvotable.
+func TestModelOptionFallsBackToTheID(t *testing.T) {
 	a := newAgent("x")
 	a.model = "a/one"
 	a.models = []client.ModelInfo{{ID: "a/one"}}
@@ -706,9 +1180,12 @@ func TestModelButtonFallsBackToTheID(t *testing.T) {
 	hh.z.reset()
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	// panelWidget fails the test if any button lacks a label.
-	if _, replies := panelWidget(t, hh, lastMsg(t, hh)); replies[0] != "!model a/one" {
-		t.Fatalf("replies = %v", replies)
+	// pollWidget fails the test if any option lacks a label.
+	if _, options := pollWidget(t, hh, pollMsg(hh)); options[0] != "one" {
+		t.Fatalf("options = %v", options)
+	}
+	if got := hh.j.Convs()[0].PollModels; got[0] != "a/one" {
+		t.Fatalf("option 0 means %q", got[0])
 	}
 }
 
@@ -760,24 +1237,42 @@ func tap(t *testing.T, hh *harness, id int64, emoji string) {
 	hh.h.Handle(context.Background(), reactionEvent(humanID, id, emoji, zulipproto.ReactionAdd))
 }
 
-// TestPanelSeedsItsChipsInOrder is the load-bearing assertion of the
-// whole feature: Zulip renders a message's reactions in first-added
-// order, so `one`..`six` must be seeded in exactly modelChoices order
-// or the digits name the wrong models.
+// TestPanelSeedsItsChipsInOrder: Zulip renders a message's reactions
+// in first-added order, so a concurrent seed would draw the row out of
+// step with the legend that names it.
 func TestPanelSeedsItsChipsInOrder(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	panel := lastMsg(t, hh)
-	want := []string{"one", "two", optsNewEmoji, optsStopEmoji, optsStatusEmoji}
+	panel := panelMsg(t, hh)
+	want := []string{optsNewEmoji, optsStopEmoji, optsStatusEmoji}
 	if got := chipsOn(hh, panel); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("chips = %v, want %v", got, want)
 	}
-	body := hh.z.body(panel)
-	// Two models, so the legend must say "1-2" — a footer naming six
-	// chips over a row of two is the same lie as a dead button.
-	if !strings.Contains(body, optsReactionFooter(2)) {
-		t.Fatalf("panel %q does not explain its chips", body)
+	if !strings.Contains(hh.z.body(panel), optsReactionFooter()) {
+		t.Fatalf("panel %q does not explain its chips", hh.z.body(panel))
+	}
+}
+
+// TestNoModelChipsAreSeeded: the digit chips are GONE. MEASURED, the
+// iOS client did not draw `:one:` and `:two:` even with every
+// reaction present on the server, so the current model and the one
+// below it were unreachable by thumb — on the client the chips existed
+// for. The poll replaces them, and a chip row that silently drops its
+// first two entries must not come back.
+func TestNoModelChipsAreSeeded(t *testing.T) {
+	hh := chipHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	for _, e := range chipsOn(hh, panelMsg(t, hh)) {
+		if e != optsNewEmoji && e != optsStopEmoji && e != optsStatusEmoji {
+			t.Fatalf("chip :%s: is not a session control", e)
+		}
+	}
+	for _, c := range hh.h.optsChips() {
+		if strings.Contains(c.reply, "model") {
+			t.Fatalf("chip :%s: still means %q", c.emoji, c.reply)
+		}
 	}
 }
 
@@ -787,9 +1282,8 @@ func TestChipsMatchTheButtons(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	_, replies := panelWidget(t, hh, lastMsg(t, hh))
-	_, _, _, choices := hh.h.panelState(hh.j.Convs()[0].Key)
-	chips := hh.h.optsChips(choices)
+	_, replies := panelWidget(t, hh, panelMsg(t, hh))
+	chips := hh.h.optsChips()
 	if len(chips) != len(replies) {
 		t.Fatalf("%d chips against %d buttons", len(chips), len(replies))
 	}
@@ -808,37 +1302,11 @@ func TestNoChipsWhenReactionsAreOff(t *testing.T) {
 	hh := optsHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	if got := chipsOn(hh, lastMsg(t, hh)); len(got) != 0 {
+	if got := chipsOn(hh, panelMsg(t, hh)); len(got) != 0 {
 		t.Fatalf("chips = %v, want none", got)
 	}
-	if body := hh.z.body(lastMsg(t, hh)); strings.Contains(body, "Tap a chip") {
+	if body := panelBody(t, hh); strings.Contains(body, "Tap a chip") {
 		t.Fatalf("panel %q promises chips it did not seed", body)
-	}
-}
-
-// TestTappingAModelChipChangesTheModel walks the whole point of the
-// feature end to end: a tap runs the same command the button would
-// have sent, acknowledges with the same reaction, and repaints.
-func TestTappingAModelChipChangesTheModel(t *testing.T) {
-	hh := chipHarness(t)
-	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
-
-	tap(t, hh, panel, "two")
-
-	convID := hh.j.Convs()[0].ID
-	if id, ok := hh.h.modelOverride(convID); !ok || id != "b/two" {
-		t.Fatalf("model override = %q/%v, want b/two", id, ok)
-	}
-	added, _ := hh.z.reactions()
-	if !slices.Contains(added, fmt.Sprintf("%d:%s", panel, optsAckEmoji)) {
-		t.Fatalf("reactions = %v — the tap was not acknowledged on the panel", added)
-	}
-	if lastMsg(t, hh) == panel {
-		t.Fatal("the panel was not repainted")
-	}
-	if n := hh.pendingReactions(); n != 0 {
-		t.Fatalf("the tap was ALSO narrated to the agent (%d buffered)", n)
 	}
 }
 
@@ -847,7 +1315,7 @@ func TestTappingAModelChipChangesTheModel(t *testing.T) {
 func TestTappingASessionChipRunsTheCommand(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 
 	tap(t, hh, panel, optsStatusEmoji)
 
@@ -865,7 +1333,7 @@ func TestTappingASessionChipRunsTheCommand(t *testing.T) {
 func TestTappingNewChipResetsTheConversation(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 	before := hh.j.Convs()[0].ID
 
 	tap(t, hh, panel, optsNewEmoji)
@@ -886,17 +1354,14 @@ func TestTappingNewChipResetsTheConversation(t *testing.T) {
 func TestUnTappingIsANoOp(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 	after := msgIDs(hh)
 
-	hh.h.Handle(context.Background(), reactionEvent(humanID, panel, "two", zulipproto.ReactionRemove))
+	hh.h.Handle(context.Background(), reactionEvent(humanID, panel, optsStatusEmoji, zulipproto.ReactionRemove))
 
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
-		t.Fatalf("removing :two: changed the model to %q", id)
-	}
-	// Swallowed entirely, not forwarded: "kfet removed :two: from your
-	// own message" is noise the agent would try to interpret, about a
-	// control the user has already used.
+	// Swallowed entirely, not forwarded: "kfet removed :bar_chart:
+	// from your own message" is noise the agent would try to
+	// interpret, about a control the user has already used.
 	if n := hh.pendingReactions(); n != 0 {
 		t.Fatalf("buffered %d, want the un-tap swallowed", n)
 	}
@@ -912,16 +1377,17 @@ func TestARetiredPanelIsInert(t *testing.T) {
 	hh := chipHarness(t)
 	hh.z.deleteErr = &zulipproto.APIError{Status: 400, Msg: "not permitted", Code: "BAD_REQUEST"}
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	old := lastMsg(t, hh)
+	old := panelMsg(t, hh)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	if lastMsg(t, hh) == old {
+	if panelMsg(t, hh) == old {
 		t.Fatal("the panel was not replaced")
 	}
+	before := hh.z.count()
 
-	tap(t, hh, old, "two")
+	tap(t, hh, old, optsStatusEmoji)
 
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
-		t.Fatalf("a stale chip changed the model to %q", id)
+	if got := hh.z.count(); got != before {
+		t.Fatalf("a stale chip ran its command (%d messages, was %d)", got, before)
 	}
 }
 
@@ -932,7 +1398,7 @@ func TestANonChipOnThePanelStillReachesTheAgent(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	tap(t, hh, lastMsg(t, hh), "tada")
+	tap(t, hh, panelMsg(t, hh), "tada")
 
 	if n := hh.pendingReactions(); n != 1 {
 		t.Fatalf("buffered %d, want the non-chip reaction forwarded", n)
@@ -946,13 +1412,14 @@ func TestANonChipOnThePanelStillReachesTheAgent(t *testing.T) {
 func TestTheRelaysOwnSeedingDoesNotTriggerItself(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 
+	before := hh.z.count()
 	for _, e := range chipsOn(hh, panel) {
 		hh.h.Handle(context.Background(), reactionEvent(botID, panel, e, zulipproto.ReactionAdd))
 	}
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
-		t.Fatalf("the relay's own seeding tapped its own chip (%q)", id)
+	if got := hh.z.count(); got != before {
+		t.Fatalf("the relay's own seeding tapped its own chip (%d messages, was %d)", got, before)
 	}
 	if n := hh.pendingReactions(); n != 0 {
 		t.Fatalf("the relay narrated its own chips to the agent (%d)", n)
@@ -966,31 +1433,11 @@ func TestAFailedChipSeedLosesOneChipNotTheMenu(t *testing.T) {
 	hh.z.reactErr = fmt.Errorf("no such emoji")
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
 
-	if got := chipsOn(hh, lastMsg(t, hh)); len(got) != 5 {
+	if got := chipsOn(hh, panelMsg(t, hh)); len(got) != 3 {
 		t.Fatalf("attempted %v — seeding stopped at the first refusal", got)
 	}
-	if !hh.logged("seeding :one:") {
+	if !hh.logged("seeding :" + optsNewEmoji + ":") {
 		t.Fatal("the refusal was not logged")
-	}
-}
-
-// TestChipsNeverOutnumberTheDigits: optsModelCap and the digit table
-// are one fact spelled twice, and a panel may never offer a model it
-// cannot name.
-func TestChipsNeverOutnumberTheDigits(t *testing.T) {
-	hh := chipHarness(t)
-	many := make([]zulipproto.ZFormChoice, 0, len(optsDigitEmoji)+3)
-	for i := range cap(many) {
-		many = append(many, zulipproto.Choice("m", "m", fmt.Sprintf("!model m/%d", i)))
-	}
-	chips := hh.h.optsChips(many)
-	if got, want := len(chips), len(optsDigitEmoji)+3; got != want {
-		t.Fatalf("%d chips from %d choices, want %d", got, len(many), want)
-	}
-	for i, c := range chips[:len(optsDigitEmoji)] {
-		if c.emoji != optsDigitEmoji[i] {
-			t.Fatalf("chip %d is :%s:, want :%s:", i, c.emoji, optsDigitEmoji[i])
-		}
 	}
 }
 
@@ -1000,7 +1447,7 @@ func TestChipsNeverOutnumberTheDigits(t *testing.T) {
 func TestAChipThatStoppedBeingACommandIsLoggedNotForwarded(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 	// Removing the broker is the only way to make dispatch refuse
 	// every command, which is precisely the drift being guarded
 	// against.
@@ -1016,100 +1463,6 @@ func TestAChipThatStoppedBeingACommandIsLoggedNotForwarded(t *testing.T) {
 	}
 }
 
-// TestTheChipLegendCountsTheChipsItHas: a footer naming six digit
-// chips over a row of two is the same lie as a button that does
-// nothing. All three phrasings are reachable — an agent with no models
-// still gets the three session chips, so the panel still has a legend.
-func TestTheChipLegendCountsTheChipsItHas(t *testing.T) {
-	for _, tc := range []struct {
-		models []string
-		want   string
-	}{
-		{nil, "no models"},
-		{[]string{"a/one"}, "1 model,"},
-		{[]string{"a/one", "b/two"}, "1-2 models"},
-	} {
-		a := newAgent("x")
-		if len(tc.models) > 0 {
-			a = withModels(a, tc.models[0], tc.models...)
-		}
-		hh := dmCmdHarness(t, a, func(c *Config) { c.Reactions = true })
-		hh.deliverDM(t, humanID, "hello", humanID, botID)
-		hh.z.reset()
-		hh.deliverDM(t, humanID, "!opts", humanID, botID)
-
-		if body := hh.z.body(lastMsg(t, hh)); !strings.Contains(body, tc.want) {
-			t.Fatalf("%d model(s): panel %q does not say %q", len(tc.models), body, tc.want)
-		}
-	}
-}
-
-// TestAChipMeansWhatItMeantWhenItWasSeeded is the drift guard. The
-// mapping also depends on the agent's model LIST, which can be
-// re-probed — after `!login`, or when a provider is connected —
-// without anything repainting the panel. A recomputed table would make
-// :one: point at whatever now sorts first, on a panel that still says
-// otherwise in its own text.
-func TestAChipMeansWhatItMeantWhenItWasSeeded(t *testing.T) {
-	a := withModels(newAgent("x"), "a/one", "a/one", "b/two")
-	hh := dmCmdHarness(t, a, func(c *Config) { c.Reactions = true })
-	hh.deliverDM(t, humanID, "hello", humanID, botID)
-	hh.z.reset()
-	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
-	body := hh.z.body(panel)
-
-	// The agent re-probes and now reports the models the other way up.
-	// Nothing repainted the panel, so its text still reads as before.
-	a.models = []client.ModelInfo{{ID: "b/two"}, {ID: "a/one"}}
-	if got := hh.z.body(panel); got != body {
-		t.Fatal("the panel repainted itself — this test no longer proves anything")
-	}
-
-	tap(t, hh, panel, "one")
-
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/one" {
-		t.Fatalf("model = %q/%v, want the a/one the panel still names beside :one:", id, ok)
-	}
-}
-
-// TestAPanelSurvivesLosingItsChipTable: the table is in memory, so a
-// restart loses it while the journal still remembers the panel's id.
-// Recomputing is the fallback — a panel that went dead across a reload
-// would be worse, since the chips are still sitting on the message and
-// a thumb has no way to know.
-func TestAPanelSurvivesLosingItsChipTable(t *testing.T) {
-	hh := chipHarness(t)
-	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
-	hh.h.forgetChips(panel)
-
-	tap(t, hh, panel, "two")
-
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "b/two" {
-		t.Fatalf("model = %q/%v, want b/two from the recomputed table", id, ok)
-	}
-}
-
-// TestARetiredPanelForgetsItsChips: the table must not outlive the
-// panel it describes, or the relay holds memory for a message it will
-// never honour a tap on.
-func TestARetiredPanelForgetsItsChips(t *testing.T) {
-	hh := chipHarness(t)
-	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	old := lastMsg(t, hh)
-	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-
-	hh.h.chipMu.Lock()
-	defer hh.h.chipMu.Unlock()
-	if _, ok := hh.h.panelChips[old]; ok {
-		t.Fatal("the retired panel's chip table is still held")
-	}
-	if n := len(hh.h.panelChips); n != 1 {
-		t.Fatalf("%d chip tables held, want exactly the live panel's", n)
-	}
-}
-
 // TestABotCannotTapAChip: a chip is a command, and `!new` or `!stop`
 // run by a bot that appeared since startup — so it is in no
 // BotSenderIDs snapshot — would be a gate bypass in the one place the
@@ -1117,14 +1470,15 @@ func TestARetiredPanelForgetsItsChips(t *testing.T) {
 func TestABotCannotTapAChip(t *testing.T) {
 	hh := chipHarness(t)
 	hh.deliverDM(t, humanID, "!opts", humanID, botID)
-	panel := lastMsg(t, hh)
+	panel := panelMsg(t, hh)
 	const laterBot = int64(77)
 	hh.z.users[laterBot] = zulipproto.User{UserID: laterBot, FullName: "Late Bot", IsBot: true}
+	before := hh.z.count()
 
-	hh.h.Handle(context.Background(), reactionEvent(laterBot, panel, "two", zulipproto.ReactionAdd))
+	hh.h.Handle(context.Background(), reactionEvent(laterBot, panel, optsStatusEmoji, zulipproto.ReactionAdd))
 
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
-		t.Fatalf("a bot tapped a chip and set the model to %q", id)
+	if got := hh.z.count(); got != before {
+		t.Fatalf("a bot tapped a chip and ran its command (%d messages, was %d)", got, before)
 	}
 }
 
@@ -1146,10 +1500,5 @@ func TestAnUnengagedPanelSeedsNoChips(t *testing.T) {
 	}
 	if body := hh.z.body(lastMsg(t, hh)); strings.Contains(body, "Tap a chip") {
 		t.Fatalf("panel %q promises chips it did not seed", body)
-	}
-	hh.h.chipMu.Lock()
-	defer hh.h.chipMu.Unlock()
-	if n := len(hh.h.panelChips); n != 0 {
-		t.Fatalf("%d chip table(s) held for a panel nothing will ever retire", n)
 	}
 }

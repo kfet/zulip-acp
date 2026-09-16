@@ -180,6 +180,35 @@ type Conv struct {
 	// the topic is truth and a stale id simply fails its edit and is
 	// replaced.
 	OptsID int64 `json:"opts_id,omitempty"`
+	// PollID is the message id of this conversation's model POLL —
+	// the second half of the `!opts` control pair. 0 when there is
+	// none yet.
+	//
+	// A sibling of OptsID rather than a reuse of it, because the two
+	// are different messages with different widgets and both are live
+	// at once: the panel carries a zform, the poll carries a poll, and
+	// one message can hold only one widget_content. Overloading OptsID
+	// would mean a vote and a button click could not both be resolved.
+	// Retirement takes the pair together, so they are always set and
+	// cleared as one.
+	PollID int64 `json:"poll_id,omitempty"`
+	// PollModels is what the options on PollID MEAN: the model id
+	// behind each option, by index, exactly as the poll was posted.
+	//
+	// It is persisted rather than recomputed, and that is a
+	// correctness requirement, not a cache. The option order depends
+	// on the conversation's effective model (current is pinned first)
+	// and on the agent's model list, neither of which survives a
+	// graceful reload — so a relay that re-derived this after an exec
+	// would resolve a vote to a DIFFERENT model than the one written
+	// on the option, silently.
+	//
+	// Storing it is safe because a widget message is SEALED: a poll
+	// cannot be edited (400 "Widgets cannot be edited."), so the
+	// options on the server can never drift from what was written here
+	// when the pair was posted. Bounded by optsModelCap short strings
+	// per conversation.
+	PollModels []string `json:"poll_models,omitempty"`
 	// LastOwnID is the newest message the RELAY ITSELF has posted in
 	// this conversation, or 0 when it has posted none.
 	//
@@ -432,6 +461,8 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	}
 	prevTail := old.TailID
 	prevOpts := old.OptsID
+	prevPoll := old.PollID
+	prevPollModels := old.PollModels
 	prevOwn := old.LastOwnID
 	old.Retired = true
 	old.TailID = 0
@@ -446,18 +477,21 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// conversation inherits it and keeps updating that one message
 	// instead of leaving a stale panel behind and posting a second.
 	old.OptsID = 0
+	old.PollID = 0
+	old.PollModels = nil
 	delete(j.byKey, idx)
 	// The parent pointer belongs to the place too: the topic was
 	// branched from somewhere, and `!new` does not un-branch it. The
 	// retired conversation keeps its own copy — it is the record of
 	// where that session's context came from.
-	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, Parent: old.Parent}
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollModels: prevPollModels, Parent: old.Parent}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commit(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, idx)
 		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
+		old.PollID, old.PollModels = prevPoll, prevPollModels
 		j.byKey[idx] = old
 	})
 }
@@ -479,26 +513,34 @@ func (j *Journal) SetTail(convID string, msgID int64) error {
 	return j.commit(func() { c.TailID = prev })
 }
 
-// SetOpts records the message id of a conversation's `!opts` control
-// message. Pass 0 to forget it.
+// SetOpts records a conversation's `!opts` control pair: the panel
+// (zform), the model poll, and what the poll's options mean. Pass 0 /
+// nil to forget them.
+//
+// ONE setter for all three, deliberately. They are posted together and
+// retired together, and a separate setter each would allow a commit to
+// land for the panel and fail for the poll — leaving a live poll no
+// vote could ever resolve, or worse, a poll whose recorded meaning
+// belongs to the poll before it. The pair is one fact about the
+// conversation, so it is one write.
 //
 // Separate from SetTail on purpose: the two are owned by different
-// lifecycles — the tail belongs to one turn, the control message
-// outlives every turn in the conversation — and folding them into one
-// setter would make a streaming turn able to clobber the panel's id.
-func (j *Journal) SetOpts(convID string, msgID int64) error {
+// lifecycles — the tail belongs to one turn, the control pair outlives
+// every turn in the conversation — and folding them into one setter
+// would make a streaming turn able to clobber the panel's id.
+func (j *Journal) SetOpts(convID string, optsID, pollID int64, pollModels []string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	c, ok := j.byID[convID]
 	if !ok {
 		return fmt.Errorf("journal: unknown conversation %q", convID)
 	}
-	if c.OptsID == msgID {
+	if c.OptsID == optsID && c.PollID == pollID && slices.Equal(c.PollModels, pollModels) {
 		return nil
 	}
-	prev := c.OptsID
-	c.OptsID = msgID
-	return j.commit(func() { c.OptsID = prev })
+	prevOpts, prevPoll, prevModels := c.OptsID, c.PollID, c.PollModels
+	c.OptsID, c.PollID, c.PollModels = optsID, pollID, slices.Clone(pollModels)
+	return j.commit(func() { c.OptsID, c.PollID, c.PollModels = prevOpts, prevPoll, prevModels })
 }
 
 // SetLastOwn records the newest message the relay itself has posted in
@@ -593,7 +635,7 @@ func (j *Journal) LookupMessage(msgID int64) (Conv, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for _, c := range j.byID {
-		if !c.Retired && (c.TailID == msgID || c.OptsID == msgID || c.LastOwnID == msgID) {
+		if !c.Retired && (c.TailID == msgID || c.OptsID == msgID || c.PollID == msgID || c.LastOwnID == msgID) {
 			return *c, true
 		}
 	}

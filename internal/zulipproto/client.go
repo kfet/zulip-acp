@@ -227,6 +227,28 @@ type Message struct {
 	// only the bot's OWN reaction, so somebody else's tap cannot be
 	// taken back, which is why `!opts` treats op=remove as a no-op.
 	Reactions []Reaction `json:"reactions"`
+	// Submessages is the message's WIDGET state: the poll Zulip built
+	// from a `/poll` command, plus every vote cast on it, in order.
+	//
+	// Like Reactions it is the only way to ask what a message HOLDS —
+	// a submessage event reports one interaction, never the state. The
+	// relay does not need it to resolve a vote (the option table is
+	// recorded in the journal beside the poll's id, so no GET is ever
+	// spent), and reads it only to prove server facts in the live
+	// tests: that a `/poll` body really is expanded into a poll
+	// submessage, and that a real client's vote key is "canned,<n>".
+	Submessages []Submessage `json:"submessages"`
+}
+
+// Submessage is one entry of a message's widget state — the widget
+// itself, or an interaction with it. Content is a JSON document
+// carried AS A STRING, so it decodes twice; see ParseVote.
+type Submessage struct {
+	ID        int64  `json:"id"`
+	MessageID int64  `json:"message_id"`
+	SenderID  int64  `json:"sender_id"`
+	MsgType   string `json:"msg_type"`
+	Content   string `json:"content"`
 }
 
 // Message type strings. Zulip still calls a direct message "private"

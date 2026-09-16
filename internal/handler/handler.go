@@ -474,13 +474,6 @@ type Handler struct {
 	// the event loop and a turn goroutine.
 	optsMu sync.Mutex
 
-	// panelChips is what the reaction chips on each live options panel
-	// MEAN: message id → chip table, as seeded. One entry per
-	// conversation, replaced when its panel is. See rememberChips for
-	// why the mapping is pinned rather than recomputed at tap time.
-	chipMu     sync.Mutex
-	panelChips map[int64][]optsChip
-
 	// repostBroken is the end-of-turn repost circuit breaker. It is on
 	// the Handler, not the Splitter, precisely because it must outlive
 	// a turn: see repostForNotify.
@@ -588,7 +581,6 @@ func New(cfg Config) (*Handler, error) {
 		inflight:       map[string]*inflightEntry{},
 		modelChoices:   map[string]modelChoice{},
 		dmNames:        map[string][]string{},
-		panelChips:     map[int64][]optsChip{},
 		ownMsgs:        newMsgIndex(reactionIndexSize),
 		badMsgs:        newMsgIndex(reactionIndexSize),
 		userNames:      newMsgIndex(reactionIndexSize),
@@ -622,49 +614,112 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 	case zulipproto.EventReaction:
 		h.handleReaction(ctx, ev)
 	case zulipproto.EventSubmessage:
-		h.handleSubmessage(ev)
+		h.handleSubmessage(ctx, ev)
 	}
 }
 
-// handleSubmessage records a widget interaction — a /poll vote, a
-// /todo tick — on a message the relay already knows about, and does
-// nothing else, on purpose.
-//
-// The relay subscribes to these so that the ONE fact needed to decide
-// whether to build on them is observable in the log of a real
-// deployment: whether people actually vote in the polls the agent
-// posts. Acting on them is a design with a real cost (a vote names its
-// option by index into a message that has to be fetched, and every
-// voter's every click is an event), and it is written up in BACKLOG.md
-// as the runner-up to the reaction menu rather than half-built here.
+// handleSubmessage routes a widget interaction — a vote in the model
+// poll, a /poll vote, a /todo tick — on a message the relay already
+// knows about.
 //
 // The resolution gate is the point, not a nicety. A submessage event
 // has exactly the shape that makes reaction events expensive — an id
 // and nothing else — and the /register narrow does not filter it
-// either, so this sees the whole realm's widget traffic. Logging it
+// either, so this sees the whole realm's widget traffic. Acting on it
 // unconditionally would be the same unbounded flood reaction.go exists
-// to prevent, just routed into the journal instead of the API. So only
-// the two FREE tiers are consulted (the index of messages the relay
-// posted, then the journal's own recorded ids) and everything else is
-// dropped in silence. No GET, no rate limiter needed, and what
-// survives is precisely the traffic on the relay's OWN polls, which is
-// the question being asked.
+// to prevent. So only the two FREE tiers are consulted (the index of
+// messages the relay posted, then the journal's own recorded ids) and
+// everything else is dropped in silence. No GET, and no rate limiter
+// needed.
 //
-// Deliberately NOT gated on cfg.Reactions or the allowlist: it reaches
-// no agent, posts nothing and starts no turn. It is a log line. The
-// one thing it must not become is a turn trigger without going through
-// the same gates reaction.go applies.
-func (h *Handler) handleSubmessage(ev zulipproto.Event) {
+// What survives that is the traffic on the relay's OWN widgets. A vote
+// in the conversation's live model poll is a COMMAND and is run as one
+// (poll.go, pollVote) — that is what makes the model menu usable on a
+// phone, where zform buttons do not render and the digit chips did not
+// draw. Anything else is logged and goes no further: it reaches no
+// agent, posts nothing and starts no turn.
+//
+// The gates in front of pollVote are the ones reaction.go applies to a
+// chip tap, in the same order and for the same reasons — the relay's
+// own user id first (a self-sustaining loop is the worst failure),
+// then the bot-sender set, then the allowlist, then the one lookup
+// that can recognise a bot created since startup. A vote may not be a
+// way around the allowlist.
+//
+// Deliberately NOT gated on cfg.Reactions: a poll is not a reaction,
+// its events arrive whatever that setting says, and a menu that
+// silently stops working because emoji were turned off would be a
+// puzzle.
+func (h *Handler) handleSubmessage(ctx context.Context, ev zulipproto.Event) {
 	if ev.MsgType == "" || ev.MessageID == 0 {
 		return
 	}
-	if _, ours := h.ownMsgs.get(ev.MessageID); !ours {
-		if _, known := h.cfg.Journal.LookupMessage(ev.MessageID); !known {
-			return
-		}
+	conv, ours := h.convForSubmessage(ev.MessageID)
+	if !ours {
+		return
 	}
 	h.cfg.Logf("handler: %s submessage %d on message %d from user %d: %s",
 		ev.MsgType, ev.SubmessageID, ev.MessageID, ev.SenderID, excerpt(ev.Content, reactionExcerptRunes))
+	if conv.PollID == 0 || ev.MessageID != conv.PollID {
+		return
+	}
+	if ev.SenderID == h.cfg.BotUserID {
+		return
+	}
+	if _, isBot := h.cfg.BotSenderIDs[ev.SenderID]; isBot {
+		return
+	}
+	if h.cfg.AllowedUsers != nil {
+		if _, ok := h.cfg.AllowedUsers[ev.SenderID]; !ok {
+			return
+		}
+	}
+	// The same call reaction.go makes before running a chip's command,
+	// and for the same reason: BotSenderIDs is a startup snapshot, so
+	// a bot created since — or a cross-realm system bot, which is in
+	// no user list — is recognisable only here. One lookup per user
+	// for the life of the process, and the name it also resolves is
+	// cached for the reaction path.
+	if _, isBot := h.reactor(ctx, ev.SenderID); isBot {
+		return
+	}
+	h.pollVote(ctx, conv, ev)
+}
+
+// convForSubmessage resolves a widget interaction to a conversation
+// the relay is engaged in, using only the two FREE tiers. It NEVER
+// allocates a conversation and never spends an API call: an unknown
+// message id is a drop.
+func (h *Handler) convForSubmessage(msgID int64) (journal.Conv, bool) {
+	if c, ok, ours := h.convFromOwnIndex(msgID); ours {
+		return c, ok
+	}
+	c, ok := h.cfg.Journal.LookupMessage(msgID)
+	if !ok || !h.serves(c.Key) {
+		return journal.Conv{}, false
+	}
+	return c, true
+}
+
+// convFromOwnIndex is the first and cheapest resolution tier, shared
+// by the reaction and submessage paths: the in-memory index of
+// messages the relay itself posted.
+//
+// It reports `ours` separately from `ok` because a hit is CONCLUSIVE
+// either way. The index maps a message id to the conversation that
+// posted it, so a hit whose conversation has since been retired — or
+// whose key the relay no longer serves — is a definite drop, not a
+// reason to keep looking in tiers that cost more.
+func (h *Handler) convFromOwnIndex(msgID int64) (conv journal.Conv, ok, ours bool) {
+	convID, ours := h.ownMsgs.get(msgID)
+	if !ours {
+		return journal.Conv{}, false, false
+	}
+	c, found := h.cfg.Journal.LookupID(convID)
+	if found && !c.Retired && h.serves(c.Key) {
+		return c, true, true
+	}
+	return journal.Conv{}, false, true
 }
 
 // handleUpdate migrates a conversation when its topic moves, and ENDS

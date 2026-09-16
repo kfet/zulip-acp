@@ -289,42 +289,44 @@ compare — so the block has no key for it.
   blast-radius problem the change exists to remove. Not done here: this task is
   scoped to `zulip-acp`, and those repos are not to be touched from it.
 
+- **The panel's zform may now be dead weight.** With the models moved to the
+  poll, the zform carries exactly three buttons — `!new`, `!stop`, `!status` —
+  and each already has a reaction chip that renders on EVERY client including
+  the web. Dropping it would delete the widget-refused fallback, the
+  `postPanel` retry, and the whole "a widget message cannot be edited"
+  constraint *for the panel*: a plain-markdown panel can be PATCHed, so it
+  could go back to being self-updating in place. What it does NOT buy is the
+  end of the re-post dance, which the POLL still forces — a poll is sealed
+  whatever the panel does. Worth measuring whether anyone clicks the three
+  buttons on web before deleting a working surface.
+
 - **Mobile push notifications are OFF.** Self-hosted Zulip cannot push to iOS
   without registering with Zulip's Mobile Push Notification Service, which
   sees notification metadata (sender/channel/topic/volume). That is an
   undecided privacy trade-off for the operator; the relay takes no position
   and the server is not registered.
 
-- **A poll-driven `!opts` menu — the runner-up to the reaction chips, not
-  done.** `!opts` needed a control surface that renders on a **phone**, since
-  `zform` buttons exist only in the Zulip web app. Two candidates were measured
-  against the live server; reaction chips won and shipped (see
-  `internal/handler/opts.go`). The other was a `/poll`: it renders everywhere,
-  it is a real tappable radio list with labelled options rather than bare
-  emoji, and it has room for more than six models. It was not built, for three
-  reasons:
+- **A poll-driven `!opts` menu — BUILT.** This was filed as the runner-up to
+  the reaction chips. It is now the shipped design (`internal/handler/poll.go`,
+  `internal/zulipproto/poll.go`) and the digit chips are gone, because the
+  measurement that decided the original comparison turned out to be wrong in
+  both directions:
 
-  - **A vote names its option by INDEX**, not by text: the event's `key` is
-    `"canned,<option-index>"` for an option the poll was created with (and
-    `"<user-id>,<option-index>"` for one a participant added later) and the
-    question and options live on the poll message. Resolving a tap to a command means a `GET /messages/{id}`
-    per vote, or a per-conversation cache of poll layouts that has to survive a
-    restart — where a reaction carries its own meaning in the emoji name and
-    resolves with no call at all.
-  - **A poll has no single-choice mode and no "retire".** Everyone's votes
-    accumulate on it forever, so the panel becomes a scoreboard of every model
-    anybody ever tapped, and the relay cannot clear it — the only way to retire
-    one is to delete the message, which is exactly the re-post dance the
-    reaction panel already does for free.
-  - **It is a second surface to keep in step.** The whole justification for
-    putting a menu on reactions is that a chip carries the same reply string as
-    the zform button beside it and goes through the same `!` parser. A poll
-    would add a THIRD encoding of the same command list, and the indexed key
-    means it could drift silently.
+  - The chips did not actually work on iOS. With all nine reactions present on
+    the panel — confirmed held by the server via the API — the client drew the
+    row starting at `:three:`, leaving the current model and the one below it
+    untappable. Cause unknown; not a count limit, not a seeding failure.
+  - The poll DOES render and IS votable on iOS, proven end to end.
+  - The key shape this entry gave as an objection was measured against a
+    synthetic `POST /api/v1/submessage`, which accepts an arbitrary key string
+    and echoed the guess back. A real client's vote is always
+    `"canned,<option-index>"` for an option the poll shipped with.
 
-  The events are nevertheless observable: the relay registers for `submessage`
-  and logs every widget interaction (`Handler.handleSubmessage`), precisely so
-  the one fact that would justify revisiting this — whether people actually
-  vote in the polls the agent posts — can be read out of a real deployment
-  rather than guessed. The wire shape is written up in
-  `docs/zulip-protocol-reference.md` § *Widget interactions*.
+  The three objections that were real are answered rather than dismissed: the
+  index→model table is RECORDED IN THE JOURNAL beside the poll's message id
+  (`journal.Conv.PollModels`) so no `GET /messages/{id}` is ever spent, no
+  re-probe can make an option drift, and a graceful reload cannot silently
+  re-order it; the accumulating scoreboard is disposed of by the re-post-and-retire
+  dance the panel already did; and a vote is not a third encoding of the
+  command list — it dispatches the same `!model <id>` string a chip, a button
+  and a typed command do.
