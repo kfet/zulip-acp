@@ -98,6 +98,10 @@ binary.** See the `update` skill; it owns the upgrade order.
 
 Add the host to `bots/` while you are here: a spec plus `dist.lock` is what
 makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.
+The spec declares **requirements** (an optional `"require": {"zulip_acp":
+">=X.Y.Z", "fir": ">=X.Y.Z"}`); `dist.lock` records the **resolution** of
+those requirements across the whole fleet. `--tot` is the only resolver;
+`--apply` hard-fails offline when the lock violates this host's `require`.
 
 ### 2. Confirm the ACP agent is on the host PATH
 
@@ -316,6 +320,16 @@ Nothing to bump after a release: the sweep takes this relay's wanted
 version from its latest git tag, so cutting the tag IS the declaration.
 (An instance can hold back with `.pin` in its inventory entry, which
 requires a `.notes` reason.)
+
+**`.pin` is NOT subsumed by a spec's `require` block, and stays.** They answer
+different questions in different systems. `require` is this repo's, per bot
+spec, and constrains *resolution*: what `--tot` may write into `dist.lock` and
+what `--apply` will accept — a floor ("this host needs at least X"). `.pin` is
+the shared cross-relay inventory's, per *instance*, and overrides the sweep's
+**wanted** version for all three relays — a ceiling, held by a host that must
+stay behind the tag for a stated reason. `fleet.sh` never reads `bots/`, so a
+`require` cannot hold an instance back in the sweep, and a `.pin` cannot stop
+converge applying a lock. Removing either would lose a real capability.
 
 Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 `~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).

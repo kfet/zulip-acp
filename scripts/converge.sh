@@ -12,8 +12,10 @@
 #   converge.sh <bot> --target-root DIR        act on a local fake host rooted at DIR
 #                                              (no ssh; for testing). DIR/proc stands in
 #                                              for /proc so a test can model a running image
-#   converge.sh --tot                          resolve latest-of-everything ONCE and
-#                                              rewrite dist.lock; NEVER converges
+#   converge.sh --tot                          resolve the newest release that
+#                                              satisfies EVERY spec's `require`
+#                                              block and rewrite dist.lock;
+#                                              NEVER converges
 #   converge.sh render <bot> <artefact>        render one artefact to stdout
 #                                              artefact: config | execstart | unit
 #   converge.sh plan-recycle <unit_changed> <running> <version> <has_reload>
@@ -22,6 +24,16 @@
 #   converge.sh plan-stale <running> <want> <running_ver>
 #                                              print whether the RUNNING image is stale
 #                                              w.r.t. want (test hook)
+#   converge.sh semver-cmp <a> <b>             print -1|0|1 (test hook)
+#   converge.sh semver-sat <version> <constraint>
+#                                              print yes/no, exit 0/1 (test hook)
+#   converge.sh resolve <component> <ver...>   print the newest given version that
+#                                              satisfies every spec's require for
+#                                              <component> (test hook)
+#
+# Spec vs lock: a bot spec declares REQUIREMENTS (`require`), dist.lock records
+# the RESOLUTION. --tot is the only resolver; --apply is a reader that refuses
+# to move a host to a locked version its own spec forbids.
 #
 # Conventions:
 #   - a spec.service key that is absent (or false/null) emits no flag at all;
@@ -70,6 +82,143 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 need jq
 
 # ---------------------------------------------------------------------------
+# Semantic version comparison
+#
+# Hand-written on purpose. `sort -V` is not a semver comparator: it happily
+# orders `v0.9.0` after `v0.10.0` only by accident of the leading `v`, and it
+# ranks `0.31.3-dev+abc` ABOVE `0.31.3`, which is exactly backwards — a dev
+# build is NOT the release. Shelling out to python/node is worse: converge
+# must run on a bare host with nothing but coreutils, jq and ssh.
+#
+# The rule that matters: only a clean X.Y.Z is a release. Any prerelease or
+# build-metadata suffix (`-dev+sha`, `-rc1`, `.dirty`) satisfies NO constraint,
+# so a dev binary can never be locked into the fleet by accident.
+# ---------------------------------------------------------------------------
+
+# is_release_version <s> — true iff s is exactly X.Y.Z, all numeric.
+is_release_version() {
+  local v=$1 a b c d
+  case "$v" in ''|*[!0-9.]*|.*|*.) return 1 ;; esac
+  IFS=. read -r a b c d <<<"$v"
+  [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -z "${d:-}" ]
+}
+
+# ver_cmp <a> <b> — print -1, 0 or 1. Both must be release versions.
+ver_cmp() {
+  local a1 a2 a3 b1 b2 b3 x y i
+  is_release_version "$1" || die "not a release version: $1"
+  is_release_version "$2" || die "not a release version: $2"
+  IFS=. read -r a1 a2 a3 <<<"$1"
+  IFS=. read -r b1 b2 b3 <<<"$2"
+  for i in 1 2 3; do
+    case $i in
+      1) x=$a1; y=$b1 ;;
+      2) x=$a2; y=$b2 ;;
+      3) x=$a3; y=$b3 ;;
+    esac
+    # 10# forces decimal: an 08 segment is not octal here.
+    if [ "$((10#$x))" -lt "$((10#$y))" ]; then echo -1; return 0; fi
+    if [ "$((10#$x))" -gt "$((10#$y))" ]; then echo 1; return 0; fi
+  done
+  echo 0
+}
+
+# constraint_terms <expr> — normalise a constraint into "<op> <version>" lines,
+# or fail. A constraint is whitespace-separated terms, ANDed:
+#   >=X.Y.Z  <=X.Y.Z  >X.Y.Z  <X.Y.Z  =X.Y.Z  X.Y.Z (exact)  ~>X.Y.Z
+# ~>X.Y.Z is the pessimistic operator: >=X.Y.Z and <X.(Y+1).0.
+constraint_terms() {
+  local expr=$1 term op want out=""
+  for term in $expr; do
+    case "$term" in
+      '>='*)  op=ge; want=${term#>=} ;;
+      '<='*)  op=le; want=${term#<=} ;;
+      '~>'*)  op=tw; want=${term#'~>'} ;;
+      '>'*)   op=gt; want=${term#>} ;;
+      '<'*)   op=lt; want=${term#<} ;;
+      '='*)   op=eq; want=${term#=} ;;
+      *)      op=eq; want=$term ;;
+    esac
+    is_release_version "$want" || return 1
+    out+="$op $want"$'\n'
+  done
+  # A constraint that yielded no terms — empty, or nothing but whitespace — is
+  # a failure, never a vacuous truth: it would otherwise be satisfied by every
+  # version, which is the opposite of what writing it down meant.
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# valid_constraint <expr>
+valid_constraint() { constraint_terms "$1" >/dev/null 2>&1; }
+
+# ver_satisfies <version> <constraint> — true iff version meets every term.
+# A non-release version (prerelease / build metadata) satisfies nothing.
+ver_satisfies() {
+  local v=$1 expr=$2 terms op want c w1 w2
+  is_release_version "$v" || return 1
+  terms=$(constraint_terms "$expr") || return 1
+  while read -r op want; do
+    [ -n "$op" ] || continue
+    c=$(ver_cmp "$v" "$want")
+    case "$op" in
+      ge) [ "$c" -ge 0 ] || return 1 ;;
+      gt) [ "$c" -gt 0 ] || return 1 ;;
+      le) [ "$c" -le 0 ] || return 1 ;;
+      lt) [ "$c" -lt 0 ] || return 1 ;;
+      eq) [ "$c" -eq 0 ] || return 1 ;;
+      tw) [ "$c" -ge 0 ] || return 1
+          IFS=. read -r w1 w2 _ <<<"$want"
+          [ "$(ver_cmp "$v" "$((10#$w1)).$((10#$w2 + 1)).0")" -lt 0 ] || return 1 ;;
+    esac
+  done <<<"$terms"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# require blocks: the constraint side of constraint-vs-resolution
+#
+# A spec's `require` is OPTIONAL and names components, not hosts:
+#   "require": { "zulip_acp": ">=0.31.3", "fir": ">=1.11.0" }
+# A spec without one behaves exactly as before.
+# ---------------------------------------------------------------------------
+REQUIRE_COMPONENTS="zulip_acp fir"
+
+# spec_require <spec-file> <component> — the constraint, or empty.
+spec_require() { jq -r --arg k "$2" '.require[$k] // empty' "$1"; }
+
+# all_requires <component> — "<bot>\t<constraint>" for every spec that has one.
+all_requires() {
+  local f bot c
+  for f in "$BOTS_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    bot=$(basename "$f" .json)
+    c=$(spec_require "$f" "$1")
+    [ -n "$c" ] && printf '%s\t%s\n' "$bot" "$c"
+  done
+  return 0
+}
+
+# resolve_satisfying <component> <version...> — the NEWEST given version that
+# satisfies every spec's constraint for that component. Empty if none does.
+resolve_satisfying() {
+  local comp=$1 v best="" reqs c
+  shift
+  reqs=$(all_requires "$comp")
+  for v in "$@"; do
+    is_release_version "$v" || continue
+    if [ -n "$reqs" ]; then
+      while IFS=$'\t' read -r _ c; do
+        [ -n "$c" ] || continue
+        ver_satisfies "$v" "$c" || continue 2
+      done <<<"$reqs"
+    fi
+    if [ -z "$best" ] || [ "$(ver_cmp "$v" "$best")" -gt 0 ]; then best=$v; fi
+  done
+  printf '%s\n' "$best"
+}
+
+# ---------------------------------------------------------------------------
 # Spec access ($SPEC is set in main)
 # ---------------------------------------------------------------------------
 SPEC=""
@@ -113,6 +262,45 @@ validate_spec() {
       *'%'*) die "$k must not contain % (systemd specifier)" ;;
     esac
   done
+  validate_require
+}
+
+# validate_require — the `require` block, if present, must be an object whose
+# keys are known components and whose values are parseable constraints. A typo
+# that is silently ignored is worse than no constraint at all: it reads like a
+# guarantee and enforces nothing.
+validate_require() {
+  local t k c
+  t=$(jq -r 'if has("require") then (.require | type) else "absent" end' "$SPEC")
+  case "$t" in
+    absent|null) return 0 ;;
+    object) : ;;
+    *) die "$SPEC: .require must be an object like {\"zulip_acp\": \">=0.31.3\"} (got $t)" ;;
+  esac
+  # while-read, not `for k in $(...)`: a key that word-splits to nothing (the
+  # empty key) would otherwise skip the loop body entirely and validate.
+  while IFS= read -r k; do
+    case " $REQUIRE_COMPONENTS " in
+      *" $k "*) : ;;
+      *) die "$SPEC: unknown .require key \"$k\" (known: $REQUIRE_COMPONENTS)" ;;
+    esac
+    c=$(jq -r --arg k "$k" '.require[$k]' "$SPEC")
+    [ "$(jq -r --arg k "$k" '.require[$k] | type' "$SPEC")" = string ] \
+      || die "$SPEC: .require.$k must be a string constraint (e.g. \">=0.31.3\")"
+    valid_constraint "$c" \
+      || die "$SPEC: invalid .require.$k constraint \"$c\" — expected whitespace-separated terms of >=X.Y.Z, <=X.Y.Z, >X.Y.Z, <X.Y.Z, ~>X.Y.Z or an exact X.Y.Z"
+  done < <(jq -r '.require | keys[]' "$SPEC")
+}
+
+# enforce_require <bot> <host> <component> <locked-version>
+# Hard-fail when the LOCKED version violates this spec's constraint.
+# Deterministic, no network, and called before anything touches the host.
+enforce_require() {
+  local bot=$1 host=$2 comp=$3 locked=$4 c
+  c=$(spec_require "$SPEC" "$comp")
+  [ -n "$c" ] || return 0
+  ver_satisfies "$locked" "$c" && return 0
+  die "$host ($bot): dist.lock has $comp $locked, which does not satisfy bots/$bot.json require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
 }
 
 # service key helpers: "absent or false or null" => not emitted
@@ -439,6 +627,14 @@ converge() {
   echo "== converge $bot (host=$host supervisor=$supervisor)$([ -n "$TARGET_ROOT" ] && echo " [fake root: $TARGET_ROOT]")$([ "$LOCAL" = 1 ] && echo " [local]")"
   [ "$apply" = 1 ] || echo "== DRY RUN — no changes will be made (use --apply)"
 
+  # The lock must be ACCEPTABLE to this spec before anything is copied. This
+  # is deterministic and offline: a hand-edited or stale lock that would
+  # silently downgrade the host stops here, in dry run as well as --apply.
+  enforce_require "$bot" "$host" zulip_acp "$want_za"
+  if [ "$(jqs '.agent.kind')" = "fir" ]; then
+    enforce_require "$bot" "$host" fir "$want_fir"
+  fi
+
   [ "$LOCAL" = 1 ] && [ -n "$TARGET_ROOT" ] && die "--local and --target-root are mutually exclusive"
 
   # --local is a loaded gun: it points every write at THIS machine while the
@@ -687,34 +883,66 @@ converge() {
 # --tot: resolve latest-of-everything ONCE into dist.lock, then STOP.
 # Resolution never happens on a host, and tot never converges.
 # ---------------------------------------------------------------------------
-latest_tag_git() { # <repo-url>
+# list_tags_git <repo-url> — every vX.Y.Z tag, v stripped, oldest first.
+# The `v` is stripped BEFORE sorting: `sort -V` on tags that still carry it
+# sorts the prefix, not the version. The grep keeps prereleases (v1.2.0-rc1)
+# out entirely — they can never satisfy a constraint anyway.
+list_tags_git() {
   git ls-remote --tags "$1" \
     | awk '{print $2}' | sed 's|^refs/tags/||' | grep -v '\^{}$' \
-    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//'
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V
 }
 
-latest_tag_zulip_acp() {
+list_tags_zulip_acp() {
   # gh first: it carries a token, and GitHub's unauthenticated API limit is
   # per IP, so a NAT'd fleet exhausts it. Plain git ls-remote is the fallback
   # (the repo is public), and it is also what runs when gh is absent.
-  local tag=""
+  local tags=""
   if command -v gh >/dev/null 2>&1; then
-    # Capture before stripping: a pipeline's status is the LAST command's,
-    # so `gh | sed` would report success for a logged-out gh and silently
-    # skip the git fallback.
-    tag=$(gh release view --repo "$ZULIP_ACP_REPO" --json tagName -q .tagName 2>/dev/null || true)
+    # Capture before filtering: a pipeline's status is the LAST command's, so
+    # `gh | sed` would report success for a logged-out gh and silently skip
+    # the git fallback. Drafts and prereleases are excluded here rather than
+    # by the version regex: a draft tag may not exist on the remote at all,
+    # and locking one would send every host chasing an asset that is not
+    # published.
+    tags=$(gh release list --repo "$ZULIP_ACP_REPO" --limit 200 \
+             --json tagName,isDraft,isPrerelease \
+             -q '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+           2>/dev/null || true)
   fi
-  [ -n "$tag" ] || tag=$(latest_tag_git "https://github.com/$ZULIP_ACP_REPO")
-  printf '%s\n' "${tag#v}"
+  if [ -n "$tags" ]; then
+    printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V
+    return 0
+  fi
+  list_tags_git "https://github.com/$ZULIP_ACP_REPO"
 }
 
 head_rev() { # <repo-url>
   git ls-remote "$1" HEAD | awk 'NR==1 {print $1}'
 }
 
+# resolve_component <component> <label> <versions...> — the NEWEST version
+# satisfying EVERY spec's constraint, with a diagnosis when nothing does.
+# This is where "latest" became "latest ACCEPTABLE": the fleet's specs, not
+# the registry, decide what the lock may say.
+resolve_component() {
+  local comp=$1 label=$2 picked newest reqs
+  shift 2
+  [ $# -gt 0 ] || die "could not list any $label release (rate-limited? is gh logged in?)"
+  newest=$(printf '%s\n' "$@" | tail -1)
+  picked=$(resolve_satisfying "$comp" "$@")
+  if [ -z "$picked" ]; then
+    reqs=$(all_requires "$comp" | sed 's/^/     /')
+    die "no $label release satisfies every spec's require.$comp (newest available: $newest). Constraints:
+$reqs"
+  fi
+  [ "$picked" = "$newest" ] || note "$label: held at $picked by a spec constraint (newest release is $newest)" >&2
+  printf '%s\n' "$picked"
+}
+
 tot() {
   need git
-  local old_za old_fir old_ext new_za new_fir new_ext moved=0
+  local old_za old_fir old_ext new_za new_fir new_ext moved=0 f
   if [ -f "$LOCK" ]; then
     old_za=$(jq -r '.zulip_acp' "$LOCK")
     old_fir=$(jq -r '.fir' "$LOCK")
@@ -723,9 +951,21 @@ tot() {
     old_za=none; old_fir=none; old_ext=none
   fi
 
-  echo "== tot: resolving latest releases (this is the ONLY place resolution happens)"
-  new_za=$(latest_tag_zulip_acp)
-  new_fir=$(latest_tag_git "$FIR_DIST_REPO")
+  # Every spec's require block is validated BEFORE any network call: a lock
+  # resolved against a malformed constraint would be resolved against nothing.
+  for f in "$BOTS_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    SPEC="$f"; validate_require
+  done
+  SPEC=""
+
+  echo "== tot: resolving the newest releases that satisfy every spec's require"
+  # shellcheck disable=SC2046  # word splitting of the version list is intended
+  new_za=$(resolve_component zulip_acp zulip-acp $(list_tags_zulip_acp))
+  # shellcheck disable=SC2046
+  new_fir=$(resolve_component fir fir $(list_tags_git "$FIR_DIST_REPO"))
+  # fir-exts is pinned by git rev, not by semver: there is no version to
+  # constrain, so `require` has no key for it.
   new_ext=$(head_rev "https://github.com/kfet/fir-exts")
   [ -n "$new_za" ]  || die "could not resolve latest zulip-acp release (rate-limited? is gh logged in?)"
   [ -n "$new_fir" ] || die "could not resolve latest fir-dist tag"
@@ -760,13 +1000,20 @@ usage:
   converge.sh <bot> --local             act on THIS machine directly (no ssh)
   converge.sh <bot> --force-local       --local without the "is this host us" check
   converge.sh <bot> --target-root DIR   act on a local fake host rooted at DIR (no ssh)
-  converge.sh --tot                     resolve latest-of-everything ONCE and rewrite
-                                        dist.lock; NEVER converges
+  converge.sh --tot                     resolve the newest releases satisfying every
+                                        spec's require and rewrite dist.lock;
+                                        NEVER converges
   converge.sh render <bot> <artefact>   render one artefact: config | execstart | unit
   converge.sh plan-recycle <unit_changed> <running> <version> <has_reload>
                                         print the recycle mechanism that state selects
   converge.sh plan-stale <running> <want> <running_ver>
                                         print whether the running image is stale
+  converge.sh semver-cmp <a> <b>        print -1 | 0 | 1
+  converge.sh semver-sat <ver> <constraint>
+                                        print yes/no (exit 0/1)
+  converge.sh resolve <component> <ver...>
+                                        print the newest version satisfying every
+                                        spec's require.<component>
 EOF
   exit 1
 }
@@ -794,6 +1041,16 @@ case "$1" in
   plan-stale)
     [ $# -eq 4 ] || usage
     stale_decision "$2" "$3" "$4" ;;
+  semver-cmp)
+    [ $# -eq 3 ] || usage
+    ver_cmp "$2" "$3" ;;
+  semver-sat)
+    [ $# -eq 3 ] || usage
+    if ver_satisfies "$2" "$3"; then echo yes; else echo no; exit 1; fi ;;
+  resolve)
+    [ $# -ge 2 ] || usage
+    COMP=$2; shift 2
+    resolve_component "$COMP" "$COMP" "$@" ;;
   -*) usage ;;
   *)
     BOT=$1; shift
