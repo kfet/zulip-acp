@@ -103,7 +103,7 @@ const (
 	// mistyped branch is one extra topic, not a lost message.
 	branchVerb  = "branch"
 	branchAlias = "br"
-	branchHelp = "- `" + command.DisplaySigil + branchVerb + " [#**channel**] <text>` — spin `<text>` out into a new topic that can read this one (or react :" + branchEmoji + ": on a message to spin that message out)\n"
+	branchHelp  = "- `" + command.DisplaySigil + branchVerb + " [#**channel**] <text>` — spin `<text>` out into a new topic that can read this one (or react :" + branchEmoji + ": on a message to spin that message out)\n"
 
 	// branchEmoji is the reaction form. A fork in the road, near
 	// enough — Zulip has no :fork: — and, unlike :wastebasket:, it
