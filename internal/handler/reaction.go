@@ -441,12 +441,8 @@ func (h *Handler) reactionTrigger(ctx context.Context, conv journal.Conv, ev zul
 //
 // It NEVER allocates a conversation: an unknown key is a drop.
 func (h *Handler) convForReaction(ctx context.Context, msgID int64) (journal.Conv, *zulipproto.Message, bool) {
-	if convID, ok := h.ownMsgs.get(msgID); ok {
-		c, ok := h.cfg.Journal.LookupID(convID)
-		if ok && !c.Retired && h.serves(c.Key) {
-			return c, nil, true
-		}
-		return journal.Conv{}, nil, false
+	if c, ok, ours := h.convFromOwnIndex(msgID); ours {
+		return c, nil, ok
 	}
 	if _, seen := h.badMsgs.get(msgID); seen {
 		return journal.Conv{}, nil, false

@@ -336,10 +336,54 @@ user id, other bots, the user allowlist), then an in-memory index of the
 messages it posted itself, and only then one rate-limited, negatively-cached
 `GET /messages/{id}`.
 
+### ⚠️ Trap: a topic is SILENTLY truncated at 60 code points
+
+`MAX_TOPIC_LENGTH` is **60 code points**, and an over-long topic is handled the
+same way an over-long body is: the send returns `{"result":"success"}` and the
+message is stored under a topic truncated to 60, ending in `…`. Nothing is
+refused and nothing is reported.
+
+```bash
+# 73-character topic
+curl -u ... -X POST .../messages -d type=stream -d to=6 \
+  --data-urlencode 'topic=zulip-acp live: TestBeforeIDPagesBackwardsExclusively 1789590761330872424' \
+  --data-urlencode 'content=probe'
+# → {"result":"success","id":2658}
+# GET /messages/2658 → "subject": "zulip-acp live: TestBeforeIDPagesBackwardsExclusively 178…"  (60)
+```
+
+The second-order failure is the one that actually bites: any narrow built from
+the topic name the *caller* used now matches **nothing**, because the server is
+holding a different string. This was discovered as a live test that appeared to
+prove `GET /messages` pagination was broken — the API was fine; the test's
+topic had overflowed. Production code is guarded (`zulipproto.MaxTopicLength`,
+`autotopic.MaxLen`, `suffixTopic`, and the `rename_topic` tool's own check);
+anything new that MINTS a topic must be too.
+
 ## Widget interactions: the `submessage` event
 
 Zulip's widgets (`/poll`, `/todo`, and a `zform`) store every interaction as a
-**submessage** appended to the message that carries the widget. A vote is
+**submessage** appended to the message that carries the widget.
+
+### ⚠️ Trap: a bot cannot attach a poll as `widget_content`
+
+`widget_content` accepts **`zform` and nothing else**. Posting
+`widget_content={"widget_type":"poll",…}` is refused with 400 *"Widgets:
+unknown widget type: poll"*. A poll is created the way a human creates one — by
+sending the `/poll` **slash command as the message content** — and Zulip's
+markdown processor builds the submessage itself:
+
+```bash
+curl -u ... -X POST .../messages -d type=stream -d to=6 -d topic=t \
+  --data-urlencode $'content=/poll Model\nopus\nsonnet\nhaiku'
+# GET the message back → submessages[0].content =
+#   {"widget_type": "poll", "extra_data": {"question": "Model", "options": ["opus","sonnet","haiku"]}}
+```
+
+So a poll message has no separate human-readable body: its content *is* the
+slash command, which is what a client that renders no widget shows the reader.
+Measured on Zulip 12.2 and pinned by
+`test/live_test.go:TestPollIsMadeFromContentNotWidgetContent`. A vote is
 posted to `POST /api/v1/submessage` — **singular**; `/submessages` is a 404 —
 and is announced on the queue as:
 
@@ -372,8 +416,16 @@ Measured on Zulip 12.2. Note the shape:
 - `submessage_id` is realm-global and assigned once per interaction, so it is a
   complete de-duplication key (see `internal/zulipproto/dedup.go`).
 
-`zulip-acp` registers for `submessage` and logs what arrives; it acts on
-nothing. See `BACKLOG.md` for why a poll-driven menu was the runner-up design.
+`zulip-acp` registers for `submessage` and ACTS on one thing: a vote in the
+conversation's live `!opts` model poll, which is dispatched as the `!model
+<id>` command a human could have typed (`internal/handler/poll.go`). Everything
+else is logged and dropped. Because the poll's option list is pinned to its
+message id when it is posted, resolving a vote costs no `GET /messages/{id}` at
+all.
+
+A vote **toggles**: `1`, `-1`, `1`, `-1` measured on repeated taps of the same
+option. Read the selection as *latest positive vote wins*; an un-vote must mean
+nothing, never "no choice".
 
 ## Events: `/register` + `/events`
 

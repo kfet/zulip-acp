@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -437,11 +438,11 @@ func TestOptsTracking(t *testing.T) {
 	if c.OptsID != 0 {
 		t.Fatalf("fresh conversation has panel %d", c.OptsID)
 	}
-	if err := j.SetOpts(c.ID, 77); err != nil {
+	if err := j.SetOpts(c.ID, 77, 78, []string{"a/one", "b/two"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
-	// Setting the same value again is a no-op (no rewrite).
-	if err := j.SetOpts(c.ID, 77); err != nil {
+	// Setting the same values again is a no-op (no rewrite).
+	if err := j.SetOpts(c.ID, 77, 78, []string{"a/one", "b/two"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	// A tail write must leave the panel alone, and vice versa.
@@ -449,7 +450,8 @@ func TestOptsTracking(t *testing.T) {
 		t.Fatalf("SetTail: %v", err)
 	}
 	got, ok := j.Lookup(Channel(4, "topic"))
-	if !ok || got.OptsID != 77 || got.TailID != 100 {
+	if !ok || got.OptsID != 77 || got.PollID != 78 || got.TailID != 100 ||
+		!slices.Equal(got.PollModels, []string{"a/one", "b/two"}) {
 		t.Fatalf("conv = %+v", got)
 	}
 	// Survives a restart: the panel is found again after a crash
@@ -458,16 +460,24 @@ func TestOptsTracking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if reloaded, ok := j2.Lookup(Channel(4, "topic")); !ok || reloaded.OptsID != 77 {
+	reloaded, ok := j2.Lookup(Channel(4, "topic"))
+	if !ok || reloaded.OptsID != 77 || reloaded.PollID != 78 {
 		t.Fatalf("conv after reload = %+v", reloaded)
 	}
-	if err := j.SetOpts(c.ID, 0); err != nil {
+	if err := j.SetOpts(c.ID, 0, 0, nil); err != nil {
 		t.Fatalf("SetOpts clear: %v", err)
 	}
-	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 0 {
+	// The option table MUST survive a restart: the poll's order
+	// depends on state that does not, so recomputing it after a reload
+	// would resolve a vote to a different model than the one written
+	// on the option.
+	if !slices.Equal(reloaded.PollModels, []string{"a/one", "b/two"}) {
+		t.Fatalf("poll models after reload = %v", reloaded.PollModels)
+	}
+	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 0 || got.PollID != 0 || got.PollModels != nil {
 		t.Fatalf("panel not cleared: %+v", got)
 	}
-	if err := j.SetOpts("nosuchconv", 1); err == nil {
+	if err := j.SetOpts("nosuchconv", 1, 1, nil); err == nil {
 		t.Fatal("want error for unknown conversation")
 	}
 }
@@ -481,18 +491,18 @@ func TestOptsPanelMovesToTheFreshConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := j.SetOpts(c.ID, 42); err != nil {
+	if err := j.SetOpts(c.ID, 42, 43, []string{"a/one"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	prev, fresh, existed, err := j.Retire(Channel(4, "topic"))
 	if err != nil || !existed {
 		t.Fatalf("Retire: %v, existed=%v", err, existed)
 	}
-	if prev.OptsID != 0 {
-		t.Fatalf("retired conversation kept panel %d", prev.OptsID)
+	if prev.OptsID != 0 || prev.PollID != 0 || prev.PollModels != nil {
+		t.Fatalf("retired conversation kept the control pair %+v", prev)
 	}
-	if fresh.OptsID != 42 {
-		t.Fatalf("fresh conversation panel = %d, want 42", fresh.OptsID)
+	if fresh.OptsID != 42 || fresh.PollID != 43 || !slices.Equal(fresh.PollModels, []string{"a/one"}) {
+		t.Fatalf("fresh conversation controls = %d/%d/%v, want 42/43/[a/one]", fresh.OptsID, fresh.PollID, fresh.PollModels)
 	}
 }
 
@@ -509,7 +519,7 @@ func TestSetOptsRollsBackOnAWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := j.SetOpts(c.ID, 5); err != nil {
+	if err := j.SetOpts(c.ID, 5, 0, nil); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -517,7 +527,7 @@ func TestSetOptsRollsBackOnAWriteFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	if err := j.SetOpts(c.ID, 6); err == nil {
+	if err := j.SetOpts(c.ID, 6, 0, nil); err == nil {
 		t.Fatal("want write error")
 	}
 	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 5 {
@@ -543,7 +553,7 @@ func TestLookupMessage(t *testing.T) {
 	if err := j.SetTail(c.ID, 11); err != nil {
 		t.Fatalf("SetTail: %v", err)
 	}
-	if err := j.SetOpts(c.ID, 12); err != nil {
+	if err := j.SetOpts(c.ID, 12, 14, nil); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	// The relay's own last message resolves here too: after a restart
@@ -553,7 +563,7 @@ func TestLookupMessage(t *testing.T) {
 	if err := j.SetLastOwn(c.ID, 13); err != nil {
 		t.Fatalf("SetLastOwn: %v", err)
 	}
-	for _, id := range []int64{11, 12, 13} {
+	for _, id := range []int64{11, 12, 13, 14} {
 		got, ok := j.LookupMessage(id)
 		if !ok || got.ID != c.ID {
 			t.Fatalf("LookupMessage(%d) = %+v,%v", id, got, ok)

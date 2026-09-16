@@ -1305,9 +1305,12 @@ loopback tool are one implementation.
 Three constraints shaped the rest of it.
 
 **The reader is on a phone.** `zform` renders in the Zulip **web app only**;
-every other client shows the message's plain markdown. So the markdown body is
-the product and the widget is decoration on top of it: the body is written
-first, lists the same commands, and must be usable with a thumb. Widgets are
+every other client shows the message's plain markdown. And the converse is
+measured too: when a message carries `widget_content` the web client hides the
+markdown body **entirely** and draws only the widget. So neither half is
+decoration — the body is the whole product on every client that renders no
+widget, and invisible on the one that does. Both are written to stand alone.
+Widgets are
 also a dev-docs *subsystem*
 (`zulip.readthedocs.io/en/stable/subsystems/widgets.html`), not a versioned
 API, which is why the coupling is one file — `internal/zulipproto/zform.go` —
@@ -1345,8 +1348,8 @@ than in the command path. A panel that could be left claiming a model the
 conversation is not on would be worse than no panel, because it is also the
 status line.
 
-**A button must never offer what the agent cannot do.** Model buttons come
-from the boot-time probe (`Agent.Models()`), capped so the panel fits one
+**A button must never offer what the agent cannot do.** Model options come
+from the boot-time probe (`Agent.Models()`), capped so the menu fits one
 screen, current model first, with `!model <filter>` reaching the rest. Thinking
 level is deliberately *absent*: acp-kit exposes the model config option but no
 snapshot of an agent's other `configOptions`, so the relay cannot know a
@@ -1354,45 +1357,88 @@ session has one. Inventing the knob would mean a button that silently fails.
 When acp-kit surfaces those options, the knob belongs here — and the acp-kit
 change comes first.
 
-**The phone still could not tap the buttons — so the panel wears reactions
-too.** Everything above makes the markdown body *readable* on a phone; none of
-it makes it *tappable*. A mobile reader had to retype `!model
-anthropic/claude-opus-4-5` with a thumb. The fix is the one interactive control
-Zulip renders on every client: an emoji reaction. After posting the panel the
-bot seeds its own chips — `one`..`six` for the model choices in the order they
-are listed, then `:new:`, `:octagonal_sign:` for stop and `:bar_chart:` for
-status — and a tap comes back as a `reaction` event that
-`Handler.optsReaction` maps to the **same reply string the zform button beside
-it carries**, then runs through the **same** `dispatch`. Three surfaces, one
-parser; a chip adds no capability, exactly as a button adds none.
+**The phone still could not tap the buttons — so the models moved to a poll.**
+Everything above makes the markdown body *readable* on a phone; none of it
+makes it *tappable*. Two surfaces were tried against the live server, in this
+order, and only the second works:
 
-Four measured facts shape it, and none of them is optional:
+- **Reaction chips.** Reactions are the one interactive control Zulip renders
+  on every client, so the panel seeded `one`..`six` for the model choices plus
+  three session chips. It rendered — and it did not work. With all nine
+  reactions present on the message (confirmed by reading them back through the
+  API) the iOS client drew the row starting at `:three:`. `:one:` and `:two:`
+  never appeared, so the **current** model, which is pinned first, and the one
+  below it were unreachable by thumb. Cause unknown: not a count limit, not a
+  seeding failure.
+- **A poll.** It renders **and** is votable on iOS, proven end to end. It also
+  removes the whole class of failure rather than that one instance: a poll
+  option carries its own **text**, so nothing depends on a glyph drawing or on
+  a positional emoji↔model mapping that a legend has to explain.
 
-- **Reactions render in first-added order**, so the chips are seeded
-  sequentially. Firing them concurrently would leave `three` sitting where the
-  reader expects `one`, pointing at whichever model the digits happened to land
-  on.
-- **A bot cannot remove another user's reaction.** The `DELETE` returns
-  success and takes only the bot's own; read the message back and the other
-  user's reaction is still there. So an un-tap is *un-undoable*, `op=remove` is
-  a deliberate no-op, and the panel footer says so rather than looking broken.
-- **Emoji names are not guessable.** `information_source`,
-  `arrows_counterclockwise` and `mag` are all rejected with 400 *"Emoji … does
-  not exist"* and all three read like obvious members of the set. Every chip
-  name is pinned by a live test. `:bar_chart:` rather than `:eyes:` for status
-  for a second reason: `:eyes:` is the relay's own in-flight ack, so a status
-  chip wearing it would be indistinguishable from "a turn is running".
-- **Only the conversation's LIVE panel is tappable**, matched on
-  `conv.OptsID` exactly. A repaint deletes the old panel and its chips with it,
-  but a realm that forbids deletion leaves the whole message in the
-  scrollback — and a tap on a month-old menu must not reconfigure anything. The
-  gate also runs *before* the reaction reaches the agent, so a command is not
-  also narrated to the model as ambient chatter.
+So `!opts` posts a **pair**: the model poll, then the panel under it. The split
+is forced by the wire — a message carries at most one `widget_content`, and the
+two controls need different widgets — and it is also the right split, since
+choosing a model is the only control with more than three options and the only
+one a phone reader reaches for often. The panel keeps the session controls,
+which are three fixed actions and still wear a chip each (`:new:`,
+`:octagonal_sign:`, `:bar_chart:`) because a poll option that *fires* an action
+would be a checkbox pretending to be a button. The pair is posted together,
+retired together, and recorded together — `journal.SetOpts` takes both ids in
+one write, so a commit can never land for the panel and fail for the poll.
 
-The chips are seeded only when `"reactions"` is on, because with it off the
-relay does not subscribe to `reaction` events at all: a row of buttons that
+The poll goes **first** so the panel, which is the state readout, sits nearest
+the reader — and so the panel's own text can say truthfully whether there is a
+poll to vote in. A server that refuses `widget_content` refuses the poll (whose
+whole content *is* the widget), and the panel then falls back to naming
+`!model <id>` instead of pointing at a control that is not there. If the panel
+itself fails to post, the poll just posted is deleted rather than orphaned.
+
+A vote arrives as a `submessage` event, is resolved by `Handler.pollVote`, and
+is dispatched as the **same** `!model <id>` string a typed command, a zform
+button and the `select_model` loopback tool all end at. It walks the same gates
+in the same order reaction.go applies to a chip tap — own user id, bot-sender
+set, allowlist, then the one lookup that can recognise a bot created since
+startup. A vote may not be a way around the allowlist.
+
+Three measured facts shape it, and none is optional:
+
+- **A vote names its option by INDEX.** The event's `key` is
+  `"canned,<option-index>"` for an option the poll shipped with, and
+  `"<user-id>,<option-index>"` for one a participant added later — which no
+  index of ours can resolve, so it is dropped. The index→model table is
+  therefore **written into the journal** beside the poll's id
+  (`journal.Conv.PollModels`, one `SetOpts` commit), never recomputed at vote
+  time. Two things make recomputation wrong rather than merely wasteful: the
+  model list can be re-probed after `!login` without anything repainting the
+  poll, and the option ORDER depends on the conversation's effective model —
+  which lives in memory and does **not** survive a graceful reload. A relay
+  that re-derived the table after an exec would resolve a vote to a different
+  model from the one written on the option, silently. Persisting it is safe
+  precisely because a widget message is sealed: the options on the server can
+  never drift from what was recorded. It also means resolving a vote costs
+  **no** `GET /messages/{id}`.
+- **A vote toggles.** `1`, `-1`, `1`, `-1` on repeated taps of one option. The
+  selection is the latest **positive** vote; a `-1` is dropped entirely, because
+  reading it as a choice would let un-ticking mean "no model", which is not a
+  state the relay has.
+- **Only the conversation's LIVE poll is votable**, matched on `conv.PollID`
+  exactly — and the same rule on `conv.OptsID` for a chip. A repaint deletes
+  the old pair, but a realm that forbids deletion leaves both messages in the
+  scrollback, still votable, and a vote in a month-old menu must not
+  reconfigure anything.
+
+A lesson from this that outlives the feature: the key shape above was first
+written down wrong, derived from a hand-built `POST /api/v1/submessage`. That
+endpoint accepts an **arbitrary** key string, so the server stored and echoed
+the guess back, looking like confirmation. **The server accepting your probe
+input proves nothing about what a real client sends.**
+
+The session chips are seeded only when `"reactions"` is on, because with it off
+the relay does not subscribe to `reaction` events at all: a row of buttons that
 provably cannot work is worse than none, and the footer that explains them is
-withheld with them.
+withheld with them. The poll is **not** gated on that setting — a poll is not a
+reaction, its events arrive regardless, and a menu that silently stopped
+working because emoji were turned off would be a puzzle.
 
 Finally, an unknown `!command` now answers with the panel. It used to answer
 with a one-line error, which was correct and useless: the moment a user
@@ -1705,9 +1751,10 @@ internal/handler/loopback.go
                         agent→relay loopback: conv-id → broker token / journal key,
                         out-of-band post, scheduled-prompt firing and its gates
 internal/handler/opts.go
-                        `!opts`: the one self-updating options panel per
-                        conversation, its zform buttons (web) and its
-                        tappable reaction chips (everywhere)
+                        `!opts`: the one control PAIR per conversation —
+                        the panel (zform buttons on web, session reaction
+                        chips everywhere) and, in poll.go, the model poll
+                        that renders and votes on a phone
 internal/journal/       conv key (channel topic | DM user set) → conv-id, tail and
                         options-panel message ids
 internal/reload/        graceful reload: drain in-flight turns, then re-exec in

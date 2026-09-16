@@ -383,7 +383,8 @@ func TestReactionResolvesFromJournal(t *testing.T) {
 		set  func(hh *harness, convID string, id int64) error
 	}{
 		{"tail", func(hh *harness, convID string, id int64) error { return hh.j.SetTail(convID, id) }},
-		{"opts panel", func(hh *harness, convID string, id int64) error { return hh.j.SetOpts(convID, id) }},
+		{"opts panel", func(hh *harness, convID string, id int64) error { return hh.j.SetOpts(convID, id, 0, nil) }},
+		{"model poll", func(hh *harness, convID string, id int64) error { return hh.j.SetOpts(convID, 0, id, nil) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			hh, _ := reactHarness(t, nil)

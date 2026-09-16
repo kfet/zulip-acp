@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!opts` now posts a **model poll** beside the panel — the one control surface
+  measured to render AND be votable on iOS. A vote dispatches the same
+  `!model <id>` a typed command, a zform button and the loopback tool do, and
+  walks the same allowlist and bot gates.
+- `internal/zulipproto/poll.go`: `PollContent` (the `/poll` slash command — a
+  bot CANNOT attach a poll as `widget_content`, measured) and the vote
+  submessage parser (`canned,<index>` keys; an un-vote is not a choice).
+- `zulipproto.Message.Submessages`: a message's widget state, for reading a
+  poll and its votes back off the server.
+- `journal.Conv.PollID` and `journal.Conv.PollModels`, persisted next to
+  `OptsID`; `Journal.SetOpts` writes the whole control pair in one commit. The
+  option→model table MUST be persisted: the poll's order depends on the
+  conversation's effective model, which does not survive a graceful reload, so
+  recomputing it after an exec would resolve a vote to the wrong model.
+
+### Removed
+
+- The `:one:`..`:six:` model reaction chips. Measured: iOS did not draw
+  `:one:`/`:two:` even with all nine reactions held by the server, leaving the
+  current model untappable. The poll replaces them; the `:new:`,
+  `:octagonal_sign:` and `:bar_chart:` session chips stay.
+
+### Fixed
+
+- Live tests minted topics over Zulip's 60-code-point `MAX_TOPIC_LENGTH`, which
+  the server truncates SILENTLY — so a topic-narrowed search matched nothing
+  and `TestBeforeIDPagesBackwardsExclusively` failed against a working API.
+  `topicFor` now fits the limit and asserts it. The trap is written up in
+  `docs/zulip-protocol-reference.md`.
+- `internal/handler/opts.go`'s header claimed the markdown body was "the
+  product" and the widget decoration. Measured false: on web, a message with
+  `widget_content` hides its body entirely.
+
 ## [0.32.0] - 2026-09-16
 
 ### Added
