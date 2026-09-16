@@ -1354,6 +1354,46 @@ session has one. Inventing the knob would mean a button that silently fails.
 When acp-kit surfaces those options, the knob belongs here — and the acp-kit
 change comes first.
 
+**The phone still could not tap the buttons — so the panel wears reactions
+too.** Everything above makes the markdown body *readable* on a phone; none of
+it makes it *tappable*. A mobile reader had to retype `!model
+anthropic/claude-opus-4-5` with a thumb. The fix is the one interactive control
+Zulip renders on every client: an emoji reaction. After posting the panel the
+bot seeds its own chips — `one`..`six` for the model choices in the order they
+are listed, then `:new:`, `:octagonal_sign:` for stop and `:bar_chart:` for
+status — and a tap comes back as a `reaction` event that
+`Handler.optsReaction` maps to the **same reply string the zform button beside
+it carries**, then runs through the **same** `dispatch`. Three surfaces, one
+parser; a chip adds no capability, exactly as a button adds none.
+
+Four measured facts shape it, and none of them is optional:
+
+- **Reactions render in first-added order**, so the chips are seeded
+  sequentially. Firing them concurrently would leave `three` sitting where the
+  reader expects `one`, pointing at whichever model the digits happened to land
+  on.
+- **A bot cannot remove another user's reaction.** The `DELETE` returns
+  success and takes only the bot's own; read the message back and the other
+  user's reaction is still there. So an un-tap is *un-undoable*, `op=remove` is
+  a deliberate no-op, and the panel footer says so rather than looking broken.
+- **Emoji names are not guessable.** `information_source`,
+  `arrows_counterclockwise` and `mag` are all rejected with 400 *"Emoji … does
+  not exist"* and all three read like obvious members of the set. Every chip
+  name is pinned by a live test. `:bar_chart:` rather than `:eyes:` for status
+  for a second reason: `:eyes:` is the relay's own in-flight ack, so a status
+  chip wearing it would be indistinguishable from "a turn is running".
+- **Only the conversation's LIVE panel is tappable**, matched on
+  `conv.OptsID` exactly. A repaint deletes the old panel and its chips with it,
+  but a realm that forbids deletion leaves the whole message in the
+  scrollback — and a tap on a month-old menu must not reconfigure anything. The
+  gate also runs *before* the reaction reaches the agent, so a command is not
+  also narrated to the model as ambient chatter.
+
+The chips are seeded only when `"reactions"` is on, because with it off the
+relay does not subscribe to `reaction` events at all: a row of buttons that
+provably cannot work is worse than none, and the footer that explains them is
+withheld with them.
+
 Finally, an unknown `!command` now answers with the panel. It used to answer
 with a one-line error, which was correct and useless: the moment a user
 mistypes a command is the moment they most need the menu. It is still never
@@ -1665,7 +1705,9 @@ internal/handler/loopback.go
                         agent→relay loopback: conv-id → broker token / journal key,
                         out-of-band post, scheduled-prompt firing and its gates
 internal/handler/opts.go
-                        `!opts`: the one self-updating options panel per conversation
+                        `!opts`: the one self-updating options panel per
+                        conversation, its zform buttons (web) and its
+                        tappable reaction chips (everywhere)
 internal/journal/       conv key (channel topic | DM user set) → conv-id, tail and
                         options-panel message ids
 internal/reload/        graceful reload: drain in-flight turns, then re-exec in

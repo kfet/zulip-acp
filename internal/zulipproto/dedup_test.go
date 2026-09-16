@@ -112,3 +112,20 @@ func TestEventKeyDistinguishesTwoEditsOfOneMessage(t *testing.T) {
 		t.Fatalf("a message and an edit of it share the identity %q", posted)
 	}
 }
+
+// TestSubmessageEventKey: submessage_id is realm-global and assigned
+// once per interaction, so it is the whole identity — which is what
+// lets a queue swap drop the duplicate copy of a vote.
+func TestSubmessageEventKey(t *testing.T) {
+	ev := Event{Type: EventSubmessage, SubmessageID: 22, MessageID: 2333, SenderID: 8}
+	got, ok := eventKey(ev)
+	if !ok || got != "submessage:22" {
+		t.Fatalf("eventKey = %q/%v", got, ok)
+	}
+	// A submessage the server did not number cannot be de-duplicated,
+	// and a dropped event is far worse than a duplicated one, so it is
+	// always dispatched.
+	if _, ok := eventKey(Event{Type: EventSubmessage, MessageID: 2333}); ok {
+		t.Fatal("an unnumbered submessage claimed a dedup key")
+	}
+}

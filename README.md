@@ -209,7 +209,7 @@ offer the same surface.
 | command | what it does |
 | --- | --- |
 | `!help` | list these commands |
-| `!opts` | interactive options panel — buttons in the Zulip web app, a plain command list everywhere else |
+| `!opts` | interactive options panel — buttons in the Zulip web app, tappable emoji chips everywhere else, and a plain command list in the text |
 | `!status` | where you are, the conversation and its state directory, model, session, relay version and uptime |
 | `!model` | list the models the agent reports |
 | `!model <filter>` | narrow that list |
@@ -285,6 +285,15 @@ allocates a conversation: `!help` in a fresh topic leaves nothing on disk.
   the panel's markdown body lists the same commands and is written to be usable
   with a thumb. If the server refuses the widget outright (widgets disabled, or
   an older Zulip), the panel still posts without it.
+- **On a phone, tap the emoji chips.** The bot seeds its own reactions on the
+  panel — 1️⃣…6️⃣ for the models in the order they are listed, then 🆕 for
+  `!new`, 🛑 for `!stop` and 📊 for `!status` — because a reaction row is
+  tappable on *every* Zulip client. A tap runs exactly the command the matching
+  button would have sent, through exactly the same parser and the same
+  allowlist. Only the conversation's newest panel is live; chips on an older
+  one do nothing. **Un-tapping does nothing either** — a bot cannot remove
+  somebody else's reaction, so the relay cannot undo it and does not pretend
+  to. Chips are seeded only when `"reactions"` is on.
 - Model buttons come from the agent's own probe, so one can never offer a model
   the agent does not have. The list is capped; `!model <filter>` reaches the
   rest.
@@ -856,6 +865,14 @@ Live tests run against a real server and are excluded from the coverage gate:
 ```bash
 ZULIP_LIVE=1 ZULIP_SITE=… ZULIP_EMAIL=… ZULIP_API_KEY=… ZULIP_CHANNEL=zulip-acp-tests \
   go test -v ./test/
+```
+
+A couple of them need a **second, non-bot account** subscribed to the same
+channel — a reaction the bot added itself proves nothing about what somebody
+else's reaction does. They skip unless it is supplied:
+
+```bash
+ZULIP_OTHER_EMAIL=you@zulip.example ZULIP_OTHER_API_KEY=… \
 ```
 
 They exist to pin **server** behaviour — most importantly that oversized

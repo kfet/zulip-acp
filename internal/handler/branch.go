@@ -387,13 +387,14 @@ func (h *Handler) BranchReaction(ctx context.Context, conv journal.Conv, ev zuli
 	if conv.Key.IsDM() {
 		return false
 	}
-	// Only now is a name worth an API call — and it is also the last
-	// bot check: BotSenderIDs is a startup snapshot, and a bot that
-	// appeared since must not be able to create topics.
-	who, isBot := h.reactor(ctx, ev.UserID)
-	if isBot {
-		return false
-	}
+	// Only now is a name worth an API call. There is no bot check here:
+	// handleReaction runs h.reactor BEFORE any relay-side trigger
+	// precisely so a bot created since startup cannot reach a
+	// destructive control, and this lookup is the same cached call
+	// answering a second time. A duplicate guard here would be a dead
+	// branch, and a dead guard is how the live one comes to be
+	// removed.
+	who, _ := h.reactor(ctx, ev.UserID)
 	// Two people reading the same message will tap the same emoji on
 	// it. The second tap must not open "… (2)" next door: it is
 	// answered with a link to the topic the first tap created.

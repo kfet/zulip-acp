@@ -474,6 +474,13 @@ type Handler struct {
 	// the event loop and a turn goroutine.
 	optsMu sync.Mutex
 
+	// panelChips is what the reaction chips on each live options panel
+	// MEAN: message id → chip table, as seeded. One entry per
+	// conversation, replaced when its panel is. See rememberChips for
+	// why the mapping is pinned rather than recomputed at tap time.
+	chipMu     sync.Mutex
+	panelChips map[int64][]optsChip
+
 	// repostBroken is the end-of-turn repost circuit breaker. It is on
 	// the Handler, not the Splitter, precisely because it must outlive
 	// a turn: see repostForNotify.
@@ -581,6 +588,7 @@ func New(cfg Config) (*Handler, error) {
 		inflight:       map[string]*inflightEntry{},
 		modelChoices:   map[string]modelChoice{},
 		dmNames:        map[string][]string{},
+		panelChips:     map[int64][]optsChip{},
 		ownMsgs:        newMsgIndex(reactionIndexSize),
 		badMsgs:        newMsgIndex(reactionIndexSize),
 		userNames:      newMsgIndex(reactionIndexSize),
@@ -613,7 +621,50 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 		h.handleUpdate(ev)
 	case zulipproto.EventReaction:
 		h.handleReaction(ctx, ev)
+	case zulipproto.EventSubmessage:
+		h.handleSubmessage(ev)
 	}
+}
+
+// handleSubmessage records a widget interaction — a /poll vote, a
+// /todo tick — on a message the relay already knows about, and does
+// nothing else, on purpose.
+//
+// The relay subscribes to these so that the ONE fact needed to decide
+// whether to build on them is observable in the log of a real
+// deployment: whether people actually vote in the polls the agent
+// posts. Acting on them is a design with a real cost (a vote names its
+// option by index into a message that has to be fetched, and every
+// voter's every click is an event), and it is written up in BACKLOG.md
+// as the runner-up to the reaction menu rather than half-built here.
+//
+// The resolution gate is the point, not a nicety. A submessage event
+// has exactly the shape that makes reaction events expensive — an id
+// and nothing else — and the /register narrow does not filter it
+// either, so this sees the whole realm's widget traffic. Logging it
+// unconditionally would be the same unbounded flood reaction.go exists
+// to prevent, just routed into the journal instead of the API. So only
+// the two FREE tiers are consulted (the index of messages the relay
+// posted, then the journal's own recorded ids) and everything else is
+// dropped in silence. No GET, no rate limiter needed, and what
+// survives is precisely the traffic on the relay's OWN polls, which is
+// the question being asked.
+//
+// Deliberately NOT gated on cfg.Reactions or the allowlist: it reaches
+// no agent, posts nothing and starts no turn. It is a log line. The
+// one thing it must not become is a turn trigger without going through
+// the same gates reaction.go applies.
+func (h *Handler) handleSubmessage(ev zulipproto.Event) {
+	if ev.MsgType == "" || ev.MessageID == 0 {
+		return
+	}
+	if _, ours := h.ownMsgs.get(ev.MessageID); !ours {
+		if _, known := h.cfg.Journal.LookupMessage(ev.MessageID); !known {
+			return
+		}
+	}
+	h.cfg.Logf("handler: %s submessage %d on message %d from user %d: %s",
+		ev.MsgType, ev.SubmessageID, ev.MessageID, ev.SenderID, excerpt(ev.Content, reactionExcerptRunes))
 }
 
 // handleUpdate migrates a conversation when its topic moves, and ENDS

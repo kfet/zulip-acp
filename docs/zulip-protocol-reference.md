@@ -273,6 +273,48 @@ id, before anything else, so it cannot be re-ingested.
 `subject`, no message body, and no user name — only ids. Naming the reactor
 costs a `GET /users/{id}`; locating the message costs a `GET /messages/{id}`.
 
+### ⚠️ Trap: a bot cannot remove somebody else's reaction
+
+`DELETE /messages/{id}/reactions?emoji_name=…` acts on **your own** reaction
+only. When another user added it, the call still comes back
+`{"result":"success"}` and the reaction is **still there** — read the message
+back and `reactions[]` still lists it under their `user_id`. There is no API
+that removes a reaction on another user's behalf.
+
+This is why the `!opts` reaction menu treats `op=remove` as a deliberate no-op:
+an un-tap cannot be undone, so it must not be allowed to mean anything. The
+panel says so in its footer.
+
+`reactions[]` on a message is also the only place the server states which emoji
+a message currently **wears** — the `reaction` event reports a change, never the
+resulting state, so a relay that was away cannot reconstruct one from the other.
+
+### ⚠️ Trap: emoji names are not guessable — check them
+
+`POST /messages/{id}/reactions` answers an unknown name with
+`400 {"msg":"Emoji 'mag' does not exist"}`. Measured on Zulip 12.2:
+
+| accepted | rejected |
+|---|---|
+| `one` … `six`, `new`, `octagonal_sign`, `bar_chart`, `eyes`, `wastebasket` | `mag`, `information_source`, `arrows_counterclockwise` |
+
+All three rejected names read like obvious members of the set and are not in
+it. Everything the relay seeds is pinned by a live test
+(`TestOptionsPanelChipEmojiExist` in `test/live_test.go`); do not add a chip
+without extending it.
+
+### Reaction chips render everywhere; `zform` buttons do not
+
+This is the whole reason `!opts` wears reactions. A `widget_content` zform
+renders as buttons in the Zulip **web** app only — every mobile client shows
+the message's plain markdown — whereas a reaction row is tappable on every
+client there is. So the options panel seeds its own chips (`one`..`six` for the
+model choices, `new`, `octagonal_sign`, `bar_chart`) and routes a tap back
+through the same `!` parser a typed command walks.
+
+Reactions render in the order they were **added**, so a seeder that wants
+`one`..`six` to line up with a list must add them sequentially.
+
 ### ⚠️ Trap: the `/register` narrow does NOT filter reaction events
 
 Measured on Zulip 12.2 with two queues registered for
@@ -293,6 +335,36 @@ relay's answer is in `internal/handler/reaction.go`: free gates first (op, own
 user id, other bots, the user allowlist), then an in-memory index of the
 messages it posted itself, and only then one rate-limited, negatively-cached
 `GET /messages/{id}`.
+
+## Widget interactions: the `submessage` event
+
+Zulip's widgets (`/poll`, `/todo`, and a `zform`) store every interaction as a
+**submessage** appended to the message that carries the widget. A vote is
+posted to `POST /api/v1/submessage` — **singular**; `/submessages` is a 404 —
+and is announced on the queue as:
+
+```json
+{"type":"submessage","msg_type":"widget","message_id":2333,
+ "submessage_id":22,"sender_id":8,
+ "content":"{\"type\":\"vote\",\"key\":\"9,1\",\"vote\":1}"}
+```
+
+Measured on Zulip 12.2. Note the shape:
+
+- `content` is a JSON document carried **as a string** — decode it twice.
+- `sender_id` is who *interacted*, not the message's author. (A `reaction`
+  event spells the same fact `user_id`.)
+- the vote names its option by **index**: `key` is
+  `"<canvas-sender-id>,<option-index>"`, and the question and options live on
+  the original message — so knowing what was voted *for* costs a
+  `GET /messages/{id}`.
+- there is no channel, no topic and no body. Like `reaction`, the `/register`
+  narrow does **not** filter these.
+- `submessage_id` is realm-global and assigned once per interaction, so it is a
+  complete de-duplication key (see `internal/zulipproto/dedup.go`).
+
+`zulip-acp` registers for `submessage` and logs what arrives; it acts on
+nothing. See `BACKLOG.md` for why a poll-driven menu was the runner-up design.
 
 ## Events: `/register` + `/events`
 

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`!opts` is tappable on a phone.** The options panel now seeds its own emoji
+  chips — `one`..`six` for the model choices, `:new:`, `:octagonal_sign:` for
+  stop and `:bar_chart:` for status — and a tap runs the same command the
+  zform button beside it would have sent, through the same `!` parser. `zform`
+  buttons render only in the Zulip web app, which left every mobile reader
+  retyping the markdown by thumb; a reaction row renders everywhere. Only the
+  conversation's LIVE panel is tappable, and only `op=add` means anything: a
+  bot cannot remove somebody else's reaction, so an un-tap can never be undone
+  (the panel footer says so) — and un-tapping a chip is swallowed outright
+  rather than narrated to the agent the way an ordinary reaction is. Chips are
+  seeded only where they can work: reactions must be on, and the conversation
+  must already exist.
+- The relay registers for `submessage` events and logs widget interactions —
+  `/poll` votes, `/todo` ticks. It acts on none of them; this exists so a real
+  deployment can show whether a poll-driven menu would be worth building. See
+  `BACKLOG.md` and `docs/zulip-protocol-reference.md` § *Widget interactions*.
+- `zulipproto.Message.Reactions`: the emoji a message currently wears, each
+  with the user who added it. The `reaction` event reports a change and never
+  the resulting state, so this is the only way to ask.
+
+### Fixed
+
+- **A bot created since startup could reach a relay-side reaction trigger.**
+  `BotSenderIDs` is a startup snapshot, so a bot that appeared later — or a
+  cross-realm system bot, which is in no user list — is recognisable only by
+  resolving the reacting user, and that lookup ran *after* the triggers. An
+  allowlisted one could therefore archive a topic with :wastebasket: or spin a
+  new one out with :fork_and_knife:. The lookup now runs before any trigger
+  (it is cached per user, so it costs nothing after the first), which is also
+  what keeps the new `!opts` chips — `!new`, `!stop` — out of a bot's reach.
+
 ## [0.30.1] - 2026-09-15
 
 ### Changed

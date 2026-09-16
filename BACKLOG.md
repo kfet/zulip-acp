@@ -267,3 +267,36 @@ Things deliberately not done in v1, with the reason.
   sees notification metadata (sender/channel/topic/volume). That is an
   undecided privacy trade-off for the operator; the relay takes no position
   and the server is not registered.
+
+- **A poll-driven `!opts` menu — the runner-up to the reaction chips, not
+  done.** `!opts` needed a control surface that renders on a **phone**, since
+  `zform` buttons exist only in the Zulip web app. Two candidates were measured
+  against the live server; reaction chips won and shipped (see
+  `internal/handler/opts.go`). The other was a `/poll`: it renders everywhere,
+  it is a real tappable radio list with labelled options rather than bare
+  emoji, and it has room for more than six models. It was not built, for three
+  reasons:
+
+  - **A vote names its option by INDEX**, not by text: the event's `key` is
+    `"<canvas-sender-id>,<option-index>"` and the question and options live on
+    the poll message. Resolving a tap to a command means a `GET /messages/{id}`
+    per vote, or a per-conversation cache of poll layouts that has to survive a
+    restart — where a reaction carries its own meaning in the emoji name and
+    resolves with no call at all.
+  - **A poll has no single-choice mode and no "retire".** Everyone's votes
+    accumulate on it forever, so the panel becomes a scoreboard of every model
+    anybody ever tapped, and the relay cannot clear it — the only way to retire
+    one is to delete the message, which is exactly the re-post dance the
+    reaction panel already does for free.
+  - **It is a second surface to keep in step.** The whole justification for
+    putting a menu on reactions is that a chip carries the same reply string as
+    the zform button beside it and goes through the same `!` parser. A poll
+    would add a THIRD encoding of the same command list, and the indexed key
+    means it could drift silently.
+
+  The events are nevertheless observable: the relay registers for `submessage`
+  and logs every widget interaction (`Handler.handleSubmessage`), precisely so
+  the one fact that would justify revisiting this — whether people actually
+  vote in the polls the agent posts — can be read out of a real deployment
+  rather than guessed. The wire shape is written up in
+  `docs/zulip-protocol-reference.md` § *Widget interactions*.
