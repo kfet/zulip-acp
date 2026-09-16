@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bot specs declare version requirements; `dist.lock` becomes a resolution
+  of them.** `bots/<name>.json` may carry an optional `require` block —
+  `"require": {"zulip_acp": ">=0.31.3", "fir": ">=1.11.0"}` — validated in
+  `validate_spec` with an error that names the file and the bad constraint. A
+  spec without one behaves exactly as before. Three things follow:
+  `scripts/converge.sh --apply` hard-fails (deterministically, offline, before
+  anything is copied to the host) when the locked version violates that spec's
+  constraint, naming host, constraint and locked version — a hand-edited or
+  stale lock can no longer silently downgrade a host; `--tot` resolves the
+  newest release satisfying **every** spec's constraints rather than the newest
+  full stop, and fails loudly with the full constraint list when the
+  intersection is empty; and `bots/zbox-fir.json` now declares its real floor.
+  Supported operators are `>=`, `<=`, `>`, `<`, `~>` (pessimistic: same minor),
+  an exact `X.Y.Z`, and whitespace-separated terms ANDed together. `<=`/`<` are
+  in because a ceiling is exactly how a host holds itself back from a release
+  it cannot take yet — the case the feature exists for — and `~>` because "any
+  patch of this minor" is the one range that would otherwise have to be written
+  as two terms on every spec. Nothing resolves at `--apply` time: the lock
+  stays the deterministic record of what each host runs.
+- **A hand-written semver comparator in `converge.sh`, covered by
+  `test/converge_render.sh`** (`semver-cmp` / `semver-sat` / `resolve` test
+  hooks). `sort -V` is not a semver comparator: it ranks `0.31.3-dev+abc`
+  *above* `0.31.3`, which is backwards, and sorts tags by their `v` prefix; a
+  language runtime is not available on a bare host. Only a clean `X.Y.Z` is a
+  release — every prerelease or build-metadata string (`-dev+sha`, `-rc1`,
+  `.dirty`) satisfies **no** constraint, so a dev build can never be resolved
+  into the lock. Tag listing now strips the `v` *before* sorting.
+
+### Changed
+
+- **The fleet inventory's `.pin` is explicitly NOT subsumed by `require`, and
+  stays.** `require` is per spec and constrains what `dist.lock` may say (a
+  floor); `.pin` is per instance in the shared cross-relay inventory and
+  overrides the drift sweep's *wanted* version (a ceiling). `fleet.sh` never
+  reads `bots/`. Documented in both the deploy and update skills.
+
 ## [0.31.3] - 2026-09-16
 
 ### Fixed

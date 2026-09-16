@@ -61,6 +61,26 @@ Use **restart** — a hard, destructive restart — only for:
    the fir extensions, `config.json` and the unit to the locked state, then
    picks and verifies the recycle for you. Never hand-upgrade a fleet host to
    an unlocked version.
+
+   **Spec = constraint, lock = resolution.** A bot spec may declare what its
+   host needs:
+
+   ```json
+   "require": { "zulip_acp": ">=0.31.3", "fir": ">=1.11.0" }
+   ```
+
+   `--tot` then resolves the newest release that satisfies **every** spec's
+   constraints — not the newest full stop — and writes that into `dist.lock`.
+   `--apply` resolves nothing: it hard-fails, offline and before it copies
+   anything to the host, if the locked version violates that host's `require`.
+   That is what stops a hand-edited or stale lock silently downgrading a host.
+   A spec without a `require` block behaves exactly as before.
+
+   Supported constraints: `>=X.Y.Z`, `<=X.Y.Z`, `>X.Y.Z`, `<X.Y.Z`,
+   `~>X.Y.Z` (same minor), an exact `X.Y.Z`, and whitespace-separated terms
+   ANDed together (`">=1.0.0 <2.0.0"`). A `-dev+<sha>` or `-rc` build
+   satisfies **nothing**: a dev binary can never be resolved into the lock.
+
 2. **Any other host → `zulip-acp update`.** The binary updates itself: it
    resolves the release over the GitHub API, verifies the sha256 against
    `checksums.txt`, and swaps the file atomically underneath the running
@@ -144,12 +164,19 @@ once, and reload from then on.
 
 **Fleet host (has a `bots/<name>.json` spec):**
 ```bash
-scripts/converge.sh --tot                    # rewrite dist.lock; review + commit
+scripts/converge.sh --tot                    # resolve the newest releases that
+                                             # satisfy every spec's `require`,
+                                             # rewrite dist.lock; review + commit
 git diff dist.lock
 scripts/converge.sh <bot>                    # dry run: what would change, and
                                              # which recycle it would use
 scripts/converge.sh <bot> --apply            # converge + recycle + verify
 ```
+
+`--apply` refuses, before it touches the host, when `dist.lock` violates that
+spec's `require` — the error names the host, the constraint and the locked
+version. Fix by re-running `--tot` (or by correcting the lock and committing
+it); do not relax the spec to make a bad lock pass.
 
 Converge refuses to guess: it reads the version of the image the *running*
 process is executing (via `/proc/<MainPID>/exe`), not the on-disk file, and
@@ -320,6 +347,16 @@ Nothing to bump after a release: the sweep takes this relay's wanted
 version from its latest git tag, so cutting the tag IS the declaration.
 (An instance can hold back with `.pin` in its inventory entry, which
 requires a `.notes` reason.)
+
+**`.pin` is NOT subsumed by a spec's `require` block, and stays.** They answer
+different questions in different systems. `require` is this repo's, per bot
+spec, and constrains *resolution*: what `--tot` may write into `dist.lock` and
+what `--apply` will accept — a floor ("this host needs at least X"). `.pin` is
+the shared cross-relay inventory's, per *instance*, and overrides the sweep's
+**wanted** version for all three relays — a ceiling, held by a host that must
+stay behind the tag for a stated reason. `fleet.sh` never reads `bots/`, so a
+`require` cannot hold an instance back in the sweep, and a `.pin` cannot stop
+converge applying a lock. Removing either would lose a real capability.
 
 Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 `~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).

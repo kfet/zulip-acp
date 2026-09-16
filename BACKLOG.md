@@ -2,6 +2,33 @@
 
 Things deliberately not done in v1, with the reason.
 
+## Fleet versioning: what `require` deliberately did NOT become
+
+`bots/<name>.json` now declares `require` constraints and `dist.lock` is their
+resolution (`--tot` resolves, `--apply` enforces). Two adjacent ideas were left
+out of that change on purpose, and both would have to be argued for on their
+own merits:
+
+- **Resolving versions at `--apply` time.** Tempting — the spec already states
+  what is acceptable, so converge could pick a satisfying release per host and
+  skip the lock. It must not. The lock is the only *deterministic record of
+  what each host runs*: with apply-time resolution two converges of the same
+  commit, minutes apart, can legitimately install different binaries, and the
+  git history stops answering "what was this host running on Tuesday?". The
+  constraint says what is acceptable; the lock says what was chosen. Keep the
+  two separable.
+- **Auto-land / post-release triggers that run `--tot` automatically.** A
+  release cutting its own lock bump means the fleet's wanted version moves with
+  no human reading the diff — and `--tot` is precisely the step whose output is
+  meant to be reviewed and committed. It would also make a bad release
+  self-propagating up to the next `--apply`. If this is ever wanted, the thing
+  to automate is *opening a PR* with the resolved lock, never writing it on
+  `main`.
+
+A third was considered and rejected outright: constraining `fir-exts` in
+`require`. It is pinned by git rev, not by semver — there is no version to
+compare — so the block has no key for it.
+
 ## acp-kit promotion candidates
 
 > **Done, v0.6.0:** the `!command` broker was promoted to `acp-kit/command`

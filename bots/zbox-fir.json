@@ -5,6 +5,10 @@
   "supervisor": "systemd-user",
   "unit": "zulip-acp",
   "binary": "~/.local/bin/zulip-acp",
+  "require": {
+    "zulip_acp": ">=0.31.3",
+    "fir": ">=1.11.0"
+  },
   "agent": {
     "cmd": "fir --mode acp",
     "kind": "fir"

@@ -145,6 +145,193 @@ else
   ok "unsupported supervisor refused (systemd-user only)"
 fi
 
+echo "== semver comparison"
+scmp() { # <expected> <a> <b>
+  local got; got=$("$CONVERGE" semver-cmp "$2" "$3")
+  [ "$got" = "$1" ] && ok "cmp $2 $3 = $1" || bad "cmp $2 $3: wanted $1, got $got"
+}
+scmp  1 0.10.0 0.9.0      # the classic sort -V / lexicographic trap
+scmp -1 0.9.0  0.10.0
+scmp  0 1.2.3  1.2.3
+scmp  1 1.2.10 1.2.9
+scmp -1 1.2.3  2.0.0
+scmp  1 2.0.0  1.99.99
+scmp  0 0.08.1 0.8.1      # a leading zero is decimal, never octal
+for badv in "1.2" "1.2.3.4" "v1.2.3" "1.2.3-dev+abc" "" "x.y.z" "1.2.3."; do
+  if "$CONVERGE" semver-cmp "$badv" 1.0.0 >/dev/null 2>&1; then
+    bad "semver-cmp must reject '$badv'"
+  else
+    ok "semver-cmp rejects '$badv'"
+  fi
+done
+
+echo "== constraint satisfaction"
+sat() { # <yes|no> <version> <constraint>
+  local got; got=$("$CONVERGE" semver-sat "$2" "$3" 2>/dev/null || true)
+  [ "$got" = "$1" ] && ok "'$2' vs '$3' = $1" || bad "'$2' vs '$3': wanted $1, got '$got'"
+}
+sat yes 0.31.3 ">=0.31.3"
+sat yes 0.32.0 ">=0.31.3"
+sat yes 0.40.0 ">=0.9.0"
+sat no  0.31.2 ">=0.31.3"
+sat no  0.9.0  ">=0.10.0"
+sat yes 0.31.3 "0.31.3"          # bare = exact
+sat yes 0.31.3 "=0.31.3"
+sat no  0.31.4 "0.31.3"
+sat yes 0.31.3 "<=0.31.3"
+sat no  0.31.4 "<=0.31.3"
+sat yes 0.31.2 "<0.31.3"
+sat no  0.31.3 "<0.31.3"
+sat yes 0.31.4 ">0.31.3"
+sat no  0.31.3 ">0.31.3"
+sat yes 1.11.4 "~>1.11.0"        # pessimistic: same minor
+sat yes 1.11.0 "~>1.11.0"
+sat no  1.12.0 "~>1.11.0"
+sat no  1.10.9 "~>1.11.0"
+sat yes 1.5.0  ">=1.0.0 <2.0.0"  # whitespace-separated terms are ANDed
+sat no  2.0.0  ">=1.0.0 <2.0.0"
+# A dev/prerelease build is NOT the release, and must satisfy NOTHING — this
+# is the whole reason sort -V cannot be used: it ranks 0.31.3-dev ABOVE 0.31.3.
+for devv in "0.31.3-dev+abc123" "0.31.3-dev+abc123.dirty" "0.31.4-rc1" "0.32.0-dev" "v0.32.0"; do
+  sat no "$devv" ">=0.31.3"
+  sat no "$devv" "0.31.3"
+  sat no "$devv" "<=9.9.9"
+done
+for badc in "" ">=" ">=1.2" "~>1" "foo" ">=1.2.3-dev" ">=v1.2.3" " " "	" "
+"; do
+  if "$CONVERGE" semver-sat 1.2.3 "$badc" >/dev/null 2>&1; then
+    bad "an invalid constraint '$badc' must never be satisfied"
+  else
+    ok "invalid constraint rejected: '$badc'"
+  fi
+done
+
+echo "== require block validation"
+reqspec() { # <name> <require-json>
+  jq --argjson r "$2" '.require = $r' "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/$1.json"
+}
+req_bad() { # <label> <require-json>
+  reqspec reqbad "$2"
+  if out=$("$FAKE_CONVERGE" render reqbad unit 2>&1); then
+    bad "$1 must be rejected"
+  else
+    case "$out" in
+      *"reqbad.json"*) ok "$1 rejected, and the message names the file" ;;
+      *) bad "$1 rejected but the error does not name the spec: $out" ;;
+    esac
+  fi
+}
+req_bad "a non-object require"        '"0.31.3"'
+req_bad "an unknown require key"      '{"zulipacp": ">=0.31.3"}'
+req_bad "a non-string constraint"     '{"fir": 1}'
+req_bad "a malformed constraint"      '{"fir": ">= 1.11"}'
+req_bad "a whitespace-only constraint" '{"fir": "  "}'
+req_bad "a tab-only constraint"        '{"fir": "\t"}'
+req_bad "an empty constraint"          '{"fir": ""}'
+req_bad "an empty require key"         '{"": ">=1.0.0"}'
+req_bad "a prerelease in a constraint" '{"fir": ">=1.11.0-rc1"}'
+reqspec reqok '{"zulip_acp": ">=0.1.0", "fir": "~>1.11.0"}'
+"$FAKE_CONVERGE" render reqok unit >/dev/null 2>&1 \
+  && ok "a well-formed require block validates" || bad "a valid require must pass"
+# Absent require == today's behaviour, exactly.
+"$FAKE_CONVERGE" render bare unit >/dev/null \
+  && ok "a spec with no require block still renders" || bad "require must stay optional"
+# Every real spec in bots/ must validate.
+for bot in "${BOTS[@]}"; do
+  "$CONVERGE" render "$bot" unit >/dev/null \
+    && ok "$bot: require block validates" || bad "$bot: require block rejected"
+done
+
+echo "== --apply refuses a lock its spec forbids"
+lockfake="$tmpd/repo"
+jq '.require = {"zulip_acp": ">=99.0.0"}' "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqhigh.json"
+jq '.host = "nowhere"' "$tmpd/repo/bots/reqhigh.json" >"$tmpd/x" && mv "$tmpd/x" "$tmpd/repo/bots/reqhigh.json"
+LOCKED_ZA=$(jq -r .zulip_acp "$lockfake/dist.lock")
+mkdir -p "$tmpd/fakeroot-unused"
+for mode in "" "--apply"; do
+  # shellcheck disable=SC2086
+  out=$("$FAKE_CONVERGE" reqhigh --target-root "$tmpd/fakeroot-unused" $mode 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] && ok "converge ${mode:---dry-run} refuses a violating lock" \
+    || { bad "a violating lock must abort (${mode:---dry-run})"; echo "$out"; }
+  case "$out" in
+    *nowhere*">=99.0.0"*|*">=99.0.0"*nowhere*) ok "refusal names host and constraint (${mode:---dry-run})" ;;
+    *) bad "refusal must name host + constraint: $out" ;;
+  esac
+  case "$out" in
+    *"$LOCKED_ZA"*) ok "refusal names the locked version (${mode:---dry-run})" ;;
+    *) bad "refusal must name the locked version: $out" ;;
+  esac
+done
+# It must fail BEFORE any network/transport work: a spec pointing at a
+# nonexistent host still fails on the constraint, not on ssh.
+case $("$FAKE_CONVERGE" reqhigh --apply 2>&1 || true) in
+  *"Nothing was changed"*) ok "the refusal states nothing was touched" ;;
+  *) bad "refusal must state nothing was changed" ;;
+esac
+# The fir constraint is enforced too, not just zulip_acp.
+jq '.require = {"fir": ">=99.0.0"}' "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqfir.json"
+out=$("$FAKE_CONVERGE" reqfir --target-root "$tmpd/fakeroot-unused" 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && ok "a violated fir constraint aborts too" || { bad "fir constraint must be enforced"; echo "$out"; }
+case "$out" in *"require.fir"*) ok "the fir refusal names require.fir" ;; *) bad "expected require.fir in: $out" ;; esac
+# ...but only where a fir is actually installed: a non-fir agent has no fir to
+# constrain, so the gate must not fire on it.
+jq '.require = {"fir": ">=99.0.0"} | .agent = {"cmd": "claude --acp", "kind": "claude"} | .fir = {"exts": []}' \
+  "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqnofir.json"
+out=$("$FAKE_CONVERGE" reqnofir --target-root "$tmpd/fakeroot-unused" 2>&1 || true)
+case "$out" in
+  *"require.fir"*) bad "a non-fir agent must not be gated on fir" ;;
+  *) ok "a non-fir agent skips the fir gate" ;;
+esac
+# A satisfied constraint does not block anything.jq --arg v "$LOCKED_ZA" '.require = {"zulip_acp": (">=" + $v)}' "$tmpd/repo/bots/bare.json" \
+  >"$tmpd/repo/bots/reqok2.json"
+out=$("$FAKE_CONVERGE" reqok2 --target-root "$tmpd/fakeroot-unused" 2>&1 || true)
+case "$out" in
+  *"does not satisfy"*) bad "a satisfied constraint must not block" ;;
+  *) ok "a satisfied constraint lets converge proceed" ;;
+esac
+
+echo "== --tot resolves the newest ACCEPTABLE release, not the newest"
+rm -f "$tmpd/repo/bots/"*.json
+mkspec pinned ""
+jq '.require = {"zulip_acp": "<=0.31.3", "fir": "~>1.11.0"}' "$tmpd/repo/bots/pinned.json" >"$tmpd/x"
+mv "$tmpd/x" "$tmpd/repo/bots/pinned.json"
+got=$("$FAKE_CONVERGE" resolve zulip_acp 0.30.0 0.31.0 0.31.3 0.32.0 1.0.0)
+[ "$got" = 0.31.3 ] && ok "a <= constraint holds the resolution back" || bad "wanted 0.31.3, got $got"
+got=$("$FAKE_CONVERGE" resolve fir 1.10.0 1.11.0 1.11.9 1.12.0)
+[ "$got" = 1.11.9 ] && ok "~> resolves within the minor" || bad "wanted 1.11.9, got $got"
+# Two specs => the INTERSECTION, and the newest member of it.
+mkspec other ""
+jq '.require = {"zulip_acp": ">=0.31.0"}' "$tmpd/repo/bots/other.json" >"$tmpd/x"
+mv "$tmpd/x" "$tmpd/repo/bots/other.json"
+got=$("$FAKE_CONVERGE" resolve zulip_acp 0.30.0 0.31.0 0.31.3 0.32.0)
+[ "$got" = 0.31.3 ] && ok "two specs intersect" || bad "wanted 0.31.3, got $got"
+# An empty intersection must fail loudly rather than lock something wrong.
+jq '.require = {"zulip_acp": ">=9.0.0"}' "$tmpd/repo/bots/other.json" >"$tmpd/x"
+mv "$tmpd/x" "$tmpd/repo/bots/other.json"
+if out=$("$FAKE_CONVERGE" resolve zulip_acp 0.30.0 0.31.3 0.32.0 2>&1); then
+  bad "an unsatisfiable intersection must fail"
+else
+  case "$out" in
+    *"no zulip_acp release satisfies"*) ok "unsatisfiable intersection fails loudly" ;;
+    *) bad "expected a diagnosis, got: $out" ;;
+  esac
+  case "$out" in *pinned*other*|*other*pinned*) ok "the diagnosis lists both specs" ;; *) bad "diagnosis must list the constraints: $out" ;; esac
+fi
+# A prerelease is never resolvable, even when it is the newest string given.
+rm -f "$tmpd/repo/bots/other.json"
+jq '.require = {"zulip_acp": ">=0.31.0"}' "$tmpd/repo/bots/pinned.json" >"$tmpd/x"
+mv "$tmpd/x" "$tmpd/repo/bots/pinned.json"
+got=$("$FAKE_CONVERGE" resolve zulip_acp 0.31.3 0.32.0-dev+abc)
+[ "$got" = 0.31.3 ] && ok "a dev build is never resolved into the lock" || bad "wanted 0.31.3, got $got"
+# With no require block anywhere, resolution is plain newest-wins (today).
+rm -f "$tmpd/repo/bots/"*.json
+mkspec plain ""
+got=$("$FAKE_CONVERGE" resolve zulip_acp 0.30.0 0.32.0 0.31.3)
+[ "$got" = 0.32.0 ] && ok "no constraints => newest wins, as before" || bad "wanted 0.32.0, got $got"
+# Restore the fixture specs the later fake-target tests rely on.
+rm -f "$tmpd/repo/bots/"*.json
+mkspec bare ""
+
 echo "== recycle mechanism selection"
 expect() { # <expected-mech> <label> <args...>
   local want=$1 label=$2; shift 2
