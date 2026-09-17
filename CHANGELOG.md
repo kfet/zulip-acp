@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-09-17
+
+### Fixed
+
+- The GitHub release body was empty in v0.35.2. `changelog.disable` in
+  `.goreleaser.yaml` does more than stop the commit list: it makes the
+  release body empty, and it has priority over `--release-notes`. The
+  setting is removed. A comment in the file tells you not to put it
+  back.
+
+
 ## [0.35.2] - 2026-09-17
 
 ### Changed
