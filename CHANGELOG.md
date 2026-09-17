@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-09-17
+
 ### Fixed
 
 - The relay now probes the agent for its model list at startup, so
