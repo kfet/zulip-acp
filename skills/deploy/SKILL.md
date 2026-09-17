@@ -94,7 +94,9 @@ ssh <host> 'brew install kfet/ai/zulip-acp'
 
 **Every subsequent upgrade is `zulip-acp update` on the host, or converge for
 a fleet host with a `bots/<name>.json` spec — never another hand-placed
-binary.** See the `update` skill; it owns the upgrade order.
+binary.** See the `update` skill; it owns the upgrade order. Converge runs on
+the target host itself — it uses no ssh when the spec names the machine it
+runs on.
 
 Add the host to `bots/` while you are here: a spec plus `dist.lock` is what
 makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.

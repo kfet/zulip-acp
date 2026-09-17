@@ -62,6 +62,21 @@ Use **restart** — a hard, destructive restart — only for:
    picks and verifies the recycle for you. Never hand-upgrade a fleet host to
    an unlocked version.
 
+   **Run it on the host itself.** Converge does not need ssh to reach the
+   machine it runs on. Since v0.35.4 it tests the spec host against this
+   machine (loopback, `hostname`/`hostname -f`, or an address this machine
+   holds) and switches to the local transport by itself. It prints the
+   evidence:
+
+   ```text
+   == local target: zbox -> zboxserver.tail77d32.ts.net matches this machine's hostname — no ssh
+   ```
+
+   Only a certain yes changes the transport, so every other host still goes
+   over ssh. Do **not** drive a converge from a second host to work around a
+   self-ssh failure: that was a bug, and it is fixed. `--local` remains a
+   manual override and `--force-local` skips the test.
+
    **Spec = constraint, lock = resolution.** A bot spec may declare what its
    host needs:
 
@@ -299,6 +314,11 @@ the error and stop — do not paper over.
 ## Pitfalls
 
 - **Stale tap** — `brew upgrade` is a no-op until `brew update` refreshes the tap.
+- **A host usually cannot ssh to itself** — it has no `Host` stanza for its own
+  name, and its public key is not in its own `authorized_keys`. That is normal
+  and it is not a fault to repair. Converge detects the local target and needs
+  no key. If some other tool fails this way, run it locally; do not add a key
+  and do not drive it from a second host.
 - **Missed recycle** — swapping the binary on disk does nothing to the running
   process; you must `systemctl --user reload zulip-acp`.
 - **`Text file busy`** — a running executable cannot be written in place, which
@@ -372,9 +392,11 @@ Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
   Description.
 - **A repo can have two live clones and you will release from the stale one.**
   `git fetch origin`, then `git status -sb` and read *ahead/behind*, before you
-  trust any clone. Release from the clone on the host that RUNS the relay —
-  `zboxserver`, the only host that runs it. (2026-09-04: a `zulip-acp` release cut from the stale mikiserver
-  clone produced two different v0.14.0s.)
+  trust any clone. Release **and converge** from the clone on the host that
+  RUNS the relay — `zboxserver`, the only host that runs it. Converge needs no
+  ssh there, so there is no reason to go to a second box. (2026-09-04: a
+  `zulip-acp` release cut from the stale mikiserver clone produced two
+  different v0.14.0s.)
 
 
 ## Checklist
