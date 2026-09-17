@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.4] - 2026-09-17
+
+### Fixed
+
+- Converge now acts on localhost without ssh. If the bot spec names the
+  machine that runs converge, it uses the local transport. Before this
+  change it always used ssh. A relay host usually cannot ssh to itself:
+  it has no `Host` entry for its own name, and its public key is not in
+  its own `authorized_keys`. Converge stopped with `cannot reach target`
+  on a host that it can write to directly. You had to run the converge
+  from a different host.
+
+  The test is the one that `--local` already did, but it is stricter and
+  it runs by itself. A host is this machine if the name is the loopback,
+  if it matches `hostname` or `hostname -f`, or if it resolves to an
+  address that this machine holds (tailscale, `ip`, or `ifconfig`). Only
+  a certain yes changes the transport. An unknown answer keeps ssh,
+  because a wrong yes writes to the wrong machine.
+
+  `--local` stays as a manual override, and `--force-local` still skips
+  the test. The new `converge.sh self-host <host>` test hook prints the
+  decision.
+
+
 ## [0.35.3] - 2026-09-17
 
 ### Fixed

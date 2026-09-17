@@ -30,6 +30,8 @@
 #   converge.sh resolve <component> <ver...>   print the newest given version that
 #                                              satisfies every spec's require for
 #                                              <component> (test hook)
+#   converge.sh self-host <host>               print whether <host> is THIS machine,
+#                                              exit 0/1 (test hook)
 #
 # Spec vs lock: a bot spec declares REQUIREMENTS (`require`), dist.lock records
 # the RESOLUTION. --tot is the only resolver; --apply is a reader that refuses
@@ -384,6 +386,56 @@ LOCAL=0
 FORCE_LOCAL=0
 PROC_ROOT=/proc
 
+# host_is_self <spec-host> — is the spec's host THIS machine?
+#
+# Converge must not need ssh to reach the box it already runs on. A relay host
+# very often has no ssh key for itself (no `Host` stanza, no entry in its own
+# authorized_keys), so the self-ssh is refused and converge stops on a host it
+# could write to directly.
+#
+# The answer must be certain. A false yes points every write at the wrong
+# machine, so an unknown answer is NO, and the caller falls back to ssh.
+#
+# Sets SELF_WHY with the evidence, for the line converge prints.
+SELF_WHY=""
+host_is_self() {
+  local host=$1 real ip mine
+  SELF_WHY=""
+
+  # The spec host is an ssh_config ALIAS. Resolve it the way ssh would, before
+  # DNS — a valid alias is not a DNS name.
+  real=$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}' || true)
+  [ -n "$real" ] || real="$host"
+
+  case "$real" in
+    localhost|127.0.0.1|::1) SELF_WHY="$host -> $real is the loopback"; return 0 ;;
+  esac
+
+  # A plain name match is enough, and it works with no network at all.
+  if [ "$real" = "$(hostname 2>/dev/null)" ] || [ "$real" = "$(hostname -f 2>/dev/null)" ]; then
+    SELF_WHY="$host -> $real matches this machine's hostname"
+    return 0
+  fi
+
+  ip=$(getent hosts "$real" 2>/dev/null | awk '{print $1; exit}' || true)
+  [ -n "$ip" ] || return 1
+
+  # Every address this machine holds: tailscale first (the fleet talks over
+  # it), then the kernel's own list. `ip` is absent on macOS, so ifconfig is
+  # the fallback.
+  mine=$( { tailscale ip 2>/dev/null || true
+            ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+            ifconfig 2>/dev/null | awk '/inet /{print $2}'
+          } | sort -u | tr '\n' ' ')
+  [ -n "$mine" ] || return 1
+
+  if printf '%s' "$mine" | grep -qw -- "$ip"; then
+    SELF_WHY="$host -> $real ($ip) is an address of this machine"
+    return 0
+  fi
+  return 1
+}
+
 rsh() { # run a shell command on the target; stdin is forwarded
   if [ "$LOCAL" = 1 ]; then
     # We ARE the target. Run through a LOGIN bash so PATH matches what the ssh
@@ -639,22 +691,23 @@ converge() {
 
   # --local is a loaded gun: it points every write at THIS machine while the
   # spec still names some other host. Refuse unless the spec's host really is
-  # us. Best-effort by design — an unresolvable name warns rather than blocks.
+  # us.
   if [ "$LOCAL" = 1 ] && [ "$FORCE_LOCAL" != 1 ]; then
-    local _tsips _hostip _realhost
-    _tsips=$( (tailscale ip 2>/dev/null || true) | tr '\n' ' ')
-    # The spec's host is an ssh_config ALIAS, so resolve it the way ssh would
-    # before touching DNS — otherwise a valid alias looks unresolvable.
-    _realhost=$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}' || true)
-    [ -n "$_realhost" ] || _realhost="$host"
-    _hostip=$(getent hosts "$_realhost" 2>/dev/null | awk '{print $1; exit}' || true)
-    if [ -z "$_hostip" ] || [ -z "$_tsips" ]; then
-      die "--local refused: cannot confirm spec host '$host' is this machine (resolved='${_hostip:-?}' local='${_tsips:-?}'). Re-run with --force-local if you are certain."
-    elif ! printf '%s' "$_tsips" | grep -qw -- "$_hostip"; then
-      die "--local refused: spec host '$host' ($_realhost) resolves to $_hostip, not this machine ($_tsips)"
+    if host_is_self "$host"; then
+      echo "== --local: confirmed $SELF_WHY"
     else
-      echo "== --local: confirmed '$host' -> $_realhost ($_hostip) is this machine"
+      die "--local refused: cannot confirm spec host '$host' is this machine. Re-run with --force-local if you are certain."
     fi
+  fi
+
+  # Localhost needs no ssh. When the spec names THIS machine, converge uses
+  # the local transport by itself — a relay host usually cannot ssh to itself
+  # (no alias, no key in its own authorized_keys), and that must not stop a
+  # converge it could do directly. The test is the same one --local passes;
+  # only a certain yes switches the transport.
+  if [ "$LOCAL" != 1 ] && [ -z "$TARGET_ROOT" ] && host_is_self "$host"; then
+    LOCAL=1
+    echo "== local target: $SELF_WHY — no ssh"
   fi
 
   # Preflight: fail loudly on an unreachable target rather than mistaking
@@ -1014,6 +1067,7 @@ usage:
   converge.sh resolve <component> <ver...>
                                         print the newest version satisfying every
                                         spec's require.<component>
+  converge.sh self-host <host>          print whether <host> is this machine (exit 0/1)
 EOF
   exit 1
 }
@@ -1047,6 +1101,9 @@ case "$1" in
   semver-sat)
     [ $# -eq 3 ] || usage
     if ver_satisfies "$2" "$3"; then echo yes; else echo no; exit 1; fi ;;
+  self-host)
+    [ $# -eq 2 ] || usage
+    if host_is_self "$2"; then echo "self: $SELF_WHY"; else echo "remote"; exit 1; fi ;;
   resolve)
     [ $# -ge 2 ] || usage
     COMP=$2; shift 2
