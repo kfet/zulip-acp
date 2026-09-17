@@ -95,8 +95,10 @@ brews:
       bin.install Dir["zulip-acp-*"].first => "zulip-acp"
 
 # The release body comes from scripts/release-notes.sh via
-# `--release-notes`, which overrides anything generated here. Disabled so
-# GoReleaser does not also compute a commit list that is never used — and so
-# a local `goreleaser release --snapshot` behaves the same way.
+# `--release-notes`, which takes priority over anything generated here.
+#
+# Do NOT set `disable: true`. It does not merely skip generation — it forces
+# an EMPTY release body, and it wins over `--release-notes`. v0.35.2 shipped
+# with no notes at all for exactly this reason.
 changelog:
-  disable: true
+  use: github-native
