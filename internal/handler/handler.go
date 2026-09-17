@@ -639,6 +639,15 @@ func (h *Handler) Handle(ctx context.Context, ev zulipproto.Event) {
 // draw. Anything else is logged and goes no further: it reaches no
 // agent, posts nothing and starts no turn.
 //
+// The unconditional log line above pollVote is load-bearing for one
+// case in particular: a PARTICIPANT-ADDED option. Zulip lets any
+// viewer add an option to a poll and offers no way to forbid it, and
+// an added option is keyed by the adder's user id rather than a canned
+// index, so the relay can never resolve it (see poll.go's file
+// comment). The log is what makes "I added gpt-99 and nothing
+// happened" answerable; the poll's own question line is what tries to
+// prevent it.
+//
 // The gates in front of pollVote are the ones reaction.go applies to a
 // chip tap, in the same order and for the same reasons — the relay's
 // own user id first (a self-sustaining loop is the worst failure),

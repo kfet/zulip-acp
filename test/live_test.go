@@ -20,7 +20,10 @@ package live
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -775,4 +778,298 @@ func TestAnotherUsersReactionReachesTheBot(t *testing.T) {
 		t.Fatalf("the other user's :one: was removed by the bot after all: %+v — "+
 			"op=remove could then be honoured, and the panel footer is wrong", m.Reactions)
 	}
+}
+
+// TestPollHasNoServerSideOptionCap is the measurement that freed
+// optsModelCap from the surface it was inherited from.
+//
+// The cap was 6 because the menu it replaced was the `:one:`..`:six:`
+// reaction chips, and six is how many digit emoji a reader recognises.
+// When the chips were deleted, the number they forced stayed behind
+// wearing a softer justification ("fits one phone screen"), which is
+// exactly the kind of constant that ossifies. So: ask the server.
+//
+// There is no option ceiling. A `/poll` with 100 options is accepted
+// and expanded into a widget carrying all 100, and the CONTENT limit is
+// not close either — 100 model-shaped labels is well under the 10 000
+// code points a message may hold. Which means the cap is purely a
+// readability choice, `!model <filter>` is a convenience rather than
+// the only route to model #7, and anyone raising the cap again needs an
+// argument about phones, not about Zulip.
+func TestPollHasNoServerSideOptionCap(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+
+	for _, n := range []int{optsModelCapMeasured, 20, 40, 100} {
+		opts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			opts = append(opts, fmt.Sprintf("provider/model-%02d", i))
+		}
+		content := zulipproto.PollContent("⚙️ Model — cap probe", opts)
+		if got := utf8.RuneCountInString(content); got > 10000 {
+			t.Fatalf("a %d-option poll is %d code points — past MAX_MESSAGE_LENGTH", n, got)
+		}
+		id, err := c.SendMessage(ctx, streamID, topic, content)
+		if err != nil {
+			t.Fatalf("a %d-option poll was refused: %v — optsModelCap must stay under %d", n, err, n)
+		}
+		_, options, _, err := pollWidgetOf(ctx, c, id)
+		if err != nil {
+			t.Fatalf("reading the %d-option poll back: %v", n, err)
+		}
+		if len(options) != n {
+			t.Fatalf("the server kept %d of %d options — there IS a ceiling", len(options), n)
+		}
+		t.Logf("a %d-option poll (%d code points) was accepted and expanded with all %d options",
+			n, utf8.RuneCountInString(content), len(options))
+		_ = c.DeleteMessage(ctx, id)
+	}
+}
+
+// optsModelCapMeasured mirrors internal/handler.optsModelCap. Duplicated
+// rather than imported because this package tests the SERVER, and a
+// server fact that silently tracked an internal constant would stop
+// being a measurement.
+const optsModelCapMeasured = 12
+
+// TestPollOfferesNoWayToForbidAddedOptions pins why participant-added
+// options are answered with wording rather than with a setting.
+//
+// Zulip lets any viewer add an option to a poll, and an added option is
+// keyed by the adder's USER ID rather than by a canned index — so no
+// table the relay persists can resolve it, and a vote on one is
+// dropped. The obvious fix would be to turn additions off. There is no
+// such knob: the widget the server builds carries a question and an
+// options list and NOTHING else, so there is no field to set and none
+// to discover. Which is why poll.go answers this in the question line
+// ("vote, don't add options") and in the log, and why a future reader
+// should not go looking for the setting again.
+func TestPollOffersNoWayToForbidAddedOptions(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+
+	content := zulipproto.PollContent("⚙️ Model — now: x · vote, don't add options", []string{"opus", "sonnet"})
+	id, err := c.SendMessage(ctx, streamID, topicFor(t), content)
+	if err != nil {
+		t.Fatalf("posting the poll: %v", err)
+	}
+	defer func() { _ = c.DeleteMessage(ctx, id) }()
+
+	question, options, extraKeys, err := pollWidgetOf(ctx, c, id)
+	if err != nil {
+		t.Fatalf("reading the poll back: %v", err)
+	}
+	if !slices.Equal(extraKeys, []string{"options", "question"}) {
+		t.Fatalf("poll extra_data keys = %v — a key beyond question/options may be the additions knob "+
+			"poll.go says does not exist", extraKeys)
+	}
+	if !strings.Contains(question, "don't add options") {
+		t.Fatalf("question %q lost the wording that is the only available answer", question)
+	}
+	t.Logf("the server's poll widget carries exactly %v — no additions knob, so the question line is the answer", extraKeys)
+	_ = options
+}
+
+// TestAVoteResolvesByCannedIndexOnTheLiveServer replays a REAL client's
+// vote against a real poll and confirms the server stores it under the
+// index the relay resolves by.
+//
+// Read the limits of this honestly, because the last round got it
+// wrong. POST /api/v1/submessages accepts an ARBITRARY key string, so
+// this endpoint can never be used to DISCOVER the key shape — it echoes
+// back whatever was guessed, which is precisely how the wrong shape got
+// into this repo's docs. What it is used for here is different: the key
+// shape "canned,<index>" is already evidence from a real iOS client's
+// vote, and this replays that exact payload, as the HUMAN account, to
+// confirm two things the relay depends on and that a unit test cannot
+// see:
+//
+//   - the server accepts the real client's payload on a poll the RELAY
+//     posted (not one a client created), so the relay's `/poll` message
+//     is a genuine vote target and not merely a rendering;
+//   - a vote is stored as a submessage on that message and is therefore
+//     delivered as the `submessage` EVENT handleSubmessage gates on.
+//
+// The index is the whole interface: it is all the relay reads, and the
+// filtered poll introduced with `!model <filter>` changes only WHICH
+// command index N means, never how N arrives.
+func TestAVoteResolvesByCannedIndexOnTheLiveServer(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	email, key := os.Getenv("ZULIP_OTHER_EMAIL"), os.Getenv("ZULIP_OTHER_API_KEY")
+	if email == "" || key == "" {
+		t.Skip("set ZULIP_OTHER_EMAIL / ZULIP_OTHER_API_KEY (a second, non-bot account subscribed to ZULIP_CHANNEL) to run this test")
+	}
+
+	// A FILTERED poll's shape: two matches, and the current model
+	// deliberately absent from the options.
+	content := zulipproto.PollContent("⚙️ Model matching “opus” — now: sonnet-4-5 · vote, don't add options",
+		[]string{"opus-4-5", "GPT-5-opus"})
+	id, err := c.SendMessage(ctx, streamID, topicFor(t), content)
+	if err != nil {
+		t.Fatalf("posting the filtered poll: %v", err)
+	}
+	defer func() { _ = c.DeleteMessage(ctx, id) }()
+
+	// The real client's payload, verbatim: option 1 — which under a
+	// filter is a model that is neither first nor current.
+	vote := url.Values{
+		"message_id": {strconv.FormatInt(id, 10)},
+		"msg_type":   {zulipproto.WidgetMsgType},
+		"content":    {`{"type":"vote","key":"canned,1","vote":1}`},
+	}
+	if _, err := asUser(ctx, email, key, http.MethodPost, "/api/v1/submessage", vote); err != nil {
+		t.Fatalf("the human's vote on the relay's poll was refused: %v", err)
+	}
+
+	m, err := c.GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("reading the voted poll back: %v", err)
+	}
+	found := ""
+	for _, sm := range m.Submessages {
+		if strings.Contains(sm.Content, `"vote"`) {
+			found = sm.Content
+		}
+	}
+	if !strings.Contains(found, `"canned,1"`) {
+		t.Fatalf("the vote submessage on message %d is %q — the relay resolves by canned index and would not see it", id, found)
+	}
+	t.Logf("the human's vote is stored on the relay's own poll as %s — index 1, which is all pollVote reads", found)
+
+	// And an UN-vote: the toggle the relay drops. Stored as a separate
+	// submessage, which is why "latest positive wins" is a reading of
+	// the event stream and not of any single state.
+	vote.Set("content", `{"type":"vote","key":"canned,1","vote":-1}`)
+	if _, err := asUser(ctx, email, key, http.MethodPost, "/api/v1/submessage", vote); err != nil {
+		t.Fatalf("the un-vote was refused: %v", err)
+	}
+	m, err = c.GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("re-reading the poll: %v", err)
+	}
+	n := 0
+	for _, sm := range m.Submessages {
+		if strings.Contains(sm.Content, `"vote"`) {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d vote submessages after a vote and an un-vote, want 2 — a toggle is APPENDED, not replaced", n)
+	}
+	t.Logf("a vote and an un-vote are %d separate appended submessages — 'latest positive wins' is the only available reading", n)
+}
+
+// TestRepaintCostPerVote measures what a vote actually COSTS on the
+// wire, because `!model <filter>` makes voting more frequent and a
+// control that pings a phone four times per tap would be a bad trade.
+//
+// A repaint is DELETE ×2 + POST ×2 (retire the old pair, post the new).
+// Two of those four are message CREATIONS, which are the only ones that
+// can notify. What this measures is the wall cost and — the number that
+// matters — how many of the two POSTs the human account is actually
+// pushed for, read from their own notification settings rather than
+// assumed.
+func TestRepaintCostPerVote(t *testing.T) {
+	c, streamID := liveClient(t)
+	ctx := context.Background()
+	topic := topicFor(t)
+
+	// Stand up a pair to retire.
+	oldPoll, err := c.SendMessage(ctx, streamID, topic, zulipproto.PollContent("⚙️ Model — now: a", []string{"a", "b"}))
+	if err != nil {
+		t.Fatalf("posting the first poll: %v", err)
+	}
+	oldPanel, err := c.SendMessageWidget(ctx, streamID, topic, "**⚙️ a**",
+		zulipproto.ZForm("⚙️ a", []zulipproto.ZFormChoice{zulipproto.Choice("new", "Fresh context", "!new")}))
+	if err != nil {
+		t.Fatalf("posting the first panel: %v", err)
+	}
+
+	start := time.Now()
+	newPoll, err := c.SendMessage(ctx, streamID, topic, zulipproto.PollContent("⚙️ Model — now: b", []string{"b", "a"}))
+	if err != nil {
+		t.Fatalf("posting the repainted poll: %v", err)
+	}
+	newPanel, err := c.SendMessageWidget(ctx, streamID, topic, "**⚙️ b**",
+		zulipproto.ZForm("⚙️ b", []zulipproto.ZFormChoice{zulipproto.Choice("new", "Fresh context", "!new")}))
+	if err != nil {
+		t.Fatalf("posting the repainted panel: %v", err)
+	}
+	delErrs := 0
+	for _, id := range []int64{oldPoll, oldPanel} {
+		if err := c.DeleteMessage(ctx, id); err != nil {
+			delErrs++
+			t.Logf("retiring %d was refused (%v) — the relay falls back to an edit", id, err)
+		}
+	}
+	elapsed := time.Since(start)
+	t.Logf("one repaint = 2 POST + 2 DELETE (%d delete refusals) in %s — the full cost of one vote",
+		delErrs, elapsed.Round(time.Millisecond))
+
+	// How many of the two new messages actually PUSH to the human.
+	// Read, not assumed: a stream message with no mention notifies only
+	// if the account asked to be notified for the stream or the topic.
+	email, key := os.Getenv("ZULIP_OTHER_EMAIL"), os.Getenv("ZULIP_OTHER_API_KEY")
+	if email == "" || key == "" {
+		t.Log("set ZULIP_OTHER_EMAIL / ZULIP_OTHER_API_KEY to also report the human's push settings")
+	} else {
+		env, err := asUser(ctx, email, key, http.MethodGet, "/api/v1/users/me/subscriptions", url.Values{})
+		if err != nil {
+			t.Fatalf("reading the human's subscriptions: %v", err)
+		}
+		subs, _ := env["subscriptions"].([]any)
+		for _, s := range subs {
+			sm, _ := s.(map[string]any)
+			if id, _ := sm["stream_id"].(float64); int64(id) != streamID {
+				continue
+			}
+			t.Logf("the human's %q subscription: push_notifications=%v, desktop_notifications=%v, is_muted=%v — "+
+				"each repaint posts 2 messages, so that is the per-vote ping count",
+				sm["name"], sm["push_notifications"], sm["desktop_notifications"], sm["is_muted"])
+		}
+	}
+
+	_ = c.DeleteMessage(ctx, newPoll)
+	_ = c.DeleteMessage(ctx, newPanel)
+}
+
+// TestRetirementIsTimeLimited pins the number that bounds the poll
+// primitive's repaint contract.
+//
+// A vote repaints: the old pair is deleted and a fresh one posted, which
+// is the ONLY reason a poll's un-clearable ticks ever stop being stale.
+// Deleting one's own message is a realm policy and it is TIME-LIMITED —
+// measured 600s here — and a poll cannot be edited either, so a pair
+// older than that cannot be retired by any means and simply stays in
+// the scrollback. Correctness survives (the vote path matches
+// conv.PollID exactly, so the stale poll is inert), but a reader of an
+// idle topic sees two polls after voting. Anyone who reads
+// retireMessage's fallback chain as exotic should read this number.
+func TestRetirementIsTimeLimited(t *testing.T) {
+	c, _ := liveClient(t)
+	ctx := context.Background()
+	env, err := asUser(ctx, os.Getenv("ZULIP_EMAIL"), os.Getenv("ZULIP_API_KEY"),
+		http.MethodPost, "/api/v1/register", url.Values{"event_types": {`["realm"]`}})
+	if err != nil {
+		t.Fatalf("registering to read the realm settings: %v", err)
+	}
+	limit, ok := env["realm_message_content_delete_limit_seconds"]
+	if !ok {
+		t.Fatal("the realm reports no message_content_delete_limit_seconds")
+	}
+	if limit == nil {
+		t.Logf("deletion is unlimited here — every repaint can retire its pair cleanly")
+	} else {
+		t.Logf("message_content_delete_limit_seconds = %v — a pair older than that CANNOT be retired "+
+			"(delete refused, widgets uneditable), so the repaint leaves an inert poll behind", limit)
+	}
+	// The edit limit must stay unlimited or streaming PATCHes fail on
+	// any turn over ten minutes — a different trap, same settings blob.
+	if v, ok := env["realm_message_content_edit_limit_seconds"]; ok && v != nil {
+		t.Fatalf("message_content_edit_limit_seconds = %v — streaming will fail on long turns; "+
+			"the deployment must set it to unlimited (see README)", v)
+	}
+	_ = c
 }

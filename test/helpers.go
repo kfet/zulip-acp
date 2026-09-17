@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -69,4 +70,75 @@ func fetch(ctx context.Context, _ *zulipproto.Client, path string) ([]byte, erro
 		return nil, fmt.Errorf("download %s: HTTP %d", path, resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// asUser performs a form POST against the live server as an arbitrary
+// account, returning the decoded envelope. It is how a test reaches an
+// endpoint the relay's own client has no method for — the relay never
+// CASTS a vote, it only receives them, so zulipproto has no submessage
+// writer and must not grow one.
+func asUser(ctx context.Context, email, key, method, path string, form url.Values) (map[string]any, error) {
+	var body io.Reader
+	target := strings.TrimSuffix(os.Getenv("ZULIP_SITE"), "/") + path
+	if method == http.MethodGet {
+		target += "?" + form.Encode()
+	} else {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(email, key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var env map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, err
+	}
+	if env["result"] != "success" {
+		return env, fmt.Errorf("zulip: %v (HTTP %d)", env["msg"], resp.StatusCode)
+	}
+	return env, nil
+}
+
+// pollWidgetOf reads back the poll widget Zulip built for a message,
+// returning its question and its option labels. Fails if the message
+// carries no poll submessage.
+func pollWidgetOf(ctx context.Context, c *zulipproto.Client, id int64) (question string, options []string, extraKeys []string, err error) {
+	m, err := c.GetMessage(ctx, id)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	for _, sm := range m.Submessages {
+		if sm.MsgType != zulipproto.WidgetMsgType {
+			continue
+		}
+		var w struct {
+			WidgetType string         `json:"widget_type"`
+			Extra      map[string]any `json:"extra_data"`
+		}
+		if err := json.Unmarshal([]byte(sm.Content), &w); err != nil {
+			return "", nil, nil, err
+		}
+		if w.WidgetType != zulipproto.WidgetTypePoll {
+			continue
+		}
+		for k := range w.Extra {
+			extraKeys = append(extraKeys, k)
+		}
+		sort.Strings(extraKeys)
+		question, _ = w.Extra["question"].(string)
+		raw, _ := w.Extra["options"].([]any)
+		for _, o := range raw {
+			s, _ := o.(string)
+			options = append(options, s)
+		}
+		return question, options, extraKeys, nil
+	}
+	return "", nil, nil, fmt.Errorf("message %d carries no poll submessage", id)
 }

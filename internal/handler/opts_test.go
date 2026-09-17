@@ -419,8 +419,8 @@ func TestAPollSurvivesAReload(t *testing.T) {
 	poll := pollMsg(hh)
 	// The poll was posted with b/two current, so b/two is option 0 and
 	// a/one is option 1.
-	if got := hh.j.Convs()[0].PollModels; !slices.Equal(got, []string{"b/two", "a/one"}) {
-		t.Fatalf("poll models = %v, want b/two first", got)
+	if got := hh.j.Convs()[0].PollReplies; !slices.Equal(got, []string{"!model b/two", "!model a/one"}) {
+		t.Fatalf("poll replies = %v, want b/two's command first, verbatim", got)
 	}
 
 	// Everything in memory goes, exactly as an exec would take it.
@@ -465,8 +465,8 @@ func TestARetiredPollsOptionsAreReplaced(t *testing.T) {
 	if conv.PollID != pollMsg(hh) {
 		t.Fatalf("journal poll %d is not the live one %d", conv.PollID, pollMsg(hh))
 	}
-	if !slices.Equal(conv.PollModels, []string{"b/two", "a/one"}) {
-		t.Fatalf("poll models = %v, want the repainted poll's order", conv.PollModels)
+	if !slices.Equal(conv.PollReplies, []string{"!model b/two", "!model a/one"}) {
+		t.Fatalf("poll replies = %v, want the repainted poll's order", conv.PollReplies)
 	}
 }
 
@@ -549,8 +549,8 @@ func TestPollPostFailureLeavesThePanel(t *testing.T) {
 		t.Fatal("the failure was not logged")
 	}
 	conv := hh.j.Convs()[0]
-	if conv.PollID != 0 || conv.PollModels != nil {
-		t.Fatalf("journal records poll %d meaning %v, though none was posted", conv.PollID, conv.PollModels)
+	if conv.PollID != 0 || conv.PollReplies != nil {
+		t.Fatalf("journal records poll %d meaning %v, though none was posted", conv.PollID, conv.PollReplies)
 	}
 }
 
@@ -598,9 +598,9 @@ func TestOptsNeverOffersAModelTheAgentLacks(t *testing.T) {
 	if options[0] != "m4" {
 		t.Fatalf("current model is not first: %v", options)
 	}
-	for _, id := range hh.j.Convs()[0].PollModels {
-		if !strings.HasPrefix(id, "p/m") {
-			t.Fatalf("poll offers unknown model %q", id)
+	for _, reply := range hh.j.Convs()[0].PollReplies {
+		if !strings.HasPrefix(reply, "!model p/m") {
+			t.Fatalf("poll offers unknown model %q", reply)
 		}
 	}
 	if body := panelBody(t, hh); !strings.Contains(body, "and 3 more") {
@@ -1184,7 +1184,7 @@ func TestModelOptionFallsBackToTheID(t *testing.T) {
 	if _, options := pollWidget(t, hh, pollMsg(hh)); options[0] != "one" {
 		t.Fatalf("options = %v", options)
 	}
-	if got := hh.j.Convs()[0].PollModels; got[0] != "a/one" {
+	if got := hh.j.Convs()[0].PollReplies; got[0] != "!model a/one" {
 		t.Fatalf("option 0 means %q", got[0])
 	}
 }
@@ -1500,5 +1500,280 @@ func TestAnUnengagedPanelSeedsNoChips(t *testing.T) {
 	}
 	if body := hh.z.body(lastMsg(t, hh)); strings.Contains(body, "Tap a chip") {
 		t.Fatalf("panel %q promises chips it did not seed", body)
+	}
+}
+
+// --- `!model <filter>`: the pair, narrowed ------------------------------
+
+// filterHarness is an engaged DM with a catalogue big enough that the
+// cap bites and a filter is worth typing.
+func filterHarness(t *testing.T) *harness {
+	t.Helper()
+	ids := []string{"a/opus-4-5", "a/sonnet-4-5", "a/haiku-4-5", "b/GPT-5-opus", "b/gpt-5-mini"}
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/sonnet-4-5", ids...), nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	return hh
+}
+
+// TestModelFilterPostsTheNarrowedPair is the feature: `!model <filter>`
+// answers with the SAME control pair `!opts` posts, with both halves
+// narrowed to acp-kit's matches — not with prose the user has to retype
+// by thumb.
+func TestModelFilterPostsTheNarrowedPair(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!model opus", humanID, botID)
+
+	// The POLL is narrowed, and case-insensitively, exactly as
+	// command.MatchModels matches.
+	question, options := pollWidget(t, hh, pollMsg(hh))
+	if !slices.Equal(options, []string{"opus-4-5", "GPT-5-opus"}) {
+		t.Fatalf("poll options = %v, want both opus models in agent order", options)
+	}
+	// The question says which question it is, and still says the state.
+	for _, want := range []string{"opus", "now: sonnet-4-5"} {
+		if !strings.Contains(question, want) {
+			t.Fatalf("poll question %q lacks %q", question, want)
+		}
+	}
+	// The PANEL is narrowed too — it is the non-widget reader's only
+	// copy of the same list, so an unfiltered panel under a filtered
+	// poll would contradict it.
+	panel := panelBody(t, hh)
+	for _, want := range []string{"matching `opus`", "`!model a/opus-4-5`", "`!model b/GPT-5-opus`", "`!model` for the full list"} {
+		if !strings.Contains(panel, want) {
+			t.Fatalf("panel %q lacks %q", panel, want)
+		}
+	}
+	// The header still reads the current model — it is the state
+	// readout — but the LIST must be only the matches.
+	list := panel[strings.Index(panel, "**Model**"):strings.Index(panel, "**Session**")]
+	if strings.Contains(list, "sonnet") || strings.Contains(list, "haiku") || strings.Contains(list, "mini") {
+		t.Fatalf("model list %q includes a model the filter excluded", list)
+	}
+	// One live pair, in the one OptsID/PollID slot — not a second poll.
+	conv := hh.j.Convs()[0]
+	if conv.PollID != pollMsg(hh) || conv.OptsID != panelMsg(t, hh) {
+		t.Fatalf("journal pair %d/%d is not the live one %d/%d", conv.OptsID, conv.PollID, panelMsg(t, hh), pollMsg(hh))
+	}
+	if !slices.Equal(conv.PollReplies, []string{"!model a/opus-4-5", "!model b/GPT-5-opus"}) {
+		t.Fatalf("poll replies = %v, want the narrowed commands verbatim", conv.PollReplies)
+	}
+}
+
+// TestAVoteInAFilteredPollSwitchesModel: the filtered pair is not a
+// display — a vote in it resolves through the persisted table down the
+// ordinary dispatch path, and lands on a model that was never option 0
+// and is not the current one.
+func TestAVoteInAFilteredPollSwitchesModel(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!model opus", humanID, botID)
+	poll := pollMsg(hh)
+
+	castVote(t, hh, humanID, poll, 1, 1)
+
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "b/GPT-5-opus" {
+		t.Fatalf("model = %q,%v want the second FILTERED option", id, ok)
+	}
+	// And the vote repainted, which is the primitive's contract: the
+	// filtered poll is gone and the fresh pair shows the new state.
+	if pollMsg(hh) == poll {
+		t.Fatal("the vote did not repaint the pair")
+	}
+}
+
+// TestAFilteredPollDoesNotForceTheCurrentModelIn: a filter is a
+// question about the catalogue. Answering "haiku" with a sonnet the
+// user did not ask about would make the list something other than the
+// matches — safe to omit precisely because the table is persisted.
+func TestAFilteredPollDoesNotForceTheCurrentModelIn(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!model haiku", humanID, botID)
+
+	_, options := pollWidget(t, hh, pollMsg(hh))
+	if !slices.Equal(options, []string{"haiku-4-5"}) {
+		t.Fatalf("poll options = %v, want only the match", options)
+	}
+	// Absent from the options, present in the question.
+	if q, _ := pollWidget(t, hh, pollMsg(hh)); !strings.Contains(q, "now: sonnet-4-5") {
+		t.Fatalf("question %q does not say the state", q)
+	}
+	castVote(t, hh, humanID, pollMsg(hh), 0, 1)
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/haiku-4-5" {
+		t.Fatalf("model = %q,%v want the only match", id, ok)
+	}
+}
+
+// TestAFilterMatchingNothingChangesNothing: destroying a working
+// control to answer a typo is the wrong trade, and an empty poll cannot
+// be posted anyway. It falls through to the broker's prose.
+func TestAFilterMatchingNothingChangesNothing(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel, poll := panelMsg(t, hh), pollMsg(hh)
+
+	hh.deliverDM(t, humanID, "!model gemini", humanID, botID)
+
+	if got := hh.z.lastBody(); !strings.Contains(got, "none match") {
+		t.Fatalf("reply = %q, want the broker's prose", got)
+	}
+	conv := hh.j.Convs()[0]
+	if conv.OptsID != panel || conv.PollID != poll {
+		t.Fatalf("the live pair moved to %d/%d from %d/%d", conv.OptsID, conv.PollID, panel, poll)
+	}
+	// Retiring DELETES, which the fake models by dropping the body.
+	if hh.z.body(panel) == "" || hh.z.body(poll) == "" {
+		t.Fatal("the live pair was retired to answer an empty filter")
+	}
+}
+
+// TestBareModelKeepsTheCatalogue: bare `!model` is the CATALOGUE — the
+// broker's prose names every id, which is how a reader learns what
+// exists past the poll's cap. `!opts` already posts the unfiltered
+// pair, so posting it here would add no surface and remove the only one
+// that spells the rest out.
+func TestBareModelKeepsTheCatalogue(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!model", humanID, botID)
+
+	if got := hh.z.lastBody(); !strings.Contains(got, "models available") || !strings.Contains(got, "a/haiku-4-5") {
+		t.Fatalf("reply = %q, want the broker's full listing", got)
+	}
+	if pollMsg(hh) != 0 {
+		t.Fatal("bare !model posted a poll")
+	}
+}
+
+// TestAnExactIDIsNeverAFilter: `!model <exact-id>` is the knob
+// fast-path, and a knob change that FAILS must be spoken. Falling into
+// the filter branch would answer a failed change with a menu and
+// swallow the reason.
+func TestAnExactIDIsNeverAFilter(t *testing.T) {
+	// Not engaged, so the change fails.
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), nil)
+	hh.deliverDM(t, humanID, "!model b/two", humanID, botID)
+	if !strings.Contains(hh.only(t), "no conversation here yet") {
+		t.Fatalf("reply = %q, want the broker's reason", hh.only(t))
+	}
+}
+
+// TestModelFilterParsing covers the shapes the filter branch claims and
+// the ones it must leave alone.
+func TestModelFilterParsing(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"!model opus", "opus"},
+		{"!model   opus  ", "opus"},
+		{".model opus", "opus"},
+		{"!model a/b c/d", "a/b c/d"},
+		// Flattened at the parse boundary: the filter is echoed into a
+		// poll question (where a newline splits into an extra option)
+		// and a markdown list item (where it breaks the list).
+		{"!model op\nus", "op us"},
+		{"!model op\r\nus", "op  us"},
+		{"!model", ""},
+		{"!model   ", ""},
+		{"!opts", ""},
+		{"!models", ""},
+		{"model opus", ""},
+		{"", ""},
+	} {
+		got, ok := modelFilter(tc.in)
+		if tc.want == "" {
+			if ok {
+				t.Fatalf("modelFilter(%q) = %q, want no filter", tc.in, got)
+			}
+			continue
+		}
+		if !ok || got != tc.want {
+			t.Fatalf("modelFilter(%q) = %q,%v want %q,true", tc.in, got, ok, tc.want)
+		}
+	}
+}
+
+// TestAFilteredPairIsCappedToo: the cap is about readability, so it
+// applies whether or not a filter narrowed the list first.
+func TestAFilteredPairIsCappedToo(t *testing.T) {
+	ids := make([]string, 0, optsModelCap+3)
+	for i := 0; i < optsModelCap+3; i++ {
+		ids = append(ids, fmt.Sprintf("p/keep%d", i))
+	}
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "p/keep0", ids...), nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!model keep", humanID, botID)
+
+	if _, options := pollWidget(t, hh, pollMsg(hh)); len(options) != optsModelCap {
+		t.Fatalf("%d filtered options, want the %d cap", len(options), optsModelCap)
+	}
+	if body := panelBody(t, hh); !strings.Contains(body, "and 3 more") {
+		t.Fatalf("panel %q does not say how many the cap hid", body)
+	}
+}
+
+// TestARepaintGoesBackToTheFullList: nothing persists the filter, and a
+// repaint is triggered by a STATE change that has no filter in it.
+// Repainting wide is the honest reading — and it is what makes the
+// filtered pair self-healing rather than stuck narrow.
+func TestARepaintGoesBackToTheFullList(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!model haiku", humanID, botID)
+	if _, options := pollWidget(t, hh, pollMsg(hh)); len(options) != 1 {
+		t.Fatalf("options = %v, want the filtered one", options)
+	}
+
+	// A model change from anywhere repaints.
+	hh.deliverDM(t, humanID, "!model a/opus-4-5", humanID, botID)
+
+	_, options := pollWidget(t, hh, pollMsg(hh))
+	if len(options) != 5 {
+		t.Fatalf("repainted options = %v, want the whole list back", options)
+	}
+	if options[0] != "opus-4-5" {
+		t.Fatalf("repainted options = %v, want the new current model pinned first", options)
+	}
+	if body := panelBody(t, hh); strings.Contains(body, "matching") {
+		t.Fatalf("repainted panel %q still claims a filter", body)
+	}
+}
+
+// TestAnEmptyFilterIsDecidedUnderTheLock: the emptiness test lives
+// inside placePanel, against the very model list the pair would be
+// built from — not in a caller, before the lock. Testing it outside
+// would be a read-modify-write across two Agent.Models() reads, and
+// Models() is re-probed after `!login`: a list that lost its last match
+// in between would pass the outer test and then retire the live pair to
+// post an empty panel. This pins the no-post outcome directly.
+func TestAnEmptyFilterIsDecidedUnderTheLock(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+	panel, poll := panelMsg(t, hh), pollMsg(hh)
+	conv := hh.j.Convs()[0]
+
+	// placePanel is the locked half; call it as showFilteredPair does.
+	id, chips, ok := hh.h.placePanel(context.Background(), conv.Key, "", "gemini")
+	if ok || id != 0 || chips != nil {
+		t.Fatalf("placePanel posted %d/%v for a filter that matches nothing", id, chips)
+	}
+	// Nothing posted, nothing retired, nothing rewritten.
+	if hh.z.body(panel) == "" || hh.z.body(poll) == "" {
+		t.Fatal("the live pair was retired for an empty filter")
+	}
+	if got := hh.j.Convs()[0]; got.OptsID != conv.OptsID || got.PollID != conv.PollID {
+		t.Fatalf("the journal pair moved to %d/%d from %d/%d", got.OptsID, got.PollID, conv.OptsID, conv.PollID)
+	}
+	// And `!opts` with no models at all still posts — its body is what
+	// tells the user to connect a provider, so an empty CATALOGUE must
+	// not be silent the way an empty FILTER is.
+	bare := dmCmdHarness(t, newAgent("x"), nil)
+	bare.deliverDM(t, humanID, "hello", humanID, botID)
+	bare.z.reset()
+	bare.deliverDM(t, humanID, "!opts", humanID, botID)
+	if body := panelBody(t, bare); !strings.Contains(body, "connect a provider") {
+		t.Fatalf("panel %q does not tell an empty agent's user what to do", body)
+	}
+	if pollMsg(bare) != 0 {
+		t.Fatal("a poll went up with no models to offer")
 	}
 }

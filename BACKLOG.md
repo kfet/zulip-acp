@@ -323,8 +323,8 @@ compare — so the block has no key for it.
     `"canned,<option-index>"` for an option the poll shipped with.
 
   The three objections that were real are answered rather than dismissed: the
-  index→model table is RECORDED IN THE JOURNAL beside the poll's message id
-  (`journal.Conv.PollModels`) so no `GET /messages/{id}` is ever spent, no
+  index→command table is RECORDED IN THE JOURNAL beside the poll's message id
+  (`journal.Conv.PollReplies`) so no `GET /messages/{id}` is ever spent, no
   re-probe can make an option drift, and a graceful reload cannot silently
   re-order it; the accumulating scoreboard is disposed of by the re-post-and-retire
   dance the panel already did; and a vote is not a third encoding of the
