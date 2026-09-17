@@ -366,6 +366,22 @@ xstale stale   "binary swapped but never recycled"    1 0.17.1 0.16.0
 xstale current "unreadable version is never evidence" 1 0.17.1 ''
 xstale current "a stopped bot is not stale"           0 0.17.1 ''
 
+echo "== self-host detection (localhost needs no ssh)"
+# Only a CERTAIN yes may switch the transport: a wrong yes writes to the wrong
+# machine. So the names of this very box answer self, and everything else —
+# including an unresolvable name — answers remote and keeps ssh.
+xself() { # <self|remote> <label> <host>
+  local want=$1 label=$2 host=$3 got
+  if got=$("$CONVERGE" self-host "$host" 2>/dev/null); then got=self; else got=remote; fi
+  [ "$got" = "$want" ] && ok "$label" || bad "$label: wanted $want, got $got"
+}
+xself self   "loopback by name"        localhost
+xself self   "loopback by address"     127.0.0.1
+xself self   "this machine's hostname" "$(hostname)"
+xself remote "a name that is not us"   github.com
+xself remote "an unresolvable name"    nosuchhost.invalid.example
+xself remote "an empty name"           ""
+
 echo "== fake-target converge (dry-run, apply, idempotence)"
 fake="$tmpd/fakehost"
 mkdir -p "$fake/.local/bin"
