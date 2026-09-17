@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `update` and `deploy` skills now tell you to converge on the host
+  itself. They did not say that converge uses no ssh for a local target,
+  so a self-ssh failure looked like a missing key. The workaround was to
+  run the converge from a second host, which is also how a release gets
+  cut from a stale clone. A new pitfall says that a host which cannot ssh
+  to itself is normal, and that you must not add a key for it.
+
+
 ## [0.35.4] - 2026-09-17
 
 ### Fixed
