@@ -95,7 +95,7 @@ func Live() string {
 // produced anything. Zulip has no typing indicator, so this is the
 // user's only acknowledgement that the relay received them.
 func Thinking(s Status) string {
-	return Spinner(s, "…")
+	return Spinner(s, "…", "")
 }
 
 // Spinner renders one live placeholder frame. dots is the animation
@@ -103,10 +103,37 @@ func Thinking(s Status) string {
 // always visible even with no mood or plan known yet. The segments
 // include the model identity ("🏛️ opus-4.5"), so the live line names
 // the model servicing the turn just as the final footer does.
-func Spinner(s Status, dots string) string {
+//
+// notice, when non-empty, is an out-of-band operational message from
+// the agent (see the acp-kit notice extension) — a provider rate-limit
+// retry, a failed compaction. It is rendered as a SECOND blockquoted
+// line under the spinner rather than folded into the segments, because
+// it is a sentence, not a label, and crowding it in beside the model
+// name makes both unreadable on a phone.
+//
+// It belongs here and nowhere else: a notice is not part of the
+// answer, and the whole reason the extension exists is that putting it
+// in the answer stream corrupted replies mid-sentence.
+func Spinner(s Status, dots string, notice string) string {
 	if dots == "" {
 		dots = "…"
 	}
 	parts := append(kit.Segments(s), "Thinking"+dots)
-	return "> *" + strings.Join(parts, " • ") + "*"
+	out := "> *" + strings.Join(parts, " • ") + "*"
+	if notice = strings.TrimSpace(oneLine(notice)); notice != "" {
+		out += "\n> *" + notice + "*"
+	}
+	return out
+}
+
+// oneLine flattens a notice to a single line capped at 160 runes,
+// never splitting a code point. Provider error bodies are long and the
+// placeholder is one line of a phone screen.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const maxRunes = 160
+	if r := []rune(s); len(r) > maxRunes {
+		s = string(r[:maxRunes]) + "…"
+	}
+	return s
 }

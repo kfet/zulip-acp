@@ -1149,6 +1149,8 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	})
 	defer stopLive()
 	sinkFor = live.Wrap(sinkFor)
+	// Outermost: notices bypass the chain entirely — see noticeRouter.
+	sinkFor = &noticeRouter{next: sinkFor, sink: sink}
 
 	sess, err = h.cfg.Sessions.GetOrCreate(lctx, conv.ID, sinkFor)
 	if err != nil {
@@ -1926,7 +1928,7 @@ func spinnerLoop(ctx context.Context, split *rollover.Splitter, sink *streamingS
 		case <-ctx.Done():
 			return
 		case <-tick:
-			frame := statusline.Spinner(sink.Status(), frames[i%len(frames)])
+			frame := statusline.Spinner(sink.Status(), frames[i%len(frames)], sink.Notice())
 			alive, _ := split.UpdatePlaceholder(context.WithoutCancel(ctx), frame)
 			if !alive {
 				return

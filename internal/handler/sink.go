@@ -38,6 +38,10 @@ type streamingSink struct {
 	statusMu      sync.Mutex
 	status        statusline.Status
 	footerEmitted bool
+	// notice is the latest out-of-band operational message from the
+	// agent, shown on the live placeholder. Latest-wins: a retry
+	// notice is only interesting while it is current.
+	notice string
 
 	// hideThinking suppresses thought chunks. Read-only after
 	// construction.
@@ -67,6 +71,39 @@ func (s *streamingSink) Status() statusline.Status {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	return s.status
+}
+
+// OnNotice implements client.NoticeSink: it receives the agent's
+// out-of-band operational messages (provider rate-limit retries,
+// failed compaction).
+//
+// These deliberately do NOT reach the splitter. A notice is not part
+// of the answer — the extension exists precisely because delivering
+// them as agent message text put them on the same ordered stream as
+// the model's tokens, where a background goroutine's notice landed
+// mid-sentence inside the user's reply. Here it goes to the live
+// placeholder instead, which the spinner redraws on its own tick.
+//
+// Latest-wins, and best-effort: once the first real chunk lands the
+// placeholder is gone and later notices are simply not shown. That is
+// the right trade — a status message must never delay, split, or
+// mutate an answer already being written.
+func (s *streamingSink) OnNotice(_ context.Context, n client.Notice) error {
+	if strings.TrimSpace(n.Text) == "" {
+		return nil
+	}
+	s.statusMu.Lock()
+	s.notice = n.Text
+	s.statusMu.Unlock()
+	return nil
+}
+
+// Notice snapshots the latest agent notice, read by the spinner each
+// frame. Empty when the agent has sent none this turn.
+func (s *streamingSink) Notice() string {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.notice
 }
 
 // OnUpdate implements client.SessionUpdateSink.
@@ -199,6 +236,35 @@ func (w *sentinelWatch) observe(delta string) {
 	if diverged && w.onCommit != nil {
 		w.onCommit()
 	}
+}
+
+// --- notice routing ------------------------------------------------------
+
+// noticeRouter is the OUTERMOST sink wrapper. It forwards session
+// updates untouched and short-circuits notices straight to the
+// streaming sink.
+//
+// It exists because a notice must not traverse the sink chain. The
+// chain — liveness, sentinel watch, the abstain ValidatingSink — is
+// built to reason about the ANSWER: it buffers it, times it, and
+// compares it against the silence sentinel. A notice is none of those
+// things, and the intermediate wrappers do not implement NoticeSink,
+// so a notice sent down the chain would simply be dropped. Routing it
+// around the chain keeps both jobs honest: liveness never counts a
+// notice as progress, and the sentinel never mistakes one for a reply.
+type noticeRouter struct {
+	next client.SessionUpdateSink
+	sink *streamingSink
+}
+
+// OnUpdate implements client.SessionUpdateSink.
+func (r *noticeRouter) OnUpdate(ctx context.Context, n acp.SessionNotification) error {
+	return r.next.OnUpdate(ctx, n)
+}
+
+// OnNotice implements client.NoticeSink.
+func (r *noticeRouter) OnNotice(ctx context.Context, n client.Notice) error {
+	return r.sink.OnNotice(ctx, n)
 }
 
 // --- rendering -----------------------------------------------------------
