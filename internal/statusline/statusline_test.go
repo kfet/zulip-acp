@@ -37,16 +37,16 @@ func TestThinkingAndSpinner(t *testing.T) {
 	if got := Thinking(Status{}); !strings.Contains(got, "Thinking…") {
 		t.Fatalf("Thinking = %q", got)
 	}
-	if got := Spinner(Status{}, ""); !strings.Contains(got, "Thinking…") {
+	if got := Spinner(Status{}, "", ""); !strings.Contains(got, "Thinking…") {
 		t.Fatalf("Spinner with empty dots = %q", got)
 	}
-	got := Spinner(Status{Mood: "curious"}, "..")
+	got := Spinner(Status{Mood: "curious"}, "..", "")
 	if !strings.Contains(got, "curious") || !strings.Contains(got, "Thinking..") {
 		t.Fatalf("Spinner = %q", got)
 	}
 	// The live line names the model too, in the same one-segment form
 	// the footer uses.
-	got = Spinner(Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"}, "...")
+	got = Spinner(Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"}, "...", "")
 	if want := "> *🏛️ opus-4.5 • steady • 2/5 • Thinking...*"; got != want {
 		t.Fatalf("Spinner = %q, want %q", got, want)
 	}

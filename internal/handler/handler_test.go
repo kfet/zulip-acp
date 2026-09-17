@@ -2389,7 +2389,7 @@ func TestSinkFooterIsNotEatenByThePlaceholder(t *testing.T) {
 	}
 	sink.maybeAppendFooter()
 	// A spinner frame racing the end of the turn writes nothing.
-	if alive, err := split.UpdatePlaceholder(ctx, statusline.Spinner(sink.Status(), "...")); alive || err != nil {
+	if alive, err := split.UpdatePlaceholder(ctx, statusline.Spinner(sink.Status(), "...", sink.Notice())); alive || err != nil {
 		t.Fatalf("UpdatePlaceholder alive=%v err=%v — a frame could still land on the answer", alive, err)
 	}
 	if err := split.Close(ctx, ""); err != nil {
