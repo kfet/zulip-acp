@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-17
+
+### Fixed
+
+- **Agent lifecycle notices no longer corrupt replies.** fir reported MCP
+  server connect/disconnect, provider rate-limit retries and failed
+  compactions as agent message text, which is the same ordered stream as
+  the model's answer tokens and byte-identical to them. A notice emitted
+  from a background goroutine therefore landed wherever the stream
+  happened to be — in practice mid-sentence, inside the user's reply.
+  The same leak defeated ambient-silence detection, since `sentinelWatch`
+  accumulates agent message text to decide whether a turn abstained: an
+  MCP server connecting mid-turn counted as a reply and broke
+  `<<SILENT>>`.
+
+  fir 1.13.0 stops sending MCP chatter entirely (status is pulled with
+  `/mcp`) and moves retries and compaction failures to acp-kit's
+  `_dev.acp-kit/notice` extension. This release routes those notices to
+  the live placeholder, where a status message belongs.
+
+### Added
+
+- `noticeRouter` wraps the sink chain OUTERMOST and short-circuits
+  notices around it. The chain reasons about the ANSWER — liveness times
+  it, the abstain `ValidatingSink` buffers it, `sentinelWatch` compares it
+  to the sentinel — and a notice is none of those things. Routing around
+  it is what keeps liveness from counting a notice as progress and the
+  sentinel from reading one as a reply.
+
+- The spinner renders the latest notice as a second blockquoted line
+  under the frame, flattened to one line and capped at 160 runes, since
+  provider error bodies are long and the placeholder is one line of a
+  phone screen. Best-effort by design: once the first real chunk lands
+  the placeholder is gone and later notices are not shown. A status
+  message must never delay, split, or mutate an answer already being
+  written.
+
+  No capability gate is involved. An agent that does not send notices
+  simply never produces a notice line, which is why `agent.kind` remains
+  deployment metadata the handler does not read.
+
 ## [0.34.0] - 2026-09-17
 
 ### Added
