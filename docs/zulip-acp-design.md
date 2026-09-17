@@ -1395,7 +1395,9 @@ itself fails to post, the poll just posted is deleted rather than orphaned.
 
 A vote arrives as a `submessage` event, is resolved by `Handler.pollVote`, and
 is dispatched as the **same** `!model <id>` string a typed command, a zform
-button and the `select_model` loopback tool all end at. It walks the same gates
+button and the `select_model` loopback tool all end at — **verbatim**, straight
+out of the journal's option table. Nothing in the vote path knows about models;
+it knows about commands. It walks the same gates
 in the same order reaction.go applies to a chip tap — own user id, bot-sender
 set, allowlist, then the one lookup that can recognise a bot created since
 startup. A vote may not be a way around the allowlist.
@@ -1405,15 +1407,17 @@ Three measured facts shape it, and none is optional:
 - **A vote names its option by INDEX.** The event's `key` is
   `"canned,<option-index>"` for an option the poll shipped with, and
   `"<user-id>,<option-index>"` for one a participant added later — which no
-  index of ours can resolve, so it is dropped. The index→model table is
+  index of ours can resolve, so it is dropped. The index→command table is
   therefore **written into the journal** beside the poll's id
-  (`journal.Conv.PollModels`, one `SetOpts` commit), never recomputed at vote
+  (`journal.Conv.PollReplies`, one `SetOpts` commit), never recomputed at vote
   time. Two things make recomputation wrong rather than merely wasteful: the
   model list can be re-probed after `!login` without anything repainting the
   poll, and the option ORDER depends on the conversation's effective model —
   which lives in memory and does **not** survive a graceful reload. A relay
   that re-derived the table after an exec would resolve a vote to a different
-  model from the one written on the option, silently. Persisting it is safe
+  command from the one written on the option, silently — and under a filter
+  (below) the order depends on a query string nothing else records at all.
+  Persisting it is safe
   precisely because a widget message is sealed: the options on the server can
   never drift from what was recorded. It also means resolving a vote costs
   **no** `GET /messages/{id}`.
@@ -1444,6 +1448,119 @@ Finally, an unknown `!command` now answers with the panel. It used to answer
 with a one-line error, which was correct and useless: the moment a user
 mistypes a command is the moment they most need the menu. It is still never
 forwarded to the agent — a typo must not burn a turn.
+
+### The poll is a PRIMITIVE, and it has three rules
+
+Nothing in `internal/handler/poll.go` knows about models. A poll is a table of
+`(label, reply)` pairs; a vote on option *N* dispatches reply *N* verbatim. The
+model menu is its first caller, not its definition. Three rules bind the second
+caller, and all three are load-bearing:
+
+1. **Every persisted reply must be RELAY-AUTHORED.** Model ids from the agent's
+   own model list, provider ids from `AuthMethods()` — never text taken from the
+   message that triggered the poll, not even after validation, and never text
+   from the agent's prose. A persisted reply is an arbitrary command replayed
+   later by whoever taps an option; the *only* reason that is safe is that no
+   user text ever reaches it. A poll whose options were built from a user's
+   filter string would be a stored command-injection with a tap for a trigger.
+   `!model <filter>` obeys this: the filter *selects* which relay-authored ids
+   appear, and is never itself written into a reply.
+2. **The reply must REPAINT the pair.** This is the primitive's contract, not
+   the model poll's accident. A poll cannot be edited, so a tick cannot be
+   cleared — two allowlisted users voting differently leaves **both** ticks
+   showing, and the poll then displays a state that is not the relay's. The
+   model poll self-heals only because every model change runs through
+   `SetModelOverride`, which repaints: the old pair is deleted and a fresh one
+   posted with the new state in its question. A poll option whose command leaves
+   the pair standing shows stale ticks **forever**, and there is no way to fix it
+   after the fact. Do not add one.
+
+   One measured caveat on this deployment: `message_content_delete_limit_seconds`
+   is **600**. A repaint can only *delete* a pair younger than ten minutes; an
+   older poll is refused (a poll cannot be edited either, so it cannot even be
+   rewritten to a pointer line) and simply stays in the scrollback. Correctness
+   holds — the vote path matches `conv.PollID` exactly, so the stale poll is
+   inert — but a reader of an idle topic will see two polls after voting, the
+   lower one live. That is the cost of the contract, not a violation of it.
+3. **An unhandled dispatch is DROPPED**, never forwarded to the agent as prose.
+   The reply is relay-authored, so a dispatch that does not recognise it is a
+   relay bug, and the right output of a relay bug is a log line — not a turn
+   spent asking the model what `!model p/x` might have meant. Generic replies
+   make forwarding more tempting and more wrong.
+
+**Participant-added options are silently ignored, and cannot not be.** Zulip
+lets any viewer add an option to a poll, and offers no way to forbid it — the
+widget's `extra_data` carries a question and an options list and nothing else
+(measured). An added option is keyed by the adder's *user id* rather than a
+canned index, so `ParseVote` rejects it and no table of ours can resolve it. All
+three available answers are taken, cheapest first: the **question line** says
+*“vote, don't add options”* (shown on every client, costs no round-trip, lands
+before the mistake); the addition is **logged** in `handleSubmessage`, so “I
+added gpt-99 and nothing happened” is answerable; and nothing is posted in
+reply, because narrating a mis-tap into the topic would put relay chatter into
+the transcript the model reads.
+
+**The option cap is a readability choice, not a server limit.** Measured against
+this deployment (Zulip 12.2): a `/poll` with 6, 12, 20, 40 and 100 options was
+accepted and expanded into a widget carrying every one, and 100 model-shaped
+options is ~1.7k of the 10 000 code points a message may hold. `optsModelCap`
+was 6 only because the surface it replaced was the `:one:`..`:six:` chips; it is
+now **12**, which still scrolls as one gesture on a phone and covers every model
+list this relay has been pointed at. So the filter below is a convenience for a
+hundred-model catalogue, not the only way to reach model #7.
+
+### `!model <filter>` is `!opts`, narrowed
+
+`!model <exact-id>` is the knob fast-path and is unchanged. `!model <filter>` —
+an argument that is *not* an exact id — posts the **same control pair** `!opts`
+posts, with both halves narrowed: same `placePanel`, same retire, same single
+`OptsID`/`PollID` slot, same persist. Not a new code path, and never a second
+live poll — two polls in one topic would both look votable and only one would
+resolve. It exists because the broker's prose answer left a phone user retyping
+an exact id by thumb, which is the exact problem the poll was built to solve, in
+the one place the panel's own *“…and N more — `!model <filter>`”* line sends
+them.
+
+Four decisions inside it:
+
+- **The PANEL is narrowed too**, not just the poll. They are a pair: a filtered
+  poll above an unfiltered twelve-item panel contradicts itself, and the panel
+  body is the non-widget fallback *for* the filtered list — the only copy a
+  reader whose client draws no widget can type.
+- **The matcher is `command.MatchModels`, exported from acp-kit for this.** If
+  zulip-acp invented its own substring or case rule, the poll and poe-acp's
+  prose would disagree about what `opus` matches and a user would be told two
+  different things about one filter. One matcher, one answer.
+- **The current model is not forced into a filtered list**, so “option 0 is the
+  current model” stops holding. That is fine *because* the table is persisted —
+  a vote resolves without it — and the question line still reads `now: X`.
+  Answering `!model haiku` with a sonnet nobody asked about would make the list
+  something other than the matches.
+- **A filter matching nothing changes nothing.** It falls through to the
+  broker's `(none match …)` prose and leaves the live pair exactly where it is.
+  Retiring a working control to answer a typo is the wrong trade, and
+  `PollContent` refuses an empty option list anyway — which would leave the
+  panel pointing at a poll that is not there. The emptiness test is made
+  **inside `placePanel`, under `optsMu`**, against the very model list the pair
+  would be built from — not by the caller before the lock. Testing it outside
+  would be a read-modify-write across two `Agent.Models()` reads, and that list
+  is re-probed after `!login`: a catalogue that lost its last match in between
+  would pass the outer test and then retire the live pair to post an empty
+  panel, which is the exact outcome the rule exists to prevent. An empty
+  *catalogue* is different and still posts a panel — its body is what says to
+  connect a provider.
+
+Bare `!model` keeps the broker's prose, deliberately. Bare `!model` is the
+**catalogue**: it names every id up to acp-kit's much larger cap, which is how a
+reader learns what exists past `optsModelCap`. The pair is a **menu**: capped,
+short-labelled, built to be tapped. `!opts` already posts the unfiltered pair,
+so making bare `!model` post it too would add no surface while removing the only
+one that spells out model #13's exact id — the id a filter then needs.
+
+A repaint goes back to the **full** list. Nothing persists the filter, and a
+repaint is triggered by a state change that has no filter in it; re-deriving one
+would be guessing. Repainting wide is the honest reading, and it is what stops a
+filtered pair getting stuck narrow.
 
 ### What a command reply is not
 

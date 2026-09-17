@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!model <filter>` now posts the `!opts` control PAIR with both halves
+  narrowed to the matches, instead of prose the user had to retype by
+  thumb. Same `placePanel`, same retire, same single `OptsID`/`PollID`
+  slot — never a second live poll. The panel is filtered too, since it is
+  the non-widget fallback for the filtered list. A filter matching
+  nothing falls through to the broker's prose and leaves the live pair
+  alone. Bare `!model` keeps the catalogue prose on purpose.
+- `journal.Conv.PollReplies` documents the poll primitive's safety rule:
+  a persisted reply is only ever RELAY-AUTHORED, never text from the
+  message that triggered the poll.
+
+### Changed
+
+- The poll is now a GENERIC primitive: a table of (label, reply) pairs
+  whose vote dispatches the reply VERBATIM. `journal.Conv.PollModels` →
+  `PollReplies` (on-disk key `poll_models` → `poll_replies`, not reused —
+  the old key held bare model ids, which as replies dispatch to nothing,
+  so a poll live across the upgrade goes inert rather than resolving
+  against a table written under the other meaning). Both the strip in
+  `pollModelIDs` and the re-add in `pollVote` are gone.
+- `optsModelCap` 6 → 12. MEASURED: Zulip 12.2 accepted a `/poll` with 6,
+  12, 20, 40 and 100 options and built a widget carrying every one, so
+  the old 6 was an artefact of the `:one:`..`:six:` chips and not a
+  server limit. The filter is now a convenience for a large catalogue,
+  not the only way to reach model #7.
+- Depends on acp-kit v0.17.1 for the exported `command.MatchModels`, so
+  the poll and the broker's prose cannot disagree about what a filter
+  matches.
+
+### Fixed
+
+- The panel's "…and N more" now counts against the MATCHED models, not
+  the whole catalogue — under a filter it would otherwise have claimed
+  "and 40 more" beneath a three-item list.
+
 ## [0.33.0] - 2026-09-16
 
 ### Added

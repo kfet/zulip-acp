@@ -1,5 +1,69 @@
-// This file is the MODEL POLL: the half of `!opts` that a phone can
-// actually use.
+// This file is the POLL PRIMITIVE, and its one caller today: the model
+// menu, the half of `!opts` that a phone can actually use.
+//
+// # The primitive
+//
+// A poll is a table of (label, reply) pairs. postPoll renders the
+// labels as poll options; a vote on option N dispatches reply N
+// verbatim (journal.Conv.PollReplies). Nothing here knows about
+// models: it knows about commands. Three rules bind anyone adding a
+// second kind of poll, and all three are load-bearing:
+//
+//  1. EVERY REPLY MUST BE RELAY-AUTHORED. Never user text, never agent
+//     text. A persisted reply is an arbitrary command replayed later by
+//     a tap; the only reason that is safe is that nothing a prompt can
+//     influence reaches it. Stated at length on
+//     journal.Conv.PollReplies, where the field lives.
+//
+//  2. THE REPLY MUST REPAINT THE PAIR. This is the primitive's
+//     CONTRACT, not the model poll's accident. A poll cannot be edited
+//     (400 "Widgets cannot be edited."), so a tick cannot be cleared —
+//     two allowlisted users voting differently leaves BOTH ticks
+//     showing, and the poll then displays a state that is not the
+//     relay's. The model poll self-heals because every model change
+//     runs through SetModelOverride, which repaints: the old poll is
+//     deleted and a fresh one posted with the new state in its
+//     question. A poll whose reply does NOT repaint shows stale ticks
+//     forever, and there is no way to fix it after the fact. So: do not
+//     add a poll option whose command leaves the pair standing.
+//
+//     MEASURED caveat, and it bounds the repaint rather than breaking
+//     it: message_content_delete_limit_seconds is 600 on this
+//     deployment, so a repaint can only DELETE a pair younger than ten
+//     minutes. An older poll is refused, cannot be edited either
+//     (widgets never can), and stays in the scrollback. It is inert —
+//     the vote path matches conv.PollID exactly — so a reader of an
+//     idle topic sees two polls after voting, the lower one live.
+//
+//  3. AN UNHANDLED DISPATCH IS DROPPED, never forwarded to the agent as
+//     prose. Generic replies make forwarding more tempting and more
+//     wrong: the reply is relay-authored, so a dispatch that does not
+//     recognise it is a relay bug, and the correct output of a relay bug
+//     is a log line — not a turn spent asking the model what "!model
+//     p/x" might have meant.
+//
+// # Participant-added options are silently ignored — and the question
+// # line says so
+//
+// Zulip lets any viewer add an option to a poll, and there is no server
+// setting to forbid it (checked: the poll widget takes no such
+// parameter; the ability is part of the widget). An added option is
+// keyed by the adder's USER ID, not by a canned index, so ParseVote
+// rejects it and nothing the relay does can resolve it. Someone will
+// add "gpt-99" and watch nothing happen.
+//
+// All three available answers are taken, cheapest first:
+//
+//   - the QUESTION LINE says "vote, don't add" (pollQuestion). A poll
+//     shows its question on every client, it costs no round-trip, and
+//     it lands before the mistake rather than after it. This is the
+//     one that actually helps.
+//   - the ADDITION is logged (handleSubmessage), so a confused user's
+//     "I added it and nothing happened" is answerable from the log.
+//   - nothing is posted in reply. A poll is a control surface, and
+//     narrating a mis-tap into the topic would put relay chatter in
+//     the transcript the model reads — the same reason a knob change
+//     is a reaction and not a message.
 //
 // # Why a poll and not buttons or chips
 //
@@ -45,9 +109,7 @@ package handler
 
 import (
 	"context"
-	"strings"
 
-	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -56,12 +118,28 @@ import (
 // because a poll widget shows its question and its options and nothing
 // else — the panel's state readout is a different message, and on web
 // the panel's markdown is hidden entirely.
-func pollQuestion(effective string) string {
-	return "⚙️ Model — now: " + modelLabel(effective)
+//
+// filter, when set, is named too. Under a filter the options are a
+// SUBSET, so the current model may not be among them and "option 0 is
+// the current one" stops holding — a reader has to be told which
+// question they are answering, and `now:` still tells them the state
+// either way. The filter is quoted, never interpolated into any
+// option's reply: see journal.Conv.PollReplies.
+//
+// It also carries the "don't add options" note, which is the cheapest
+// and earliest of the three answers to participant-added options (see
+// the file comment). A question is shown on every client and costs no
+// round-trip.
+func pollQuestion(effective, filter string) string {
+	q := "⚙️ Model"
+	if filter != "" {
+		q += " matching “" + filter + "”"
+	}
+	return q + " — now: " + modelLabel(effective) + " · vote, don't add options"
 }
 
-// postModelPoll posts the conversation's model poll and returns its
-// message id, or 0 when there is none to post.
+// postPoll posts a conversation's poll and returns its message id, or 0
+// when there is none to post.
 //
 // Three reasons there may be none, all of them deliberate:
 //
@@ -80,11 +158,11 @@ func pollQuestion(effective string) string {
 // does not expand it leaves a literal "/poll …" line in the topic and
 // nothing else. That is why the panel — not this message — carries the
 // `!model <id>` list a non-widget reader needs.
-func (h *Handler) postModelPoll(ctx context.Context, post *convPoster, key journal.Key, engaged bool, effective string, choices []zulipproto.ZFormChoice) int64 {
+func (h *Handler) postModelPoll(ctx context.Context, post *convPoster, key journal.Key, engaged bool, effective, filter string, choices []zulipproto.ZFormChoice) int64 {
 	if !engaged || len(choices) == 0 {
 		return 0
 	}
-	content := zulipproto.PollContent(pollQuestion(effective), pollOptions(choices))
+	content := zulipproto.PollContent(pollQuestion(effective, filter), pollOptions(choices))
 	id, err := post.Post(ctx, content)
 	if err != nil {
 		h.cfg.Logf("handler: posting model poll to %s: %v", h.describe(key), err)
@@ -104,27 +182,31 @@ func pollOptions(choices []zulipproto.ZFormChoice) []string {
 	return out
 }
 
-// pollModelIDs is what the poll's options MEAN: the model id behind
-// each option, by index. It is persisted with the poll's id — see
-// journal.Conv.PollModels for why it must not be recomputed.
+// pollReplies is what the poll's options MEAN: the `!command` behind
+// each option, by index, taken VERBATIM from the choice's reply. It is
+// persisted with the poll's id — see journal.Conv.PollReplies for why
+// it must not be recomputed, and for the rule that only
+// relay-authored replies may go in.
 //
 // Derived from the same []ZFormChoice pollOptions renders, so an
 // option and its meaning cannot drift — they are two projections of
-// one list. The id is recovered from the choice's reply rather than
-// carried alongside it, because the reply is the thing actually
-// dispatched: if they ever disagreed, the reply would win, so the
-// reply is what is read.
-func pollModelIDs(choices []zulipproto.ZFormChoice) []string {
+// one list. The reply is stored as-is rather than being decomposed and
+// reassembled at vote time, because the reply IS the canonical form of
+// a choice: it is the string a human could type, the string the zform
+// button beside it carries, and the string dispatch parses. Anything
+// stored narrower would make the poll's meaning depend on a rebuilder,
+// and a second kind of poll would then need a second rebuilder.
+func pollReplies(choices []zulipproto.ZFormChoice) []string {
 	out := make([]string, 0, len(choices))
 	for _, c := range choices {
-		out = append(out, strings.TrimPrefix(c.Reply, command.DisplaySigil+"model "))
+		out = append(out, c.Reply)
 	}
 	return out
 }
 
-// pollVote resolves a vote on THIS conversation's live model poll into
-// the `!model <id>` command it stands for, and runs it down the
-// ordinary `!` dispatch path.
+// pollVote resolves a vote on THIS conversation's live poll into the
+// `!command` it stands for, and runs it down the ordinary `!` dispatch
+// path.
 //
 // The caller has already established that the submessage landed on
 // conv.PollID EXACTLY, and that the voter passed every gate a typed
@@ -143,7 +225,7 @@ func pollModelIDs(choices []zulipproto.ZFormChoice) []string {
 //   - vote must be positive. An un-vote is dropped: see the file
 //     comment.
 //   - the option index must be inside the table this poll was posted
-//     with, which the journal holds (conv.PollModels).
+//     with, which the journal holds (conv.PollReplies).
 //
 // Everything it rejects is dropped rather than passed on. A
 // submessage is not conversational signal — it is a control surface
@@ -154,18 +236,19 @@ func (h *Handler) pollVote(ctx context.Context, conv journal.Conv, ev zulipproto
 	if !ok || !vote.Up {
 		return
 	}
-	if vote.Option >= len(conv.PollModels) {
+	if vote.Option >= len(conv.PollReplies) {
 		// A vote naming an option the poll does not have. Reachable
 		// when the journal write that should have recorded the table
-		// failed, and by a hand-crafted submessage. Silence is right:
-		// the alternative is switching to whatever happens to sit at
-		// that index.
-		h.cfg.Logf("handler: vote for option %d on model poll %d, which offers %d",
-			vote.Option, conv.PollID, len(conv.PollModels))
+		// failed, by a poll posted before the table's on-disk key
+		// changed, and by a hand-crafted submessage. Silence is right:
+		// the alternative is running whatever command happens to sit
+		// at that index.
+		h.cfg.Logf("handler: vote for option %d on poll %d, which offers %d",
+			vote.Option, conv.PollID, len(conv.PollReplies))
 		return
 	}
-	reply := modelReply(conv.PollModels[vote.Option])
-	h.cfg.Logf("handler: model poll vote in %s — running %q", h.describe(conv.Key), reply)
+	reply := conv.PollReplies[vote.Option]
+	h.cfg.Logf("handler: poll vote in %s — running %q", h.describe(conv.Key), reply)
 	// Through dispatch, never past it. A vote, a chip, a zform button
 	// and a typed command must be one code path or they drift — the
 	// whole justification for putting a menu on a poll at all is that
@@ -178,10 +261,11 @@ func (h *Handler) pollVote(ctx context.Context, conv journal.Conv, ev zulipproto
 	// poll and posts a fresh one showing the new state.
 	m := &zulipproto.Message{ID: ev.MessageID, SenderID: ev.SenderID}
 	if _, handled := h.dispatch(ctx, m, conv.Key, reply); !handled {
-		// Only reachable if the agent stopped reporting a model it
-		// reported when the poll was posted: modelKnob accepts an
-		// exact id and nothing else. Say so rather than silently
-		// forwarding a bare "!model x" to the agent as prose.
-		h.cfg.Logf("handler: model poll produced %q, which is no longer a command", reply)
+		// Only reachable if the reply stopped being a command — for
+		// the model poll, if the agent stopped reporting a model it
+		// reported when the poll was posted, since modelKnob accepts
+		// an exact id and nothing else. DROPPED, not forwarded: see
+		// the file comment's rule about a generic reply.
+		h.cfg.Logf("handler: poll vote produced %q, which is no longer a command", reply)
 	}
 }

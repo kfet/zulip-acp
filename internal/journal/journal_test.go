@@ -438,11 +438,11 @@ func TestOptsTracking(t *testing.T) {
 	if c.OptsID != 0 {
 		t.Fatalf("fresh conversation has panel %d", c.OptsID)
 	}
-	if err := j.SetOpts(c.ID, 77, 78, []string{"a/one", "b/two"}); err != nil {
+	if err := j.SetOpts(c.ID, 77, 78, []string{"!model a/one", "!model b/two"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	// Setting the same values again is a no-op (no rewrite).
-	if err := j.SetOpts(c.ID, 77, 78, []string{"a/one", "b/two"}); err != nil {
+	if err := j.SetOpts(c.ID, 77, 78, []string{"!model a/one", "!model b/two"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	// A tail write must leave the panel alone, and vice versa.
@@ -451,7 +451,7 @@ func TestOptsTracking(t *testing.T) {
 	}
 	got, ok := j.Lookup(Channel(4, "topic"))
 	if !ok || got.OptsID != 77 || got.PollID != 78 || got.TailID != 100 ||
-		!slices.Equal(got.PollModels, []string{"a/one", "b/two"}) {
+		!slices.Equal(got.PollReplies, []string{"!model a/one", "!model b/two"}) {
 		t.Fatalf("conv = %+v", got)
 	}
 	// Survives a restart: the panel is found again after a crash
@@ -464,6 +464,18 @@ func TestOptsTracking(t *testing.T) {
 	if !ok || reloaded.OptsID != 77 || reloaded.PollID != 78 {
 		t.Fatalf("conv after reload = %+v", reloaded)
 	}
+	// The on-disk KEY is poll_replies, not the old poll_models. The old
+	// key held bare model ids, which read as replies carry no sigil and
+	// dispatch to nothing — so it is deliberately not reused, and a
+	// poll live across the upgrade goes inert rather than resolving
+	// against a table written under the other meaning.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the journal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"poll_replies"`) || strings.Contains(string(raw), `"poll_models"`) {
+		t.Fatalf("journal on disk uses the wrong key: %s", raw)
+	}
 	if err := j.SetOpts(c.ID, 0, 0, nil); err != nil {
 		t.Fatalf("SetOpts clear: %v", err)
 	}
@@ -471,10 +483,10 @@ func TestOptsTracking(t *testing.T) {
 	// depends on state that does not, so recomputing it after a reload
 	// would resolve a vote to a different model than the one written
 	// on the option.
-	if !slices.Equal(reloaded.PollModels, []string{"a/one", "b/two"}) {
-		t.Fatalf("poll models after reload = %v", reloaded.PollModels)
+	if !slices.Equal(reloaded.PollReplies, []string{"!model a/one", "!model b/two"}) {
+		t.Fatalf("poll replies after reload = %v", reloaded.PollReplies)
 	}
-	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 0 || got.PollID != 0 || got.PollModels != nil {
+	if got, _ := j.Lookup(Channel(4, "topic")); got.OptsID != 0 || got.PollID != 0 || got.PollReplies != nil {
 		t.Fatalf("panel not cleared: %+v", got)
 	}
 	if err := j.SetOpts("nosuchconv", 1, 1, nil); err == nil {
@@ -491,18 +503,18 @@ func TestOptsPanelMovesToTheFreshConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := j.SetOpts(c.ID, 42, 43, []string{"a/one"}); err != nil {
+	if err := j.SetOpts(c.ID, 42, 43, []string{"!model a/one"}); err != nil {
 		t.Fatalf("SetOpts: %v", err)
 	}
 	prev, fresh, existed, err := j.Retire(Channel(4, "topic"))
 	if err != nil || !existed {
 		t.Fatalf("Retire: %v, existed=%v", err, existed)
 	}
-	if prev.OptsID != 0 || prev.PollID != 0 || prev.PollModels != nil {
+	if prev.OptsID != 0 || prev.PollID != 0 || prev.PollReplies != nil {
 		t.Fatalf("retired conversation kept the control pair %+v", prev)
 	}
-	if fresh.OptsID != 42 || fresh.PollID != 43 || !slices.Equal(fresh.PollModels, []string{"a/one"}) {
-		t.Fatalf("fresh conversation controls = %d/%d/%v, want 42/43/[a/one]", fresh.OptsID, fresh.PollID, fresh.PollModels)
+	if fresh.OptsID != 42 || fresh.PollID != 43 || !slices.Equal(fresh.PollReplies, []string{"!model a/one"}) {
+		t.Fatalf("fresh conversation controls = %d/%d/%v, want 42/43/[!model a/one]", fresh.OptsID, fresh.PollID, fresh.PollReplies)
 	}
 }
 

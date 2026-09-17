@@ -192,23 +192,58 @@ type Conv struct {
 	// Retirement takes the pair together, so they are always set and
 	// cleared as one.
 	PollID int64 `json:"poll_id,omitempty"`
-	// PollModels is what the options on PollID MEAN: the model id
-	// behind each option, by index, exactly as the poll was posted.
+	// PollReplies is what the options on PollID MEAN: the `!command`
+	// each option stands for, by index, exactly as the poll was
+	// posted. A vote dispatches the string verbatim — no reassembly,
+	// no verb prepended, no id extracted.
+	//
+	// It is verbatim because the reply is the canonical form of a
+	// choice: it is the string a human could have typed, the string a
+	// zform button carries, and the string dispatch parses. Storing a
+	// narrower fact (a bare model id, say) and rebuilding the command
+	// at vote time makes the poll's meaning depend on the rebuilder,
+	// so a second kind of poll would need a second rebuilder and a
+	// discriminator to choose between them. There is none: there is
+	// one table of commands.
+	//
+	// THE RULE, and it is the whole safety argument: a persisted reply
+	// is only ever RELAY-AUTHORED. Model ids from the agent's own
+	// model list, provider ids from AuthMethods() — never text taken
+	// from the message that triggered the poll, not even after
+	// validation, and never text from the agent's prose. A persisted
+	// reply is an arbitrary command replayed later by whoever taps an
+	// option; the ONLY reason that is safe is that no user text ever
+	// reaches it. A poll whose options were built from a user's filter
+	// string, or from anything else a prompt could influence, would be
+	// a stored command-injection with a tap for a trigger. (`!model
+	// <filter>` narrows its options WITH user text and still obeys
+	// this: the filter selects which relay-authored ids appear; it is
+	// never itself written into a reply.)
 	//
 	// It is persisted rather than recomputed, and that is a
 	// correctness requirement, not a cache. The option order depends
-	// on the conversation's effective model (current is pinned first)
-	// and on the agent's model list, neither of which survives a
-	// graceful reload — so a relay that re-derived this after an exec
-	// would resolve a vote to a DIFFERENT model than the one written
-	// on the option, silently.
+	// on the conversation's effective model (current is pinned first),
+	// on the agent's model list, and — under a filter — on a query
+	// string nothing else records, none of which survives a graceful
+	// reload. A relay that re-derived this after an exec would resolve
+	// a vote to a DIFFERENT command than the one written on the
+	// option, silently.
 	//
 	// Storing it is safe because a widget message is SEALED: a poll
 	// cannot be edited (400 "Widgets cannot be edited."), so the
 	// options on the server can never drift from what was written here
 	// when the pair was posted. Bounded by optsModelCap short strings
 	// per conversation.
-	PollModels []string `json:"poll_models,omitempty"`
+	//
+	// The JSON key CHANGED with the field (`poll_models` →
+	// `poll_replies`) and deliberately was not reused. The old key held
+	// bare model ids; read as replies they carry no sigil and so
+	// dispatch to nothing. Ignoring them instead makes a poll that was
+	// live across the upgrade merely inert — a vote is logged and
+	// dropped, and the next `!opts` or model change repaints the pair —
+	// rather than resolving against a table written under the other
+	// meaning.
+	PollReplies []string `json:"poll_replies,omitempty"`
 	// LastOwnID is the newest message the RELAY ITSELF has posted in
 	// this conversation, or 0 when it has posted none.
 	//
@@ -462,7 +497,7 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	prevTail := old.TailID
 	prevOpts := old.OptsID
 	prevPoll := old.PollID
-	prevPollModels := old.PollModels
+	prevPollReplies := old.PollReplies
 	prevOwn := old.LastOwnID
 	old.Retired = true
 	old.TailID = 0
@@ -478,20 +513,20 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// instead of leaving a stale panel behind and posting a second.
 	old.OptsID = 0
 	old.PollID = 0
-	old.PollModels = nil
+	old.PollReplies = nil
 	delete(j.byKey, idx)
 	// The parent pointer belongs to the place too: the topic was
 	// branched from somewhere, and `!new` does not un-branch it. The
 	// retired conversation keeps its own copy — it is the record of
 	// where that session's context came from.
-	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollModels: prevPollModels, Parent: old.Parent}
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commit(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, idx)
 		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
-		old.PollID, old.PollModels = prevPoll, prevPollModels
+		old.PollID, old.PollReplies = prevPoll, prevPollReplies
 		j.byKey[idx] = old
 	})
 }
@@ -514,8 +549,8 @@ func (j *Journal) SetTail(convID string, msgID int64) error {
 }
 
 // SetOpts records a conversation's `!opts` control pair: the panel
-// (zform), the model poll, and what the poll's options mean. Pass 0 /
-// nil to forget them.
+// (zform), the model poll, and what the poll's options mean — the
+// verbatim `!command` behind each option. Pass 0 / nil to forget them.
 //
 // ONE setter for all three, deliberately. They are posted together and
 // retired together, and a separate setter each would allow a commit to
@@ -528,19 +563,19 @@ func (j *Journal) SetTail(convID string, msgID int64) error {
 // lifecycles — the tail belongs to one turn, the control pair outlives
 // every turn in the conversation — and folding them into one setter
 // would make a streaming turn able to clobber the panel's id.
-func (j *Journal) SetOpts(convID string, optsID, pollID int64, pollModels []string) error {
+func (j *Journal) SetOpts(convID string, optsID, pollID int64, pollReplies []string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	c, ok := j.byID[convID]
 	if !ok {
 		return fmt.Errorf("journal: unknown conversation %q", convID)
 	}
-	if c.OptsID == optsID && c.PollID == pollID && slices.Equal(c.PollModels, pollModels) {
+	if c.OptsID == optsID && c.PollID == pollID && slices.Equal(c.PollReplies, pollReplies) {
 		return nil
 	}
-	prevOpts, prevPoll, prevModels := c.OptsID, c.PollID, c.PollModels
-	c.OptsID, c.PollID, c.PollModels = optsID, pollID, slices.Clone(pollModels)
-	return j.commit(func() { c.OptsID, c.PollID, c.PollModels = prevOpts, prevPoll, prevModels })
+	prevOpts, prevPoll, prevReplies := c.OptsID, c.PollID, c.PollReplies
+	c.OptsID, c.PollID, c.PollReplies = optsID, pollID, slices.Clone(pollReplies)
+	return j.commit(func() { c.OptsID, c.PollID, c.PollReplies = prevOpts, prevPoll, prevReplies })
 }
 
 // SetLastOwn records the newest message the relay itself has posted in

@@ -136,11 +136,27 @@ const optsAckEmoji = "check"
 
 // optsModelCap bounds how many model options the poll offers.
 //
-// An agent can advertise a hundred models and a menu is not a
-// catalogue — on a phone it has to fit on one screen. The current
-// model is always among them (see modelChoices), and `!model <filter>`
-// remains the way to reach the rest.
-const optsModelCap = 6
+// NOT a server limit. MEASURED against this deployment (Zulip 12.2): a
+// `/poll` with 6, 12, 20, 40 and 100 options was accepted, and the
+// server built a poll widget carrying every one of them — there is no
+// option ceiling to discover, and the message-content ceiling is not
+// close either (100 model-shaped options is ~1.7k of the 10000 code
+// points). So the cap is a READABILITY choice and nothing else, and it
+// is chosen here rather than inherited from the surface.
+//
+// It was 6 when the surface was the `:one:`..`:six:` reaction chips,
+// where 6 was the count of digit emoji anyone would recognise. That
+// surface is gone (see the file comment), so the number it forced is
+// gone with it. 12 is the replacement: a poll row is one line of text,
+// a dozen of them still scroll as one gesture on a phone, and — the
+// reason that matters — a dozen covers every model list this relay has
+// actually been pointed at. The filter is now a CONVENIENCE for a
+// hundred-model catalogue, not the only way to reach model #7.
+//
+// Unfiltered, the current model is always among them (see
+// modelChoices). Filtered, it may not be, which is fine because the
+// table is persisted and the question line still reads `now: X`.
+const optsModelCap = 12
 
 // The session chips. Each is the exact analogue of the zform button
 // below it, and carries the same reply string, so a tap and a click
@@ -215,6 +231,55 @@ func isOpts(text string) bool {
 	return strings.EqualFold(strings.TrimSpace(body), optsVerb)
 }
 
+// modelFilter reports whether text is `!model <arg>` with a non-empty
+// argument. The CALLER must have ruled out an exact model id first
+// (modelKnob has first claim on the same shape) — see dispatch, where
+// the two are one if/else so an exact id can never reach here: an exact
+// id is a change request, and answering a failed change with a menu
+// would swallow the reason it failed.
+//
+// Bare `!model` does not qualify, and that is a decision rather than a
+// simplification. Bare `!model` is the CATALOGUE: the broker's prose
+// names every id up to its own much larger cap, which is how a reader
+// learns what exists. The pair is a MENU: capped at optsModelCap,
+// labelled with short names, built to be tapped. `!opts` already posts
+// the unfiltered pair, so making bare `!model` post it too would add
+// no surface while removing the only one that spells out model #13's
+// exact id — and the filter it would then be the only way to reach.
+// One command, one answer: the catalogue lists, the filter narrows to
+// something votable.
+func modelFilter(text string) (string, bool) {
+	body, ok := command.StripSigil(strings.TrimSpace(text))
+	if !ok {
+		return "", false
+	}
+	verb, arg, found := strings.Cut(strings.TrimSpace(body), " ")
+	if !found || !strings.EqualFold(verb, "model") {
+		return "", false
+	}
+	// Flattened to ONE LINE at the parse boundary, because the filter is
+	// ECHOED back — into the poll's question, where a newline would
+	// split into an extra poll option, and into the panel's markdown
+	// list, where it would break the list.
+	//
+	// Defence in depth, stated as such: a multi-line filter cannot
+	// reach either echo today, because no model id contains a newline,
+	// so such a filter matches nothing and placePanel posts nothing.
+	// The flattening is here anyway so that the echo is safe BY
+	// CONSTRUCTION rather than by a chain of reasoning about what a
+	// filter can match — the day someone matches on a model's Name, or
+	// echoes the filter somewhere that posts unconditionally, that
+	// chain breaks silently and an option nobody wrote appears on a
+	// menu. It costs one call at one place.
+	//
+	// No empty-arg guard, and none is reachable: body was TrimSpace'd,
+	// so it has no trailing whitespace, so the tail after the first
+	// space cannot be blank. `!model` with nothing after it — with or
+	// without trailing spaces — fails the `found` check above, which is
+	// exactly the bare-`!model` case this must not claim.
+	return strings.TrimSpace(zulipproto.OneLine(arg)), true
+}
+
 // modelKnob reports whether text is `!model <id>` naming a model the
 // agent actually has, i.e. a knob CHANGE rather than a listing.
 //
@@ -279,12 +344,62 @@ func (h *Handler) refreshPanel(ctx context.Context, key journal.Key) {
 	if conv, ok := h.cfg.Journal.Lookup(key); !ok || conv.OptsID == 0 {
 		return
 	}
+	// Unfiltered by construction — showPanel takes no filter. A repaint
+	// is triggered by a STATE change
+	// (a model switch, from any surface), and the state has no filter
+	// in it — nothing persists the query, and re-deriving one would
+	// mean guessing. Repainting wide is the honest reading: the pair
+	// goes back to showing everything, which is what `!opts` shows and
+	// what a reader who did not type the filter expects.
 	h.showPanel(ctx, key, "")
 }
 
-// showPanel posts a fresh control pair at the bottom of the
+// showFilteredPair posts the control pair narrowed to the models
+// matching filter — `!model <filter>` — and retires whatever pair it
+// replaces. It reports false when the filter matches nothing, leaving
+// the caller to fall through to the broker's prose.
+//
+// It is `!opts` with a narrower choice list and nothing else: the same
+// placePanel, the same retire, the same single OptsID/PollID slot, the
+// same persist. There is deliberately no second live poll and no second
+// code path — two polls in one topic would both look votable and only
+// one would resolve.
+//
+// A filter matching NOTHING changes nothing: the live pair is left
+// exactly where it is rather than being retired and replaced by an
+// empty poll. Destroying a working control to answer a typo is the
+// wrong trade, and PollContent would refuse the empty option list
+// anyway — which would leave the panel pointing at a poll that is not
+// there.
+//
+// The emptiness test is made INSIDE placePanel, under optsMu, against
+// the same model list the pair is built from — not here, before the
+// lock. Testing it here would be a read-modify-write across two reads
+// of Agent.Models(), which is re-probed after `!login`: a list that
+// lost its last match in between would pass the test out here and then
+// retire the live pair to post an empty panel, which is the exact
+// outcome this function exists to prevent.
+//
+// The PANEL is narrowed too, not just the poll. They are a pair: a
+// filtered poll above an unfiltered twelve-item panel contradicts
+// itself, and the panel body is the non-widget fallback FOR the
+// filtered list — the only place a phone reader who cannot see a
+// widget can read the matched ids as typable commands.
+func (h *Handler) showFilteredPair(ctx context.Context, key journal.Key, filter string) bool {
+	id, chips, ok := h.placePanel(ctx, key, "", filter)
+	if !ok {
+		return false
+	}
+	// Outside the critical section on purpose — see seedChips.
+	h.seedChips(ctx, id, chips)
+	return true
+}
+
+// showPanel posts a fresh UNFILTERED control pair at the bottom of the
 // conversation and retires whatever pair it replaces. note is optional
 // prose shown above it — it is how an unknown command explains itself.
+// The narrowed form is showFilteredPair; both are thin wrappers over
+// placePanel, which owns the lock.
 //
 // Serialised across the whole relay by optsMu, because post → retire →
 // remember is a read-modify-write over the recorded message ids and
@@ -294,7 +409,7 @@ func (h *Handler) refreshPanel(ctx context.Context, key journal.Key) {
 // two NEW ones would be remembered — leaving a live panel nothing will
 // ever retire.
 func (h *Handler) showPanel(ctx context.Context, key journal.Key, note string) {
-	id, chips, ok := h.placePanel(ctx, key, note)
+	id, chips, ok := h.placePanel(ctx, key, note, "")
 	if !ok {
 		return
 	}
@@ -320,15 +435,24 @@ func (h *Handler) showPanel(ctx context.Context, key journal.Key, note string) {
 // behind. An orphan poll is not a degraded control: the old pair is
 // still live and still recorded, so the topic would show two polls and
 // only one of them would resolve a vote.
-func (h *Handler) placePanel(ctx context.Context, key journal.Key, note string) (int64, []optsChip, bool) {
+func (h *Handler) placePanel(ctx context.Context, key journal.Key, note, filter string) (int64, []optsChip, bool) {
 	h.optsMu.Lock()
 	defer h.optsMu.Unlock()
 
-	models, effective, engaged, choices := h.panelState(key)
+	matched, effective, engaged, choices := h.panelState(key, filter)
+	// A FILTER that matches nothing is answered by the caller's prose,
+	// and nothing here changes: no post, no retire, no journal write.
+	// Decided inside the lock, against the very list the pair would be
+	// built from, so no re-probe can slip between the test and the
+	// post. Deliberately only for a filter — `!opts` with no models at
+	// all still posts a panel, whose body says to connect a provider.
+	if filter != "" && len(choices) == 0 {
+		return 0, nil, false
+	}
 	post := &convPoster{client: h.cfg.Client, key: key}
-	pollID := h.postModelPoll(ctx, post, key, engaged, effective, choices)
+	pollID := h.postModelPoll(ctx, post, key, engaged, effective, filter, choices)
 
-	body, widget, chips := h.renderPanel(key, note, models, effective, engaged, pollID != 0, choices)
+	body, widget, chips := h.renderPanel(key, note, filter, matched, effective, engaged, pollID != 0, choices)
 	id, err := h.postPanel(ctx, post, body, widget)
 	if err != nil {
 		h.cfg.Logf("handler: posting options panel to %s: %v", h.describe(key), err)
@@ -338,7 +462,7 @@ func (h *Handler) placePanel(ctx context.Context, key journal.Key, note string) 
 		return 0, nil, false
 	}
 	h.retirePrevious(ctx, key)
-	if !h.rememberPanel(key, id, pollID, pollModelIDs(choices)) {
+	if !h.rememberPanel(key, id, pollID, pollReplies(choices)) {
 		// Nothing recorded these messages as THE control pair, so no
 		// tap and no vote on them can ever be honoured (optsReaction
 		// and pollVote match conv.OptsID / conv.PollID exactly). Post
@@ -494,7 +618,7 @@ func (h *Handler) retireMessage(ctx context.Context, key journal.Key, id int64, 
 // simply a one-off that the first real turn's panel replaces. The
 // false it returns is what stops the caller pinning an in-memory
 // option table for a poll that nothing will ever retire.
-func (h *Handler) rememberPanel(key journal.Key, id, pollID int64, pollModels []string) bool {
+func (h *Handler) rememberPanel(key journal.Key, id, pollID int64, replies []string) bool {
 	conv, ok := h.cfg.Journal.Lookup(key)
 	if !ok {
 		return false
@@ -504,9 +628,9 @@ func (h *Handler) rememberPanel(key journal.Key, id, pollID int64, pollModels []
 		// option table for a poll that does not exist would leave the
 		// PREVIOUS poll's meaning attached to a conversation that has
 		// none.
-		pollModels = nil
+		replies = nil
 	}
-	if err := h.cfg.Journal.SetOpts(conv.ID, id, pollID, pollModels); err != nil {
+	if err := h.cfg.Journal.SetOpts(conv.ID, id, pollID, replies); err != nil {
 		// Journal.commit ROLLS BACK its in-memory state when the write
 		// fails, so this pair is not recorded anywhere: no tap and no
 		// vote on it will resolve, and the next `!opts` replaces it.
@@ -527,8 +651,16 @@ func (h *Handler) rememberPanel(key journal.Key, id, pollID int64, pollModels []
 //
 // The MODELS are not here. They are the poll posted underneath (see
 // postModelPoll) — one control, one surface, and a model name that a
-// phone can read and tap.
-func (h *Handler) renderPanel(key journal.Key, note string, models []client.ModelInfo, effective string, engaged, poll bool, choices []zulipproto.ZFormChoice) (body, widget string, chips []optsChip) {
+// phone can read and tap. What IS here is the typable list of the same
+// choices, which is the non-widget reader's only copy.
+//
+// matched is the models the filter selected (all of them when filter is
+// empty), which is what the "…and N more" arithmetic counts against.
+// Counting against the FULL list under a filter would say "and 40 more"
+// under a three-item filtered menu — true of the catalogue, and a lie
+// about the list on screen.
+func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []client.ModelInfo, effective string, engaged, poll bool, choices []zulipproto.ZFormChoice) (body, widget string, chips []optsChip) {
+
 	var sb strings.Builder
 	if note != "" {
 		sb.WriteString(note + "\n\n")
@@ -552,6 +684,13 @@ func (h *Handler) renderPanel(key journal.Key, note string, models []client.Mode
 		fmt.Fprintf(&sb, "\nNo models available — connect a provider with `%slogin`.\n", s)
 	} else {
 		sb.WriteString("\n**Model**")
+		if filter != "" {
+			// Say which question the list answers. Under a filter the
+			// current model may be absent, so a reader who took the
+			// list for the whole catalogue would conclude the relay
+			// had lost it.
+			fmt.Fprintf(&sb, " — matching `%s`", filter)
+		}
 		if poll {
 			sb.WriteString(" — vote in the poll above, or:")
 		}
@@ -563,8 +702,11 @@ func (h *Handler) renderPanel(key journal.Key, note string, models []client.Mode
 			}
 			fmt.Fprintf(&sb, "- `%s`%s\n", c.Reply, marker)
 		}
-		if n := len(models) - len(choices); n > 0 {
+		if n := len(matched) - len(choices); n > 0 {
 			fmt.Fprintf(&sb, "- …and %d more — `%smodel <filter>`\n", n, s)
+		}
+		if filter != "" {
+			fmt.Fprintf(&sb, "- *`%smodel` for the full list*\n", s)
 		}
 	}
 
@@ -615,23 +757,35 @@ func (h *Handler) renderPanel(key journal.Key, note string, models []client.Mode
 	return sb.String(), zulipproto.ZForm("⚙️ "+modelLabel(effective), buttons), chips
 }
 
-// panelState reads everything the panel is a rendering of: the agent's
-// models, the model this conversation would actually use, whether
-// there is a conversation at all, and the model buttons that follow.
+// panelState reads everything the panel is a rendering of: the models
+// the filter selected, the model this conversation would actually use,
+// whether there is a conversation at all, and the model choices that
+// follow.
 //
-// Factored out because the chip table has to be derivable from the
-// same facts WITHOUT re-rendering the panel — optsReaction resolves a
-// tap this way. Two copies of this arithmetic is exactly how a chip
-// starts pointing at a different model from the line it sits under.
-func (h *Handler) panelState(key journal.Key) (models []client.ModelInfo, effective string, engaged bool, choices []zulipproto.ZFormChoice) {
-	models, effective = h.cfg.Agent.Models()
+// It returns the MATCHED models rather than all of them, because that
+// is the list both halves of the pair are a view of — the choices are
+// the matched list capped, and the panel's "…and N more" is the
+// difference between them. Handing the full catalogue out alongside
+// would just invite a second, wrong subtraction.
+//
+// Factored out because the choice table has to be derivable from the
+// same facts WITHOUT re-rendering the panel. Two copies of this
+// arithmetic is exactly how an option starts pointing at a different
+// model from the line it sits under.
+func (h *Handler) panelState(key journal.Key, filter string) (matched []client.ModelInfo, effective string, engaged bool, choices []zulipproto.ZFormChoice) {
+	models, effective := h.cfg.Agent.Models()
 	conv, engaged := h.cfg.Journal.Lookup(key)
 	if engaged {
 		if id, set := h.modelOverride(conv.ID); set {
 			effective = id
 		}
 	}
-	return models, effective, engaged, modelChoices(models, effective)
+	// One matcher, shared with acp-kit's `!model <filter>` prose. If
+	// this invented its own substring or case rule, the poll and the
+	// broker's listing would disagree about what "opus" matches and a
+	// user would be told two different things about one filter.
+	matched = command.MatchModels(models, filter)
+	return matched, effective, engaged, modelChoices(matched, effective, filter != "")
 }
 
 // optsReaction resolves a reaction on THIS conversation's live options
@@ -720,21 +874,33 @@ func startHint(key journal.Key) string {
 	return "@-mention me"
 }
 
-// modelChoices builds the model buttons.
+// modelChoices builds the model options, capped at optsModelCap.
 //
-// Buttons are drawn ONLY from what the agent reported, so a click can
-// never ask for a model the agent does not have. The current model is
-// pinned first and the rest follow in the agent's own order, which is
-// the order the agent considers useful.
-func modelChoices(models []client.ModelInfo, current string) []zulipproto.ZFormChoice {
+// Options are drawn ONLY from what the agent reported (models is
+// already command.MatchModels' selection of it), so a vote can never
+// ask for a model the agent does not have.
+//
+// filtered says whether the caller narrowed the list, and it changes
+// exactly one thing: whether the current model is PINNED first.
+// Unfiltered it is, because option 0 being "what you are using" is the
+// cheapest orientation a menu can give. Filtered it is NOT, and the
+// current model is not forced into the list either — a filter is a
+// question about the catalogue, and answering "opus" with a sonnet the
+// user did not ask about would make the list something other than the
+// matches. That the current model may then be absent is fine: the
+// option table is PERSISTED, so a vote resolves without it, and the
+// poll's question line still reads `now: X`.
+func modelChoices(models []client.ModelInfo, current string, filtered bool) []zulipproto.ZFormChoice {
 	ordered := make([]client.ModelInfo, 0, len(models))
-	for _, m := range models {
-		if m.ID == current {
-			ordered = append(ordered, m)
+	if !filtered {
+		for _, m := range models {
+			if m.ID == current {
+				ordered = append(ordered, m)
+			}
 		}
 	}
 	for _, m := range models {
-		if m.ID != current {
+		if filtered || m.ID != current {
 			ordered = append(ordered, m)
 		}
 	}

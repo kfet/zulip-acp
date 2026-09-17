@@ -168,6 +168,31 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		if h.applyModelKnob(ctx, key, m.ID, id) {
 			return "", true
 		}
+		// A change that FAILED falls through to the broker, which runs
+		// the same action and renders the reason. Deliberately NOT into
+		// the filter branch below: an exact id is a change request, and
+		// answering a failed change with a menu would swallow the
+		// reason it failed.
+	} else if filter, ok := modelFilter(text); ok {
+		// `!model <filter>` — an argument that is NOT an exact id — is
+		// a narrowing QUERY, and the answer is the control PAIR with
+		// its choice list narrowed: the same `!opts` surface, the same
+		// single live poll, filtered. The broker's prose answer left
+		// the user retyping an exact id by thumb, which is the exact
+		// problem the poll exists to solve, in the one place the
+		// panel's own "…and N more — `!model <filter>`" line sends
+		// them.
+		//
+		// Bare `!model` is NOT this: it keeps the broker's catalogue
+		// prose. See modelFilter for why.
+		//
+		// A filter matching nothing falls through, so the broker says
+		// "(none match …)" and the live pair is left alone. Replacing a
+		// working control with an empty poll to answer a typo is the
+		// wrong trade.
+		if h.showFilteredPair(ctx, key, filter) {
+			return "", true
+		}
 	}
 
 	// A pasted redirect URL for an in-flight login is not sigil-

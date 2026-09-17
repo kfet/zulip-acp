@@ -131,16 +131,22 @@ func PollContent(question string, options []string) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(pollCommand)
-	sb.WriteString(oneLine(question))
+	sb.WriteString(OneLine(question))
 	for _, o := range options {
 		sb.WriteString("\n")
-		sb.WriteString(oneLine(o))
+		sb.WriteString(OneLine(o))
 	}
 	return sb.String()
 }
 
-// oneLine flattens every newline and carriage return to a space.
-func oneLine(s string) string {
+// OneLine flattens every newline and carriage return to a space.
+//
+// Exported because the same flattening is needed on the way IN as well
+// as on the way out: a poll question or option that grew a newline
+// would silently split into extra options here, and a string echoed
+// into a markdown list item would break the list. One rule, both
+// directions.
+func OneLine(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
 }
 
