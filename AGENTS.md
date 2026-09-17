@@ -45,6 +45,8 @@ reason.
 
 Use idiomatic Go. Keep it simple.
 
+Write all prose in ASD-STE100: comments, docs, changelog entries, commit messages, and replies.
+
 Prefer `sync/atomic`, `sync.Once`, and channels over manual mutex management when appropriate.
 
 Do not ignore any issues, address them promptly, even if preexisting. Do not postpone any work, even if it seems daunting — just break it down into smaller tasks. **Never dismiss a problem as "pre-existing" or "out of scope" — you own this entire codebase. If you see it, you fix it.**
@@ -281,8 +283,6 @@ When making non-trivial changes, add an entry under `## [Unreleased]` in
 `CHANGELOG.md` using the appropriate subsection (`### Added`, `### Fixed`,
 `### Changed`, `### Removed`). One line per change, newest first within its
 subsection. Do not bump `VERSION`; that happens during release.
-
-Write changelog entries in ASD-STE100.
 
 ## Release
 
