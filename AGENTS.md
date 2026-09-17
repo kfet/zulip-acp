@@ -232,6 +232,15 @@ They post **real messages** to `ZULIP_CHANNEL`. Always use the dedicated
 `zulip-acp-tests` channel — never `fleet` or any channel humans read. The
 test harness rejects a channel whose name does not contain `test`.
 
+**The server rate-limits at 200 requests/minute per user, and the live suite
+is bigger than that.** `go test ./test/` in one go trips
+`RATE_LIMIT_HIT (HTTP 429)` partway through and then reports a wall of
+failures in tests that are perfectly fine — it looks exactly like a broad
+regression and is not one. Run it in batches (`-run` / `-skip`, always with
+`-p 1`) and let the bucket refill between them; `x-ratelimit-remaining` on any
+API response tells you where you stand. Budget for this before concluding
+anything from a failing live run.
+
 ## Testing — avoid wall-clock timeouts
 
 - **Channels over polling** — use `chan struct{}` signals, `sync.WaitGroup`, or
