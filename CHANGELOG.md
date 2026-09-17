@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub release notes are now the `CHANGELOG.md` section for the version
+  being released, instead of GoReleaser's generated commit list and diff
+  link. `scripts/release-notes.sh` extracts the `## [X.Y.Z]` section,
+  `release.yml` passes it to GoReleaser as `--release-notes`, and
+  `changelog.disable` stops the unused commit list being computed. The
+  reasoning behind a change was already written down once; the release page
+  now shows it rather than a list of subject lines. `make publish` runs the
+  same extractor as a preflight, so a missing or empty section aborts
+  locally — before the tag is pushed — rather than failing CI after it.
+
 ## [0.35.1] - 2026-09-17
 
 ### Fixed

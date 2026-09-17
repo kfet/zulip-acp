@@ -170,6 +170,13 @@ check-installsh:
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
 
 publish: build notices
+	@echo "Verifying CHANGELOG.md has a section for $(RELEASE_TAG)..."
+	@scripts/release-notes.sh >/dev/null || { \
+		echo "The GitHub release body is the CHANGELOG.md section for this"; \
+		echo "version; without it release.yml fails AFTER the tag is pushed."; \
+		exit 1; \
+	}
+	@echo "  CHANGELOG.md section present - OK"
 	@echo "Verifying $(NOTICE_FILE) is current and in the release commit..."
 	@if ! git diff --quiet HEAD -- $(NOTICE_FILE); then \
 		echo "ABORT: $(NOTICE_FILE) is stale in the release commit."; \

@@ -94,5 +94,9 @@ brews:
     install: |
       bin.install Dir["zulip-acp-*"].first => "zulip-acp"
 
+# The release body comes from scripts/release-notes.sh via
+# `--release-notes`, which overrides anything generated here. Disabled so
+# GoReleaser does not also compute a commit list that is never used — and so
+# a local `goreleaser release --snapshot` behaves the same way.
 changelog:
-  use: github-native
+  disable: true
