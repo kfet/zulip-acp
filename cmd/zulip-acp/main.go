@@ -22,6 +22,7 @@ import (
 	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/acp-kit/probe"
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
@@ -419,6 +420,46 @@ func main() {
 	closers = append(closers, func() { agent.Close() })
 	log.Printf("zulip-acp: agent up (caps=%+v)", agent.Caps())
 
+	// Learn the model list NOW, rather than waiting for the first
+	// conversation to create the session that happens to carry it.
+	//
+	// agent.Models() is filled only by session/new or session/resume,
+	// so before this the `!opts` / `!model` panel had no models to
+	// list and told the reader to `!login` on a fully authenticated
+	// relay. MEASURED on the fleet host: a graceful reload re-exec'd
+	// at 04:42:46, `!model haiku` was the first thing to touch the
+	// fresh process, and it answered "No models available". Because
+	// reload is a syscall.Exec of this same binary, the new image runs
+	// main() from the top and this probe runs again — which is the
+	// path the bug was actually hit on, and the reason this sits here
+	// and not behind a cold-start-only guard.
+	//
+	// Deliberately a goroutine: the probe waits on agent readiness
+	// (`fir --mode acp --wait-mcp` blocks until every MCP server is
+	// up) and must never delay serving messages — refusing to answer
+	// until a cosmetic menu is ready would be a worse bug than the one
+	// this fixes. It is also best-effort: on failure the list still
+	// fills on the first real session, exactly as it did before.
+	//
+	// The probe opens a throwaway session in a temp dir and drops its
+	// sink. ACP has no session/delete, so that session stays idle in
+	// the agent for the agent's lifetime. That cost is accepted and is
+	// already paid by poe-acp and slack-acp; do not "optimise" it away
+	// by skipping the probe.
+	var probed probe.Tracker
+	go func() {
+		if err := probe.Models(ctx, probe.Config{
+			Prober:  agent,
+			Tracker: &probed,
+			Logf:    log.Printf,
+		}); err != nil {
+			log.Printf("zulip-acp: WARN model probe: %v (the model list will fill on the first session)", err)
+			return
+		}
+		models, current := agent.Models()
+		log.Printf("zulip-acp: model probe: %d model(s), current=%q", len(models), current)
+	}()
+
 	sessions, err := state.New(state.Config{
 		Agent:                agent,
 		StateDir:             cfg.StateDir,
@@ -477,6 +518,7 @@ func main() {
 		StartTime:          time.Now(),
 		Sessions:           sessions,
 		Journal:            jr,
+		ProbeStatus:        probed.Status,
 		BotUserID:          me.UserID,
 		BotFullName:        me.FullName,
 		BotSenderIDs:       bots,

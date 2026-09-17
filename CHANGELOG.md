@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The relay now probes the agent for its model list at startup, so
+  `!opts` and `!model` work on the first interaction after a start or a
+  graceful reload. `Agent.Models()` is filled only by `session/new` or
+  `session/resume`, and zulip-acp never called `ProbeModels` — so until
+  the first ordinary message created a session, the model menu was empty
+  and told the reader to `!login` on a fully authenticated relay.
+  MEASURED on the fleet host: a reload re-exec'd at 04:42:46, `!model
+  haiku` was the first thing to touch the fresh process and got "No
+  models available", and the list came back only when the next message
+  created a session at 05:11:07. The probe uses acp-kit's new `probe`
+  package (retry with backoff inside a budget, lifted from slack-acp),
+  runs in a goroutine so it can never delay serving a message, and is
+  best-effort — on failure the list still fills on the first session,
+  exactly as before. Because reload is a `syscall.Exec` of this binary,
+  the fresh image runs the probe too, which is the path the bug was hit
+  on.
+
+- An empty model list is now worded for the state it is actually in.
+  One sentence covered three: the agent has not been asked yet (nothing
+  is wrong), the probe failed (a relay problem), and the agent genuinely
+  has no models (the only case `!login` fixes). Both surfaces — the
+  `!opts` panel and any `!model` — answer from one wording, so they
+  cannot come to disagree; a `!model <filter>` miss against a healthy
+  catalogue still reaches the broker's accurate "(none match …)" prose.
+
+### Changed
+
+- acp-kit is pinned at 0.19.0, which carries the new `probe` package
+  (`probe.Models` / `probe.Tracker`, added in 0.18.0).
+
 ## [0.35.0] - 2026-09-17
 
 ### Fixed

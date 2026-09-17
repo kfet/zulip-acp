@@ -117,6 +117,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/probe"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -280,12 +281,34 @@ func modelFilter(text string) (string, bool) {
 	return strings.TrimSpace(zulipproto.OneLine(arg)), true
 }
 
+// isModelCommand reports whether text is `!model` in ANY form — bare,
+// with a filter, or with an exact id — or its `!models` alias, which
+// the broker folds into the same answer. It exists so one check can
+// cover every shape at the point where an empty catalogue makes all of
+// them unanswerable; the shapes are told apart downstream by modelKnob
+// and modelFilter.
+//
+// It cuts on a SPACE, exactly as modelFilter and modelKnob do, so all
+// three agree on what counts as the verb. `!model\thaiku` is therefore
+// not a model command to any of them and reaches the agent as prose —
+// one rule, consistently applied, rather than a fourth parse here that
+// would make this fire where the filter path does not.
+func isModelCommand(text string) bool {
+	body, ok := command.StripSigil(strings.TrimSpace(text))
+	if !ok {
+		return false
+	}
+	verb, _, _ := strings.Cut(strings.TrimSpace(body), " ")
+	return strings.EqualFold(verb, "model") || strings.EqualFold(verb, "models")
+}
+
 // modelKnob reports whether text is `!model <id>` naming a model the
 // agent actually has, i.e. a knob CHANGE rather than a listing.
 //
 // Only an exact id counts. `!model opus` is a filter query and belongs
-// to the broker's listing path, which answers with prose; treating it
-// as a change would silently switch models off an approximate match.
+// to the filtered control pair (see showFilteredPair), falling through
+// to the broker's prose only when it matches nothing; treating it as a
+// change would silently switch models off an approximate match.
 func (h *Handler) modelKnob(text string) (string, bool) {
 	body, ok := command.StripSigil(strings.TrimSpace(text))
 	if !ok {
@@ -296,7 +319,7 @@ func (h *Handler) modelKnob(text string) (string, bool) {
 		return "", false
 	}
 	arg = strings.TrimSpace(arg)
-	models, _ := h.cfg.Agent.Models()
+	models, _ := h.models()
 	for _, m := range models {
 		if m.ID == arg {
 			return arg, true
@@ -681,7 +704,7 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 	// that doubles as a status line may not point at a control that is
 	// not there.
 	if len(choices) == 0 {
-		fmt.Fprintf(&sb, "\nNo models available — connect a provider with `%slogin`.\n", s)
+		fmt.Fprintf(&sb, "\n%s\n", h.emptyModelNote())
 	} else {
 		sb.WriteString("\n**Model**")
 		if filter != "" {
@@ -773,7 +796,7 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 // arithmetic is exactly how an option starts pointing at a different
 // model from the line it sits under.
 func (h *Handler) panelState(key journal.Key, filter string) (matched []client.ModelInfo, effective string, engaged bool, choices []zulipproto.ZFormChoice) {
-	models, effective := h.cfg.Agent.Models()
+	models, effective := h.models()
 	conv, engaged := h.cfg.Journal.Lookup(key)
 	if engaged {
 		if id, set := h.modelOverride(conv.ID); set {
@@ -786,6 +809,72 @@ func (h *Handler) panelState(key journal.Key, filter string) (matched []client.M
 	// user would be told two different things about one filter.
 	matched = command.MatchModels(models, filter)
 	return matched, effective, engaged, modelChoices(matched, effective, filter != "")
+}
+
+// emptyModelNote words an empty model list honestly.
+//
+// "No models available — connect a provider with `!login`" used to
+// cover every way the list could come up empty, and only one of them is
+// the reader's to fix. MEASURED on the fleet host: a graceful reload
+// re-exec'd at 04:42:46, `!model haiku` was the first thing to touch
+// the fresh process, and a fully authenticated relay told the user to
+// log in — because the list is filled by session/new and no session
+// existed yet. The startup probe (see cmd/zulip-acp/main.go) makes that
+// state rare and transient; this makes it honest while it lasts.
+//
+// A FILTER that simply matched nothing is not one of these cases and is
+// deliberately not handled here: placePanel refuses to render a panel
+// under an empty filter at all (see showFilteredPair), and the
+// fall-through reaches the broker's "(none match …)" prose, which is
+// already accurate. So len(choices)==0 in the panel always means the
+// CATALOGUE is empty.
+//
+// This is also the answer to a `!model` in any form while the catalogue
+// is empty — see dispatch — so the panel and that reply cannot come to
+// state different things about one relay.
+func (h *Handler) emptyModelNote() string {
+	if h.sawModels.Load() {
+		// The agent HAS reported models at some point and reports none
+		// now, so whatever the startup probe did is ancient history:
+		// something disconnected a provider. A permanently-remembered
+		// "the probe failed" would keep blaming the relay for a state
+		// the user can fix.
+		return fmt.Sprintf("No models available — connect a provider with `%slogin`.", command.DisplaySigil)
+	}
+	switch h.probeStatus() {
+	case probe.StatusPending:
+		return "Model list not ready yet — the agent is still starting."
+	case probe.StatusFailed:
+		return "Model list unavailable — the agent could not be probed (see the relay log)."
+	}
+	// Probed: the agent was asked and answered "none", which is the one
+	// case a provider login actually fixes.
+	return fmt.Sprintf("No models available — connect a provider with `%slogin`.", command.DisplaySigil)
+}
+
+// models is the ONLY place this package reads the agent's catalogue;
+// every other reader goes through here, and a test enforces it. It
+// remembers whether the catalogue has ever been non-empty. That single
+// bit is what separates "we have never learned the list" — which the
+// probe status explains — from "the list went away", which only a
+// provider can explain. See emptyModelNote.
+func (h *Handler) models() (models []client.ModelInfo, currentID string) {
+	models, currentID = h.cfg.Agent.Models()
+	if len(models) > 0 {
+		h.sawModels.Store(true)
+	}
+	return models, currentID
+}
+
+// probeStatus reads Config.ProbeStatus, defaulting to StatusProbed: a
+// relay that does not report probe state is taken at its word that an
+// empty list is the agent's answer, which is what this said before the
+// probe existed.
+func (h *Handler) probeStatus() probe.Status {
+	if h.cfg.ProbeStatus == nil {
+		return probe.StatusProbed
+	}
+	return h.cfg.ProbeStatus()
 }
 
 // optsReaction resolves a reaction on THIS conversation's live options
