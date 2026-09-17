@@ -27,6 +27,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/probe"
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
@@ -173,6 +174,14 @@ type Config struct {
 	Agent    Agent
 	Sessions Sessions
 	Journal  *journal.Journal
+
+	// ProbeStatus reports how far the startup model probe has got, so
+	// an empty model list can be worded honestly: "the agent has not
+	// been asked yet" and "the agent has no models" are different
+	// sentences, and only the second is fixed by `!login`. Optional —
+	// nil reads as probe.StatusProbed, i.e. the empty list is the
+	// agent's real answer.
+	ProbeStatus func() probe.Status
 
 	// BotUserID is the relay's own Zulip user id. Messages from it are
 	// refused unconditionally: the relay must never feed its own
@@ -445,6 +454,12 @@ type inflightEntry struct {
 // Handler implements the event side of the relay.
 type Handler struct {
 	cfg Config
+
+	// sawModels records that the agent has reported a non-empty model
+	// list at least once in this process. It is the difference between
+	// "we have never learned the list" and "the list went away", which
+	// are two different sentences to a user — see emptyModelNote.
+	sawModels atomic.Bool
 
 	inflightMu   sync.Mutex
 	inflightCond *sync.Cond
@@ -1258,7 +1273,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 // agent that reports no current model leaves the previous snapshot
 // alone rather than blanking a known one.
 func (h *Handler) resolveModelInfo(sink *streamingSink) {
-	if _, currentID := h.cfg.Agent.Models(); currentID != "" {
+	if _, currentID := h.models(); currentID != "" {
 		sink.SetModelInfo(
 			statusline.ProviderEmojiForModel(currentID),
 			statusline.ShortModelName(currentID),

@@ -149,6 +149,33 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		return "", true
 	}
 
+	// Every `!model` shape needs a model list, so an EMPTY catalogue is
+	// answered here, once, before the shapes are told apart. Without
+	// this, bare `!model` and `!model <filter>` both fall through to
+	// the broker's catalogue prose, whose empty-list line can only say
+	// "connect a provider with `!login`" — it has no way to know
+	// whether the agent has even been asked yet. This relay does (see
+	// emptyModelNote), and one wording serves both the panel and this
+	// reply so they cannot disagree.
+	//
+	// Fixing the shared broker instead would need probe state threaded
+	// through acp-kit's Controller; until all three relays report it,
+	// the honest answer belongs to the relay that knows.
+	//
+	// Like `!opts` and the knob below, this runs ahead of the
+	// pending-login path and for the same reason: a pasted redirect URL
+	// never carries a sigil, so a sigil-prefixed `!model` mid-login is
+	// plainly a question about models and not a malformed paste. The
+	// login stays pending for the paste that follows — where it used to
+	// be handed to the broker, which could abort the login to complain
+	// about it.
+	if isModelCommand(text) {
+		if models, _ := h.models(); len(models) == 0 {
+			h.reply(ctx, key, h.emptyModelNote())
+			return "", true
+		}
+	}
+
 	// A knob CHANGE is applied here rather than being rendered as
 	// prose: it goes through the broker's exported action exactly as
 	// `!model` does, but is acknowledged with a reaction and a
@@ -370,7 +397,7 @@ func (h *Handler) whereFor(key journal.Key) string {
 
 // AvailableModels satisfies command.Controller.
 func (h *Handler) AvailableModels() (models []client.ModelInfo, currentID string) {
-	return h.cfg.Agent.Models()
+	return h.models()
 }
 
 // AgentCommands satisfies command.Controller.
@@ -396,7 +423,7 @@ func (h *Handler) StatusFor(token string) command.SessionStatus {
 	key, conv, engaged := h.convFor(token)
 	// One call, not two: separate reads could straddle a model-state
 	// update and report a current model that is not in the list.
-	models, current := h.cfg.Agent.Models()
+	models, current := h.models()
 	st := command.SessionStatus{
 		EffectiveModel:  current,
 		DefaultModel:    current,
@@ -418,7 +445,7 @@ func (h *Handler) StatusFor(token string) command.SessionStatus {
 // RelayInfo satisfies command.Controller.
 func (h *Handler) RelayInfo(token string) command.RelayInfo {
 	_, conv, engaged := h.convFor(token)
-	models, _ := h.cfg.Agent.Models()
+	models, _ := h.models()
 	ri := command.RelayInfo{
 		Version:         h.cfg.Version,
 		AgentCmd:        h.cfg.AgentCmd,
@@ -442,7 +469,7 @@ func (h *Handler) SetModelOverride(token, modelID string) error {
 	if !engaged {
 		return fmt.Errorf("there is no conversation here yet — send a message first")
 	}
-	models, _ := h.cfg.Agent.Models()
+	models, _ := h.models()
 	found := len(models) == 0
 	for _, m := range models {
 		if m.ID == modelID {

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/probe"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -1775,5 +1778,215 @@ func TestAnEmptyFilterIsDecidedUnderTheLock(t *testing.T) {
 	}
 	if pollMsg(bare) != 0 {
 		t.Fatal("a poll went up with no models to offer")
+	}
+}
+
+// --- the empty model list, worded honestly -------------------------------
+//
+// "No models available — connect a provider with `!login`" used to
+// cover every way the list could be empty and was true of exactly one
+// of them. These tests are the other ways, on both surfaces that render
+// it. The bug they guard is not hypothetical: on the fleet host a
+// reload re-exec'd at 04:42:46, an `!model haiku` was the first thing
+// to touch the fresh process, and a fully authenticated relay told its
+// user to log in.
+
+// TestOptsWhileProbePendingSaysSo: before the startup probe has
+// finished there is no model list and NOTHING is wrong. Telling the
+// user to `!login` sends them to fix a working provider.
+func TestOptsWhileProbePendingSaysSo(t *testing.T) {
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.ProbeStatus = func() probe.Status { return probe.StatusPending }
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	body := hh.only(t)
+	if !strings.Contains(body, "still starting") {
+		t.Fatalf("panel = %q, want a not-ready-yet note", body)
+	}
+	if strings.Contains(body, "!login") {
+		t.Fatalf("panel blames the provider for a pending probe: %q", body)
+	}
+}
+
+// TestOptsAfterProbeFailureSaysSo: an exhausted probe budget is a relay
+// problem, and the panel must not pin it on the user's credentials.
+func TestOptsAfterProbeFailureSaysSo(t *testing.T) {
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.ProbeStatus = func() probe.Status { return probe.StatusFailed }
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!opts", humanID, botID)
+
+	body := hh.only(t)
+	if !strings.Contains(body, "could not be probed") {
+		t.Fatalf("panel = %q, want a probe-failed note", body)
+	}
+	if strings.Contains(body, "!login") {
+		t.Fatalf("panel blames the provider for a failed probe: %q", body)
+	}
+}
+
+// TestModelCommandWhileProbePendingSaysSo: the SHAPE the bug was
+// actually reported in. `!model haiku` against an empty catalogue never
+// reaches the panel — a filter with no matches renders no panel — so it
+// used to fall through to the broker's "connect a provider with
+// `!login`". It must answer for the relay's real state instead.
+func TestModelCommandWhileProbePendingSaysSo(t *testing.T) {
+	for _, text := range []string{"!model", "!model haiku", "!model a/one"} {
+		t.Run(text, func(t *testing.T) {
+			hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+				c.ProbeStatus = func() probe.Status { return probe.StatusPending }
+			})
+			hh.deliverDM(t, humanID, "hello", humanID, botID)
+			hh.z.reset()
+			hh.deliverDM(t, humanID, text, humanID, botID)
+
+			body := hh.only(t)
+			if !strings.Contains(body, "still starting") {
+				t.Fatalf("reply = %q, want a not-ready-yet note", body)
+			}
+			if strings.Contains(body, "!login") {
+				t.Fatalf("reply blames the provider for a pending probe: %q", body)
+			}
+		})
+	}
+}
+
+// TestModelCommandWithModelsIsUntouched: the interception must not
+// shadow a healthy catalogue's listing.
+func TestModelCommandWithModelsIsUntouched(t *testing.T) {
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!model nosuch", humanID, botID)
+
+	body := hh.only(t)
+	if !strings.Contains(body, "none match") {
+		t.Fatalf("reply = %q, want the broker's filter-miss prose", body)
+	}
+}
+
+// TestProbeStatusDefaultsToProbed: a relay that reports no probe state
+// is taken at its word — an empty list is the agent's real answer, which
+// is what this said before the probe existed.
+func TestProbeStatusDefaultsToProbed(t *testing.T) {
+	h := &Handler{}
+	if got := h.probeStatus(); got != probe.StatusProbed {
+		t.Fatalf("probeStatus() = %v, want probed", got)
+	}
+	if note := h.emptyModelNote(); !strings.Contains(note, "!login") {
+		t.Fatalf("note = %q, want the login advice", note)
+	}
+}
+
+// TestModelCommandAfterProbeFailureSaysSo: the `!model` surface must
+// report a failed probe too, not just a pending one.
+func TestModelCommandAfterProbeFailureSaysSo(t *testing.T) {
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.ProbeStatus = func() probe.Status { return probe.StatusFailed }
+	})
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!models haiku", humanID, botID)
+
+	body := hh.only(t)
+	if !strings.Contains(body, "could not be probed") {
+		t.Fatalf("reply = %q, want a probe-failed note (via the !models alias)", body)
+	}
+}
+
+// TestAgentModelsIsReadInOnePlace guards the invariant the wording
+// depends on. sawModels can only mean "the agent has reported models"
+// if EVERY read records it, and a read added straight onto cfg.Agent
+// would silently stop it meaning that — the status line's read did
+// exactly that until this was caught in review. Enforced against the
+// source because there is no type-level way to say it.
+func TestAgentModelsIsReadInOnePlace(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	total := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if n := strings.Count(string(b), "cfg.Agent.Models()"); n > 0 {
+			total += n
+			if f != "opts.go" {
+				t.Errorf("%s reads cfg.Agent.Models() directly %d time(s); go through h.models()", f, n)
+			}
+		}
+	}
+	if total != 1 {
+		t.Fatalf("%d direct cfg.Agent.Models() reads in the package, want exactly the one accessor", total)
+	}
+}
+
+// TestEmptyModelNoteBlamesTheProviderOnceModelsHaveBeenSeen: a list the
+// agent HAS reported and now has not is a provider that went away, and
+// no amount of probe history changes that. Without this, a relay whose
+// startup probe failed would keep blaming itself for a state the user
+// can fix with `!login`.
+func TestEmptyModelNoteBlamesTheProviderOnceModelsHaveBeenSeen(t *testing.T) {
+	agent := withModels(newAgent("x"), "a/one", "a/one")
+	h := &Handler{cfg: Config{
+		Agent:       agent,
+		ProbeStatus: func() probe.Status { return probe.StatusFailed },
+	}}
+
+	// Not seen yet: the probe's failure is the best explanation there is.
+	if note := h.emptyModelNote(); !strings.Contains(note, "could not be probed") {
+		t.Fatalf("note = %q, want the probe-failed note", note)
+	}
+	// One read of a non-empty catalogue is all it takes, and ANY read
+	// counts — the status line's is enough, which is why every read in
+	// this package goes through h.models().
+	if models, _ := h.models(); len(models) != 1 {
+		t.Fatalf("models() = %v, want the one model", models)
+	}
+	agent.models = nil
+	if note := h.emptyModelNote(); !strings.Contains(note, "!login") {
+		t.Fatalf("note = %q, want the login advice once a list has been seen", note)
+	}
+}
+
+// TestModelCommandDoesNotAbortAPendingLogin: the interception runs ahead
+// of the pending-login path on purpose. The broker treats ANY message in
+// a conversation with a pending login as the pasted redirect URL
+// (Broker.Handle peeks before it parses), so `!model` used to be
+// consumed as a malformed paste and end the login. A sigil-prefixed
+// question about models is plainly not a paste.
+func TestModelCommandDoesNotAbortAPendingLogin(t *testing.T) {
+	agent := newAgent("x")
+	agent.authMethods = []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic"}}
+	agent.authResult = client.AuthResult{State: "needs_redirect", URL: "https://example/auth", ID: "a1"}
+	hh := dmCmdHarness(t, agent, nil)
+
+	hh.deliverDM(t, humanID, "!login anthropic", humanID, botID)
+	if !strings.Contains(hh.only(t), "https://example/auth") {
+		t.Fatalf("login start: %q", hh.only(t))
+	}
+	hh.z.reset()
+
+	hh.deliverDM(t, humanID, "!model", humanID, botID)
+	if body := hh.only(t); !strings.Contains(body, "No models available") {
+		t.Fatalf("reply = %q, want the empty-catalogue note", body)
+	}
+	hh.z.reset()
+
+	// The login is still pending: the paste that follows completes it.
+	agent.authResult = client.AuthResult{State: "ok"}
+	hh.deliverDM(t, humanID, "https://example/callback?code=xyz", humanID, botID)
+	if !strings.Contains(hh.only(t), "Authenticated") {
+		t.Fatalf("`!model` ended the pending login: %q", hh.only(t))
 	}
 }
