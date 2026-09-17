@@ -282,6 +282,8 @@ When making non-trivial changes, add an entry under `## [Unreleased]` in
 `### Changed`, `### Removed`). One line per change, newest first within its
 subsection. Do not bump `VERSION`; that happens during release.
 
+Write changelog entries in ASD-STE100.
+
 ## Release
 
 `make publish` pushes `main + vVERSION` to `origin`; `release.yml` runs
