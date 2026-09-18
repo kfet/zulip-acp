@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -19,8 +20,10 @@ import (
 // and slack-acp so one fir agent reads the same everywhere:
 //
 //   - AgentMessageChunk → appended verbatim (the answer body).
-//   - AgentThoughtChunk → italicised one-liner, so reasoning surfaces
-//     without crowding the answer. Suppressed when hideThinking is set.
+//   - AgentThoughtChunk → italicised one-liner PER LOGICAL THOUGHT,
+//     not per delta: the deltas are coalesced (see appendThought), so
+//     a model that streams one word at a time does not produce one
+//     italic line per word. Suppressed when hideThinking is set.
 //   - Plan and ToolCall updates → suppressed. fir emits them
 //     constantly on multi-step work and they read as noise on a phone.
 //   - dev.acp-kit.status-line/v1 _meta → mood/plan captured and
@@ -43,10 +46,19 @@ type streamingSink struct {
 	// notice is only interesting while it is current.
 	notice string
 
+	// thoughtMu guards the thought coalescing buffer.
+	thoughtMu sync.Mutex
+	thought   strings.Builder
+
 	// hideThinking suppresses thought chunks. Read-only after
 	// construction.
 	hideThinking bool
 }
+
+// maxThoughtRunes is the size cap for one coalesced thought line. A
+// model that reasons for a page without a newline still gets cut into
+// readable lines instead of one wall of italics.
+const maxThoughtRunes = 200
 
 func newStreamingSink(split *rollover.Splitter, hideThinking bool) *streamingSink {
 	return &streamingSink{split: split, hideThinking: hideThinking}
@@ -107,14 +119,120 @@ func (s *streamingSink) Notice() string {
 }
 
 // OnUpdate implements client.SessionUpdateSink.
+//
+// Thought chunks do NOT go straight to the splitter. A model that
+// streams word-sized reasoning deltas (GLM-style) would otherwise get
+// one italic line per token — a hundred lines of `*The*` `* question*`
+// above the answer. Thought text is accumulated instead and emitted as
+// at most one italic line per logical thought; see appendThought.
+//
+// Everything else flushes that buffer first, so the reasoning always
+// stays above the part of the answer it preceded, and message chunks
+// keep going in verbatim with no forced newline per delta.
 func (s *streamingSink) OnUpdate(_ context.Context, n acp.SessionNotification) error {
 	s.cacheMeta(n)
-	chunk := renderChunk(n, s.hideThinking)
-	if chunk == "" {
+	if u := n.Update; u.AgentThoughtChunk != nil {
+		if s.hideThinking {
+			return nil
+		}
+		s.appendThought(contentBlockText(u.AgentThoughtChunk.Content))
 		return nil
 	}
-	s.split.Append(chunk)
+	if n.Update == (acp.SessionUpdate{}) {
+		// A _meta-only notification (a status-line tick) is not a
+		// transition: it carries no content, and cutting the thought
+		// in progress on it would split one thought over two lines.
+		return nil
+	}
+	s.flushThought()
+	if chunk := renderChunk(n); chunk != "" {
+		s.split.Append(chunk)
+	}
 	return nil
+}
+
+// appendThought accumulates a thought delta and emits the complete
+// thoughts it now holds. A thought ends on a BLANK line — a paragraph
+// break, which is where models separate one reasoning step from the
+// next — and, for a model that never emits one, at the size cap, cut
+// at the last sentence boundary so the line breaks where the
+// reasoning does. Single newlines inside one thought are collapsed by
+// oneLine, so a thought stays one italic line on a phone.
+func (s *streamingSink) appendThought(delta string) {
+	if delta == "" {
+		return
+	}
+	s.thoughtMu.Lock()
+	s.thought.WriteString(delta)
+	buf := s.thought.String()
+	var out strings.Builder
+	for {
+		line, rest, ok := cutThought(buf)
+		if !ok {
+			break
+		}
+		buf = rest
+		writeThoughtLine(&out, line)
+	}
+	s.thought.Reset()
+	s.thought.WriteString(buf)
+	// The append stays under thoughtMu so a flush from another
+	// goroutine can never overtake the thought it follows. The
+	// splitter has its own lock and takes no lock of ours, so there
+	// is no cycle.
+	if out.Len() > 0 {
+		s.split.Append(out.String())
+	}
+	s.thoughtMu.Unlock()
+}
+
+// cutThought takes the next complete thought off buf, reporting false
+// when buf holds no complete thought yet.
+func cutThought(buf string) (line, rest string, ok bool) {
+	if i := strings.Index(buf, "\n\n"); i >= 0 {
+		return buf[:i], buf[i+2:], true
+	}
+	r := []rune(buf)
+	if len(r) < maxThoughtRunes {
+		return "", buf, false
+	}
+	head := string(r[:maxThoughtRunes])
+	if i := lastSentenceEnd(head); i > 0 {
+		return head[:i], string(r[utf8.RuneCountInString(head[:i]):]), true
+	}
+	return head, string(r[maxThoughtRunes:]), true
+}
+
+// lastSentenceEnd reports the index just past the last sentence
+// terminator in s, or 0 when it holds none.
+func lastSentenceEnd(s string) int {
+	if i := strings.LastIndexAny(s, ".!?"); i >= 0 {
+		return i + 1
+	}
+	return 0
+}
+
+// flushThought emits whatever partial thought is still buffered. It is
+// called on any non-thought update and at the end of the turn, so a
+// reasoning run that never ended in a newline is not lost.
+func (s *streamingSink) flushThought() {
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	line := s.thought.String()
+	s.thought.Reset()
+	var out strings.Builder
+	writeThoughtLine(&out, line)
+	if out.Len() > 0 {
+		s.split.Append(out.String())
+	}
+}
+
+// writeThoughtLine renders one italic thought line, dropping a line
+// that holds only space.
+func writeThoughtLine(out *strings.Builder, line string) {
+	if t := strings.TrimSpace(line); t != "" {
+		out.WriteString("*" + oneLine(t) + "*\n")
+	}
 }
 
 // cacheMeta keeps the latest mood/plan warm. The status line is
@@ -168,6 +286,7 @@ func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 //     puts it in that body: appended after, it would be lost by the
 //     repost; appended by the repost, it would be doubled.
 func (s *streamingSink) maybeAppendFooter() {
+	s.flushThought()
 	s.statusMu.Lock()
 	if s.footerEmitted {
 		s.statusMu.Unlock()
@@ -269,20 +388,13 @@ func (r *noticeRouter) OnNotice(ctx context.Context, n client.Notice) error {
 
 // --- rendering -----------------------------------------------------------
 
-// renderChunk converts a session update into Zulip-bound text, or ""
-// when the update produces nothing user-visible.
-func renderChunk(n acp.SessionNotification, hideThinking bool) string {
-	u := n.Update
-	switch {
-	case u.AgentMessageChunk != nil:
-		return contentBlockText(u.AgentMessageChunk.Content)
-	case u.AgentThoughtChunk != nil:
-		if hideThinking {
-			return ""
-		}
-		if t := contentBlockText(u.AgentThoughtChunk.Content); t != "" {
-			return "*" + oneLine(t) + "*\n"
-		}
+// renderChunk converts a non-thought session update into Zulip-bound
+// text, or "" when the update produces nothing user-visible. Thought
+// chunks never come here: they are coalesced in the sink, which holds
+// the state one delta cannot see.
+func renderChunk(n acp.SessionNotification) string {
+	if c := n.Update.AgentMessageChunk; c != nil {
+		return contentBlockText(c.Content)
 	}
 	return ""
 }

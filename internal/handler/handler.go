@@ -1213,6 +1213,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		res, perr := client.PromptAbstainable(lctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
 		wcancel()
 		if perr != nil {
+			sink.flushThought()
 			return h.failTurn(lctx, conv, split, perr)
 		}
 		if res.Abstained {
@@ -1226,6 +1227,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		stop, err = h.cfg.Agent.Prompt(lctx, sess.SessionID, blocks)
 		wcancel()
 		if err != nil {
+			sink.flushThought()
 			return h.failTurn(lctx, conv, split, err)
 		}
 		// The bound covers the prompt and nothing after it. Disarming
