@@ -2217,13 +2217,6 @@ func TestSinkRendering(t *testing.T) {
 	if !strings.HasSuffix(got, "body text") {
 		t.Fatalf("body = %q", got)
 	}
-	// A multi-line thought becomes one italic line.
-	if !strings.Contains(got, "*thinking about it*\n") {
-		t.Fatalf("thought = %q", got)
-	}
-	if !strings.HasSuffix(got, "body text") {
-		t.Fatalf("body = %q", got)
-	}
 	// Updates that produce nothing visible append nothing.
 	before := split.Transcript()
 	if err := sink.OnUpdate(ctx, acp.SessionNotification{
@@ -2261,6 +2254,96 @@ func TestSinkHidesThinking(t *testing.T) {
 	}
 	if split.Transcript() != "" {
 		t.Fatalf("empty thought produced %q", split.Transcript())
+	}
+}
+
+// TestSinkCoalescesThoughtDeltas is the GLM-style regression: a model
+// that streams word-sized reasoning deltas must produce ONE italic
+// line per logical thought, never one per delta.
+func TestSinkCoalescesThoughtDeltas(t *testing.T) {
+	long := strings.Repeat("ab ", 90) // 270 runes, no newline, no stop
+	cases := []struct {
+		name     string
+		thoughts []string
+		messages []string // appended after the thoughts, in order
+		want     string
+	}{{
+		name:     "word sized deltas make one line",
+		thoughts: []string{"The", " question", " is", " about", " MCP."},
+		want:     "*The question is about MCP.*\n",
+	}, {
+		name:     "a blank line ends a thought",
+		thoughts: []string{"first ", "thought\n\nsecond ", "thought\n"},
+		want:     "*first thought*\n*second thought*\n",
+	}, {
+		name:     "thought to message transition flushes",
+		thoughts: []string{"weigh", "ing it"},
+		messages: []string{"the ", "answer"},
+		want:     "*weighing it*\nthe answer",
+	}, {
+		name:     "blank thought lines are dropped",
+		thoughts: []string{"\n\n  \n\n", "real\n"},
+		want:     "*real*\n",
+	}, {
+		name:     "size cap cuts at the last sentence end",
+		thoughts: []string{"one. two. ", strings.Repeat("x", 300)},
+		want: "*one. two.*\n" +
+			"*" + strings.Repeat("x", 199) + "*\n" +
+			"*" + strings.Repeat("x", 101) + "*\n",
+	}, {
+		name:     "size cap cuts a run with no sentence end",
+		thoughts: []string{long},
+		want: "*" + strings.TrimSpace(long[:200]) + "*\n" +
+			"*" + strings.TrimSpace(long[200:]) + "*\n",
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			z := newZulip()
+			split, err := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
+			if err != nil {
+				t.Fatalf("rollover.New: %v", err)
+			}
+			sink := newStreamingSink(split, false)
+			for _, th := range tc.thoughts {
+				if err := sink.OnUpdate(context.Background(), thoughtNotification(th, nil)); err != nil {
+					t.Fatalf("OnUpdate: %v", err)
+				}
+			}
+			for _, m := range tc.messages {
+				if err := sink.OnUpdate(context.Background(), chunkNotification(m, nil)); err != nil {
+					t.Fatalf("OnUpdate: %v", err)
+				}
+			}
+			if len(tc.messages) == 0 {
+				sink.flushThought()
+			}
+			if got := split.Transcript(); got != tc.want {
+				t.Fatalf("transcript = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSinkMetaTickDoesNotSplitAThought pins that a status-line _meta
+// notification, which carries no content, is not a transition: it must
+// not cut the thought in progress into two italic lines.
+func TestSinkMetaTickDoesNotSplitAThought(t *testing.T) {
+	split, sink := newFooterSink(t)
+	ctx := context.Background()
+	if err := sink.OnUpdate(ctx, thoughtNotification("half a ", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if err := sink.OnUpdate(ctx, acp.SessionNotification{
+		Meta: map[string]any{statusline.ExtensionID: map[string]any{"mood": "steady"}},
+	}); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	if err := sink.OnUpdate(ctx, thoughtNotification("thought", nil)); err != nil {
+		t.Fatalf("OnUpdate: %v", err)
+	}
+	sink.flushThought()
+	if got := split.Transcript(); got != "*half a thought*\n" {
+		t.Fatalf("transcript = %q", got)
 	}
 }
 

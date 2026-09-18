@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Thought deltas are coalesced in the streaming sink. A model that streams
+  word-sized reasoning deltas (GLM-style) made one italic line per token —
+  about 100 lines of `*The*` `* question*` above the answer. The sink now
+  buffers the thought text and emits at most one italic line per thought:
+  flushed on a blank line, at a 200-rune cap (cut at the last sentence end),
+  on the first non-thought update, and at the end of the turn.
+
 ## [0.35.6] - 2026-09-18
 
 ### Changed
