@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.7] - 2026-09-19
+
 ### Fixed
 
 - Thought deltas are coalesced in the streaming sink. A model that streams
