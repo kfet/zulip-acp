@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.6] - 2026-09-18
+
+### Changed
+
+- acp-kit v0.19.1: the `schedule` loopback tool now tells the agent when to
+  reach for it. A turn ends when the agent stops writing, and nothing wakes it
+  again by itself, so an intention stated in prose never runs. The tool
+  description now instructs the agent to schedule the wake-up in the same turn
+  it forms the intention — returning to a task, checking a subagent or a job it
+  started — and to say what to verify in the prompt text.
+
 ## [0.35.5] - 2026-09-17
 
 ### Changed
