@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	kit "github.com/kfet/acp-kit/sysprompt"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/skills"
+	"github.com/kfet/zulip-acp/internal/sysprompt"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -271,5 +273,24 @@ func TestResolveTypingInterval(t *testing.T) {
 				t.Fatalf("probed %d times, want %d", tc.probe.asked, tc.asked)
 			}
 		})
+	}
+}
+
+// The watchdog note must reach the agent, rendered from the configured
+// window — not from a copy of the default living in this repo.
+func TestSystemPromptProvider_CarriesLivenessNote(t *testing.T) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
+	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
+
+	got := systemPromptProvider("", &config.Config{
+		StateDir:                 t.TempDir(),
+		NoProgressTimeoutSeconds: 300,
+	})()
+	want := kit.LivenessNote(5 * time.Minute)
+	if !strings.HasSuffix(got, "\n\n"+want) {
+		t.Fatalf("liveness note missing or misjoined:\n%s", got)
+	}
+	if strings.Contains(sysprompt.Base, "Turn watchdog") {
+		t.Fatal("the Zulip block must not carry the watchdog text itself")
 	}
 }

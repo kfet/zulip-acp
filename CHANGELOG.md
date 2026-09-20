@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The system prompt now discloses the turn watchdog: the no-progress window
+  this relay arms, rendered by `acp-kit`'s `sysprompt.LivenessNote` from the
+  configured value. Agents were learning the window only from the death notice
+  and so picked poll intervals shorter than the timeout, got cut mid-turn, and
+  misdiagnosed it.
+
+### Changed
+
+- acp-kit v0.20.0.
+
 ## [0.35.7] - 2026-09-19
 
 ### Fixed
