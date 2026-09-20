@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	kit "github.com/kfet/acp-kit/sysprompt"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/skills"
@@ -153,8 +154,12 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	}
 	hostDir := filepath.Join(dir, "skills")
 	return func() string {
-		return sysprompt.Resolve(cfg.SystemPrompt, false,
-			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions())
+		// The watchdog note is acp-kit's, rendered from the window
+		// this relay actually arms, so the agent knows the window
+		// before it picks a poll interval.
+		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
+			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions()),
+			kit.LivenessNote(cfg.NoProgressTimeout()), "")
 	}
 }
 
