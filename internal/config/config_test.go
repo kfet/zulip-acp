@@ -724,3 +724,20 @@ func TestArchiveChannel(t *testing.T) {
 		t.Fatal("a name nobody has must not resolve")
 	}
 }
+
+func TestUpdateOwnersAndFleet(t *testing.T) {
+	c := &Config{UpdateOwnerIDs: []int64{7, 42}}
+	if got := c.UpdateOwners(); len(got) != 2 || got[0] != "7" || got[1] != "42" {
+		t.Fatal(got)
+	}
+	if c.IsFleetManaged() {
+		t.Fatal("not fleet")
+	}
+	c.FleetLockFile = "/x/dist.lock"
+	if !c.IsFleetManaged() {
+		t.Fatal("lock file implies fleet")
+	}
+	if !(&Config{FleetManaged: true}).IsFleetManaged() {
+		t.Fatal("fleet")
+	}
+}

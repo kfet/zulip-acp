@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!update [fir|relay] [--check|--force|--rollback]` (acp-kit/update v0.22.0): owner-only
+  chat command that runs `fir update` and/or `zulip-acp update`, then one graceful SIGHUP
+  reload, and reports `fir X → Y, relay A → B` in the requesting topic once back. Owners
+  are `update_owner_ids` in config.json (empty = disabled). `fleet_managed` /
+  `fleet_lock_file` mark a converge-managed host: updates are refused there without
+  `--force`, and `--check` shows the locked versions next to disk and running.
+  `--force` cancels in-flight turns first and never hard-restarts. `fir.prev` is kept for
+  `!update fir --rollback`.
+
+### Changed
+
+- acp-kit v0.22.0.
+
 ## [0.37.0] - 2026-09-22
 
 ### Added

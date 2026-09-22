@@ -507,15 +507,32 @@ func main() {
 		}
 	}
 
+	agentVersion := handler.AgentVersionFromCmd(cfg.GetAgentCmd())
+	agentBin := agentBinFor(cfg.GetAgentCmd())
+	upd := newUpdater(cfg, version, agentBin, func() string {
+		if v := agent.AgentInfo().Version; v != "" {
+			return v
+		}
+		f := strings.Fields(agentVersion())
+		if len(f) == 0 {
+			return ""
+		}
+		return f[len(f)-1]
+	},
+		// h is assigned just below, before any event can arrive.
+		func() []string { return h.CancelAll() },
+		func(ctx context.Context) error { return h.WaitCancelled(ctx) })
+
 	h, err = handler.New(handler.Config{
 		Client:             zc,
+		Updater:            upd,
 		Agent:              agent,
 		Commands:           broker,
 		Schedules:          schedules,
 		Loopback:           tools,
 		Version:            version,
 		AgentCmd:           strings.Join(cfg.GetAgentCmd(), " "),
-		AgentVersion:       handler.AgentVersionFromCmd(cfg.GetAgentCmd()),
+		AgentVersion:       agentVersion,
 		StartTime:          time.Now(),
 		Sessions:           sessions,
 		Journal:            jr,
@@ -570,6 +587,13 @@ func main() {
 	// is dead. Say so rather than leaving a truncated answer that looks
 	// complete.
 	h.MarkInterrupted(ctx)
+	// An `!update` that reloaded us left a marker: report the outcome
+	// into the conversation that asked for it.
+	if upd != nil {
+		if err := upd.Resume(ctx, h.PostTo); err != nil {
+			log.Printf("zulip-acp: WARN !update report: %v", err)
+		}
+	}
 
 	// Tools are registered only once the Handler exists: handler.New is
 	// what wires it in as the broker's Controller, and relaytool asks
