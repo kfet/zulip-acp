@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-22
+
 ### Added
 
 - `!update [fir|relay] [--check|--force|--rollback]` (acp-kit/update v0.22.0): owner-only
