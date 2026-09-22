@@ -50,7 +50,11 @@
     "allowed_user_ids": [
       8
     ],
-    "stream_edits": false
+    "stream_edits": false,
+    "update_owner_ids": [
+      8
+    ],
+    "fleet_lock_file": "/home/kfet/src/zulip-acp/dist.lock"
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"
