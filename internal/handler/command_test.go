@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	acp "github.com/coder/acp-go-sdk"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -403,6 +404,99 @@ func TestStatusInAnEngagedTopic(t *testing.T) {
 	}
 	if strings.Contains(got, "turn running") {
 		t.Fatalf("no turn is running: %q", got)
+	}
+}
+
+// TestStatusShowsAgentInfoAndSessionStats: the agent's name and
+// version and what it reported about the session over ACP reach
+// `!status`.
+func TestStatusShowsAgentInfoAndSessionStats(t *testing.T) {
+	agent := newAgent("x")
+	agent.info = client.AgentInfo{Name: "fir", Version: "1.18.4"}
+	hh := cmdHarness(t, agent, func(c *Config) {
+		c.Now = func() time.Time { return time.Unix(1130, 0) }
+		c.AgentVersion = func() string { t.Fatal("fallback used although agentInfo is set"); return "" }
+	})
+	hh.deliver(t, "hacking", mention("hello"))
+	conv := hh.j.Convs()[0]
+	hh.s.mu.Lock()
+	hh.s.lastUsed = time.Unix(1000, 0)
+	hh.s.mu.Unlock()
+	agent.mu.Lock()
+	agent.stats = map[acp.SessionId]client.SessionStats{"sid-" + acp.SessionId(conv.ID): {
+		Thinking: "high", ContextUsed: 45_000, ContextSize: 200_000,
+		Cost: &client.Cost{Amount: 0.4231, Currency: "USD"},
+	}}
+	agent.mu.Unlock()
+	hh.z.reset()
+
+	hh.deliver(t, "hacking", "!status")
+	got := hh.only(t)
+	for _, want := range []string{
+		"agent: `fir 1.18.4`", "thinking: high", "context: 45.0k / 200.0k tokens (22%)",
+		"cost: 0.42 USD", "last activity: 2m10s ago",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status %q is missing %s", got, want)
+		}
+	}
+}
+
+// TestStatusWithoutAgentStats: a live session the agent reported
+// nothing about shows last activity only; a missing agentInfo falls
+// back to Config.AgentVersion; a zero lastUsed shows no activity.
+func TestStatusWithoutAgentStats(t *testing.T) {
+	hh := cmdHarness(t, newAgent("x"), func(c *Config) {
+		c.AgentVersion = func() string { return "fir 0.9" }
+	})
+	hh.deliver(t, "hacking", mention("hello"))
+	hh.z.reset()
+	hh.deliver(t, "hacking", "!status")
+	got := hh.only(t)
+	if !strings.Contains(got, "agent: `fir 0.9`") {
+		t.Fatalf("status %q lacks the fallback agent version", got)
+	}
+	for _, bad := range []string{"thinking:", "context:", "cost:", "last activity:"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("status %q shows unreported %s", got, bad)
+		}
+	}
+}
+
+// TestStatusClampsFutureActivity: a last use a moment ahead of the
+// clock reads as 0s, never as a negative age.
+func TestStatusClampsFutureActivity(t *testing.T) {
+	hh := cmdHarness(t, newAgent("x"), func(c *Config) {
+		c.Now = func() time.Time { return time.Unix(1000, 0) }
+	})
+	hh.deliver(t, "hacking", mention("hello"))
+	hh.s.mu.Lock()
+	hh.s.lastUsed = time.Unix(1002, 0)
+	hh.s.mu.Unlock()
+	hh.z.reset()
+	hh.deliver(t, "hacking", "!status")
+	if got := hh.only(t); !strings.Contains(got, "last activity: 0s ago") {
+		t.Fatalf("status = %q", got)
+	}
+}
+
+// TestStatusWithoutLiveSession: an engaged conversation whose session
+// is gone (idle GC) shows no session stats and does not spawn one.
+func TestStatusWithoutLiveSession(t *testing.T) {
+	hh := cmdHarness(t, newAgent("x"), nil)
+	hh.deliver(t, "hacking", mention("hello"))
+	hh.s.mu.Lock()
+	clear(hh.s.sessions)
+	hh.s.mu.Unlock()
+	hh.z.reset()
+	hh.deliver(t, "hacking", "!status")
+	if got := hh.only(t); strings.Contains(got, "last activity:") || strings.Contains(got, "agent: ") {
+		t.Fatalf("status = %q", got)
+	}
+	hh.s.mu.Lock()
+	defer hh.s.mu.Unlock()
+	if len(hh.s.sessions) != 0 {
+		t.Fatal("!status spawned a session")
 	}
 }
 

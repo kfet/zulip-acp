@@ -76,6 +76,12 @@ type Agent interface {
 	// whether an image may be sent as a content block or must be named
 	// on disk instead.
 	Caps() client.Caps
+	// AgentInfo is the agent's name and version from the ACP
+	// initialize response. `!status` shows it.
+	AgentInfo() client.AgentInfo
+	// SessionStats is what the agent reported about one session over
+	// ACP: thinking level, context usage, cost. `!status` shows it.
+	SessionStats(sid acp.SessionId) (client.SessionStats, bool)
 }
 
 // Sessions is the subset of *state.Manager the handler uses.
@@ -88,6 +94,9 @@ type Sessions interface {
 	// live under. `!status` reports the conversation's directory so a
 	// human can go and look at it.
 	StateDir() string
+	// Live reports a conversation's live session id and last use
+	// without creating a session, so `!status` never spawns one.
+	Live(key string) (sid acp.SessionId, lastUsed time.Time, ok bool)
 }
 
 // ChannelSet is the relay's channel allowlist: it answers Name for a
@@ -385,6 +394,10 @@ type Config struct {
 	Version   string
 	AgentCmd  string
 	StartTime time.Time
+	// AgentVersion, if set, names the agent (e.g. "fir 1.18.4") when
+	// the agent sent no agentInfo at initialize. See
+	// AgentVersionFromCmd. It is called only when needed.
+	AgentVersion func() string
 	// Now is the clock `!status` measures uptime against. Injected so
 	// the test suite never has to sleep. Defaults to time.Now.
 	Now func() time.Time

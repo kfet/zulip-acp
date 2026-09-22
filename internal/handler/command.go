@@ -438,8 +438,33 @@ func (h *Handler) StatusFor(token string) command.SessionStatus {
 		if id, ok := h.modelOverride(conv.ID); ok {
 			st.OverrideModel, st.EffectiveModel = id, id
 		}
+		h.addSessionStats(&st, conv.ID)
 	}
 	return st
+}
+
+// addSessionStats fills the fields the agent reported over ACP for the
+// conversation's live session. A conversation with no live session
+// (never started, or reaped by idle GC) has none to show.
+func (h *Handler) addSessionStats(st *command.SessionStatus, convID string) {
+	sid, last, ok := h.cfg.Sessions.Live(convID)
+	if !ok {
+		return
+	}
+	if !last.IsZero() {
+		// max: Touch runs after a turn, so a racing read may see a
+		// last use a moment in the future.
+		st.LastActivity = max(h.now().Sub(last), 0).Round(time.Second).String()
+	}
+	ss, ok := h.cfg.Agent.SessionStats(sid)
+	if !ok {
+		return
+	}
+	st.Thinking = ss.Thinking
+	st.ContextUsed, st.ContextSize = ss.ContextUsed, ss.ContextSize
+	if ss.Cost != nil {
+		st.Cost = strings.TrimSpace(fmt.Sprintf("%.2f %s", ss.Cost.Amount, ss.Cost.Currency))
+	}
 }
 
 // RelayInfo satisfies command.Controller.
@@ -451,6 +476,11 @@ func (h *Handler) RelayInfo(token string) command.RelayInfo {
 		AgentCmd:        h.cfg.AgentCmd,
 		ModelsAvailable: len(models),
 		ActiveSessions:  h.cfg.Journal.ActiveCount(),
+	}
+	if ai := h.cfg.Agent.AgentInfo(); ai.Name != "" {
+		ri.AgentName, ri.AgentVersion = ai.Name, ai.Version
+	} else if h.cfg.AgentVersion != nil {
+		ri.AgentName = h.cfg.AgentVersion()
 	}
 	if !h.cfg.StartTime.IsZero() {
 		ri.Uptime = h.now().Sub(h.cfg.StartTime).Round(time.Second).String()
