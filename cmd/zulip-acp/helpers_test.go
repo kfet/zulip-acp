@@ -10,6 +10,7 @@ import (
 	"time"
 
 	kit "github.com/kfet/acp-kit/sysprompt"
+	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/skills"
 	"github.com/kfet/zulip-acp/internal/sysprompt"
@@ -293,4 +294,62 @@ func TestSystemPromptProvider_CarriesLivenessNote(t *testing.T) {
 	if strings.Contains(sysprompt.Base, "Turn watchdog") {
 		t.Fatal("the Zulip block must not carry the watchdog text itself")
 	}
+}
+
+func TestChildPID(t *testing.T) {
+	root := t.TempDir()
+	mk := func(p string) { os.MkdirAll(filepath.Join(root, p), 0o755) }
+	mk("10/task/10")
+	mk("10/task/11")
+	os.WriteFile(filepath.Join(root, "10/task/10/children"), []byte("20 21"), 0o644)
+	os.WriteFile(filepath.Join(root, "10/task/11/children"), []byte("22\n"), 0o644)
+	for pid, exe := range map[string]string{"20": "/bin/other", "22": "/opt/fir (deleted)"} {
+		mk(pid)
+		os.Symlink(exe, filepath.Join(root, pid, "exe"))
+	}
+	if got := childPID(root, 10, "/opt/fir"); got != 22 {
+		t.Fatal(got)
+	}
+	if childPID(root, 10, "/nope") != 0 || childPID(root, 10, "") != 0 {
+		t.Fatal("want 0")
+	}
+}
+
+func TestResolveBin(t *testing.T) {
+	if resolveBin("definitely-not-a-binary-xyz") != "" {
+		t.Fatal("want empty")
+	}
+	if p := resolveBin("sh"); !filepath.IsAbs(p) {
+		t.Fatal(p)
+	}
+}
+
+func TestNewUpdater(t *testing.T) {
+	cfg := &config.Config{StateDir: t.TempDir()}
+	if newUpdater(cfg, "1", "", nil, nil, nil) != nil {
+		t.Fatal("no owners must disable")
+	}
+	cfg.UpdateOwnerIDs = []int64{7}
+	idle := func(context.Context) error { return errors.New("busy") }
+	fir := filepath.Join(t.TempDir(), "fir")
+	os.WriteFile(fir, []byte("#!/bin/sh\necho fir 1.0\n"), 0o755)
+	u := newUpdater(cfg, "1", fir, func() string { return "" }, func() []string { return nil }, idle)
+	if u == nil || newUpdater(cfg, "1", "", nil, nil, nil) == nil {
+		t.Fatal("want updater")
+	}
+	// --force exercises CancelAll/WaitIdle; --check exercises AgentPID.
+	cfg.UpdateOwnerIDs = []int64{7}
+	if r := u.Handle(context.Background(), update.Request{Requester: "7", Text: "!update --check"}); !strings.Contains(r.Text, "zulip-acp") {
+		t.Fatal(r.Text)
+	}
+	if r := u.Handle(context.Background(), update.Request{Requester: "7", Text: "!update fir --force"}); !strings.Contains(r.Text, "NOT reloading") {
+		t.Fatal("empty")
+	}
+}
+
+func TestAgentBinFor(t *testing.T) {
+	if agentBinFor(nil) != "" || agentBinFor([]string{"ssh", "host", "fir"}) != "" {
+		t.Fatal("non-fir must be empty")
+	}
+	agentBinFor([]string{"fir", "--mode", "acp"}) // resolves if installed; must not panic
 }

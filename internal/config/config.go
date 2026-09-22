@@ -133,6 +133,17 @@ type Config struct {
 	// in channels and in DMs alike.
 	AllowedUserIDs []int64 `json:"allowed_user_ids,omitempty"`
 
+	// UpdateOwnerIDs lists the Zulip user ids allowed to run `!update`
+	// (acp-kit/update). Empty disables the command for everyone.
+	UpdateOwnerIDs []int64 `json:"update_owner_ids,omitempty"`
+
+	// FleetManaged marks a host whose versions are owned by
+	// converge/dist.lock: `!update` then refuses without --force.
+	// FleetLockFile, if set, is that host's dist.lock, shown by
+	// `!update --check`; setting it implies FleetManaged.
+	FleetManaged  bool   `json:"fleet_managed,omitempty"`
+	FleetLockFile string `json:"fleet_lock_file,omitempty"`
+
 	// AgentCmd is the argv used to spawn the ACP agent.
 	// Default: ["fir", "--mode", "acp"].
 	AgentCmd []string `json:"agent_cmd,omitempty"`
@@ -761,6 +772,19 @@ func (c *Config) FollowsSubscriptions() bool {
 
 // AllowedUsers returns the allowlist as a set, or nil when empty
 // (meaning "anyone").
+// UpdateOwners returns UpdateOwnerIDs as decimal strings, the
+// requester form acp-kit/update matches against.
+func (c *Config) UpdateOwners() []string {
+	out := make([]string, 0, len(c.UpdateOwnerIDs))
+	for _, id := range c.UpdateOwnerIDs {
+		out = append(out, strconv.FormatInt(id, 10))
+	}
+	return out
+}
+
+// IsFleetManaged reports whether converge owns this host's versions.
+func (c *Config) IsFleetManaged() bool { return c.FleetManaged || c.FleetLockFile != "" }
+
 func (c *Config) AllowedUsers() map[int64]struct{} {
 	if len(c.AllowedUserIDs) == 0 {
 		return nil

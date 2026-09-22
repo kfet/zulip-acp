@@ -31,6 +31,7 @@ import (
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/acp-kit/state"
+	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/autotopic"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
@@ -379,6 +380,10 @@ type Config struct {
 	// Controller, so the caller must not call SetController itself.
 	Commands *command.Broker
 
+	// Updater runs the owner-only `!update` command (acp-kit/update).
+	// Nil leaves `!update` unrecognised.
+	Updater *update.Updater
+
 	// Schedules is the durable store behind scheduled prompts. Nil
 	// disables scheduling: the Handler still satisfies
 	// command.Scheduler, but every call reports that the relay cannot
@@ -462,6 +467,19 @@ type Config struct {
 type inflightEntry struct {
 	cancel context.CancelFunc
 	rename *pendingRename
+
+	// ended is closed by clearInflight, which every turn calls exactly
+	// when it has fully unwound — even after cancelInflight has already
+	// dropped it from the map. It is what lets `!update --force` wait
+	// for a cancelled turn to actually finish posting.
+	endedOnce, initOnce sync.Once
+	ended               chan struct{}
+}
+
+// endedCh returns the channel closed when the turn has unwound.
+func (e *inflightEntry) endedCh() chan struct{} {
+	e.initOnce.Do(func() { e.ended = make(chan struct{}) })
+	return e.ended
 }
 
 // Handler implements the event side of the relay.
@@ -475,6 +493,7 @@ type Handler struct {
 	sawModels atomic.Bool
 
 	inflightMu   sync.Mutex
+	cancelled    []chan struct{} // ended signals of CancelAll's turns
 	inflightCond *sync.Cond
 	inflight     map[string]*inflightEntry
 
@@ -625,6 +644,9 @@ func New(cfg Config) (*Handler, error) {
 	// happens before any event can arrive.
 	if cfg.Commands != nil {
 		cfg.Commands.SetController(h)
+		if cfg.Updater != nil {
+			cfg.Commands.AddHelp(update.HelpLine)
+		}
 	}
 	return h, nil
 }
@@ -1822,6 +1844,49 @@ func (h *Handler) cancelInflight(ctx context.Context, convID string) bool {
 	return ok
 }
 
+// CancelAll stops every in-flight turn and returns where each one was,
+// for `!update --force`. WaitCancelled then waits for those turns to
+// unwind: WaitIdle cannot, because cancelling drops a turn from the
+// inflight map before it has finished posting.
+func (h *Handler) CancelAll() []string {
+	h.inflightMu.Lock()
+	ids := make([]string, 0, len(h.inflight))
+	for id, e := range h.inflight {
+		ids = append(ids, id)
+		h.cancelled = append(h.cancelled, e.endedCh())
+	}
+	h.inflightMu.Unlock()
+	where := map[string]string{}
+	for _, c := range h.cfg.Journal.Convs() {
+		where[c.ID] = h.describe(c.Key)
+	}
+	var out []string
+	for _, id := range ids {
+		if h.cancelInflight(context.Background(), id) {
+			out = append(out, where[id])
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// WaitCancelled blocks until every turn CancelAll cancelled has
+// unwound, then until no turn is in flight, or ctx is done.
+func (h *Handler) WaitCancelled(ctx context.Context) error {
+	h.inflightMu.Lock()
+	chs := h.cancelled
+	h.cancelled = nil
+	h.inflightMu.Unlock()
+	for _, ch := range chs {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return h.WaitIdle(ctx)
+}
+
 // isInflight reports whether a turn is running for convID.
 func (h *Handler) isInflight(convID string) bool {
 	h.inflightMu.Lock()
@@ -1837,6 +1902,7 @@ func (h *Handler) setInflight(convID string, e *inflightEntry) {
 }
 
 func (h *Handler) clearInflight(convID string, e *inflightEntry) {
+	e.endedOnce.Do(func() { close(e.endedCh()) })
 	h.inflightMu.Lock()
 	if cur, ok := h.inflight[convID]; ok && cur == e {
 		delete(h.inflight, convID)

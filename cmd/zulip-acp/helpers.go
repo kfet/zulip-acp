@@ -3,9 +3,15 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kfet/acp-kit/update"
+	"github.com/kfet/zulip-acp/internal/updater"
 
 	kit "github.com/kfet/acp-kit/sysprompt"
 	"github.com/kfet/zulip-acp/internal/config"
@@ -187,4 +193,84 @@ func buildSkillsCatalog(builtin []skills.Skill, hostDir string) string {
 	log.Printf("skills: %d builtin + %d host -> injected %d (%s)",
 		len(builtin), len(host), len(merged), strings.Join(names, ","))
 	return skills.FormatCatalog(merged)
+}
+
+// newUpdater builds the `!update` command for this relay, or nil when no
+// owner is configured (the command then stays unrecognised).
+func newUpdater(cfg *config.Config, version string, agentBin string, agentVersion func() string, cancelAll func() []string, waitIdle func(context.Context) error) *update.Updater {
+	if len(cfg.UpdateOwnerIDs) == 0 {
+		return nil
+	}
+	self, _ := os.Executable()
+	// After an on-disk swap Linux reports the running image as
+	// "<path> (deleted)"; the path is what `update` must exec.
+	self = strings.TrimSuffix(self, " (deleted)")
+	u := update.Config{
+		RelayName:    updater.Binary,
+		RelayVersion: version,
+		RelayBin:     self,
+		AgentBin:     agentBin,
+		Owners:       cfg.UpdateOwners(),
+		StateDir:     cfg.StateDir,
+		Fleet:        cfg.IsFleetManaged(),
+		LockFile:     cfg.FleetLockFile,
+		UpdateSelf:   update.CommandHook(self, "update"),
+		AgentVersion: agentVersion,
+		AgentPID:     func() int { return childPID(procRoot, os.Getpid(), agentBin) },
+		CancelAll:    cancelAll,
+		WaitIdle:     waitIdle,
+	}
+	if agentBin != "" {
+		u.UpdateAgent = update.CommandHook(agentBin, "update")
+	}
+	return update.New(u)
+}
+
+// procRoot is /proc, a test seam.
+var procRoot = "/proc"
+
+// childPID returns the pid of this process's child running bin (by
+// resolved executable path), or 0.
+func childPID(root string, self int, bin string) int {
+	if bin == "" {
+		return 0
+	}
+	tasks, _ := filepath.Glob(filepath.Join(root, strconv.Itoa(self), "task", "*", "children"))
+	for _, t := range tasks {
+		b, _ := os.ReadFile(t)
+		for _, f := range strings.Fields(string(b)) {
+			exe, _ := os.Readlink(filepath.Join(root, f, "exe"))
+			if strings.TrimSuffix(exe, " (deleted)") == bin {
+				pid, _ := strconv.Atoi(f)
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// agentBinFor resolves the agent binary from agent_cmd, or "" when the
+// command is not fir itself (an ssh or wrapper command): updating
+// `ssh` would be wrong, so the agent half of `!update` is then refused.
+func agentBinFor(argv []string) string {
+	if len(argv) == 0 || filepath.Base(argv[0]) != "fir" {
+		return ""
+	}
+	return resolveBin(argv[0])
+}
+
+// resolveBin resolves a command name to an absolute, symlink-free path,
+// or "" when it cannot be found.
+func resolveBin(name string) string {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	if a, err := filepath.Abs(p); err == nil {
+		p = a
+	}
+	return p
 }

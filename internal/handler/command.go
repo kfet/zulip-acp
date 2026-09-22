@@ -31,11 +31,13 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -136,6 +138,24 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 	// redirect URL never carries a sigil.
 	if isArchiveCommand(text) {
 		h.archiveCommand(ctx, key, senderName(m))
+		return "", true
+	}
+
+	// `!update` (acp-kit/update) authorises by sender, which the broker
+	// never sees, so it is dispatched here. The reply is posted BEFORE
+	// the reload is triggered.
+	if h.cfg.Updater != nil && update.IsCommand(text) {
+		res := h.cfg.Updater.Handle(ctx, update.Request{
+			ConvID: token, Requester: strconv.FormatInt(m.SenderID, 10),
+			Who: senderName(m), Text: text,
+		})
+		h.reply(ctx, key, res.Text)
+		if res.After != nil {
+			if err := res.After(); err != nil {
+				h.cfg.Logf("handler: !update reload: %v", err)
+				h.reply(ctx, key, fmt.Sprintf("❌ Reload failed: %v", err))
+			}
+		}
 		return "", true
 	}
 

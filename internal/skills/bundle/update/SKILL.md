@@ -17,6 +17,13 @@ upgrade/recycle mechanics.
 > `zulip-acp update`. **Never place a binary by hand** — no `cp`, no staged
 > `.new` file, no `mv` into `~/.local/bin`.
 
+
+> **From chat:** an owner (`update_owner_ids`) can send `!update` (fir + relay),
+> `!update fir`, `!update relay`, `!update --check`, or `!update fir --rollback`.
+> It updates on disk, then does the same graceful SIGHUP reload described below
+> and reports the version change in the topic afterwards. On a fleet host
+> (`fleet_managed` / `fleet_lock_file`) it refuses without `--force` — use converge.
+
 ## reload vs restart — pick the right verb
 
 > **`systemctl --user reload zulip-acp` is the default verb.** SIGHUP makes the
