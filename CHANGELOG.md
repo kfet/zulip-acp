@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!status` shows the agent name and version (from ACP `agentInfo`, else
+  `<agent> --version`), the thinking level, context usage, cost and last
+  activity of the conversation's live session. It never creates a session.
+
+### Changed
+
+- `!status` labels the agent command `agent cmd:`; `agent:` is now the agent's
+  name and version. acp-kit is v0.21.1.
+
 ## [0.36.0] - 2026-09-20
 
 ### Added

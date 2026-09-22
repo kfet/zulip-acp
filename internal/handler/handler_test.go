@@ -669,6 +669,9 @@ type fakeAgent struct {
 	// under. It is how "this turn got a full bound, not the remainder
 	// of one" is asserted without a sleep.
 	deadlines []time.Time
+	// info and stats back AgentInfo and SessionStats.
+	info  client.AgentInfo
+	stats map[acp.SessionId]client.SessionStats
 }
 
 func newAgent(chunks ...string) *fakeAgent {
@@ -721,6 +724,20 @@ func (a *fakeAgent) Caps() client.Caps {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return client.Caps{Image: a.imageCap}
+}
+
+// AgentInfo and SessionStats play what the agent reported over ACP.
+func (a *fakeAgent) AgentInfo() client.AgentInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.info
+}
+
+func (a *fakeAgent) SessionStats(sid acp.SessionId) (client.SessionStats, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st, ok := a.stats[sid]
+	return st, ok
 }
 
 func (a *fakeAgent) selections() []string {
@@ -819,6 +836,7 @@ type fakeSessions struct {
 	err      error
 	pending  string
 	cancels  []string
+	lastUsed time.Time
 }
 
 func newSessions(t *testing.T, a *fakeAgent) *fakeSessions {
@@ -856,6 +874,17 @@ func (s *fakeSessions) GetOrCreate(_ context.Context, key string, sink client.Se
 }
 
 func (s *fakeSessions) Touch(*state.Session) {}
+
+// Live reports the fake's session for key; lastUsed is s.lastUsed.
+func (s *fakeSessions) Live(key string) (acp.SessionId, time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[key]
+	if !ok {
+		return "", time.Time{}, false
+	}
+	return sess.SessionID, s.lastUsed, true
+}
 
 func (s *fakeSessions) StateDir() string { return s.dir }
 

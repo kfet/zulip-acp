@@ -515,6 +515,7 @@ func main() {
 		Loopback:           tools,
 		Version:            version,
 		AgentCmd:           strings.Join(cfg.GetAgentCmd(), " "),
+		AgentVersion:       handler.AgentVersionFromCmd(cfg.GetAgentCmd()),
 		StartTime:          time.Now(),
 		Sessions:           sessions,
 		Journal:            jr,
