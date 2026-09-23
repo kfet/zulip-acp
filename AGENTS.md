@@ -90,8 +90,11 @@ install.sh              GENERATED from distkit's template + install.sh.json;
                         `make install.sh` rewrites it, `make check-installsh`
                         fails the build when the checked-in copy has drifted
 scripts/converge.sh     the ONLY sanctioned way to change a fleet host
+scripts/chat-update.sh  `!update` on a fleet host (update_converge_cmd): pull,
+                        --tot, commit+push dist.lock if a version moved, --apply
 test/                   live-server integration tests (ZULIP_LIVE=1);
                         converge_render.sh = offline tests for converge.sh;
+                        chat_update.sh = offline tests for chat-update.sh;
                         installsh_guard.sh = offline tests for the generated
                         install.sh's VERSION guard
 ```

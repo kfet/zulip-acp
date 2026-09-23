@@ -114,6 +114,7 @@ test-race-cover: | $(BINDIR)
 test-scripts:
 	$(call RUN,test (scripts),./test/converge_render.sh)
 	$(call RUN,test (install.sh),./test/installsh_guard.sh)
+	$(call RUN,test (chat-update),./test/chat_update.sh)
 
 # Human-friendly per-function coverage summary (no gate).
 test-cover: | $(BINDIR)
