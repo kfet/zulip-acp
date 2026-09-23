@@ -104,9 +104,9 @@ func (h *Handler) RenameTopic(key journal.Key, title string) (string, error) {
 	if c, taken := h.cfg.Journal.Lookup(journal.Channel(key.StreamID, title)); taken && c.ID != conv.ID {
 		return "", errTopicTaken
 	}
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	e := h.inflight[conv.ID]
+	h.renameMu.Lock()
+	defer h.renameMu.Unlock()
+	e := h.inflightOf(conv.ID)
 	if e == nil || e.rename == nil || e.rename.anchor == 0 {
 		// Either no turn holds the conversation any more, or the one
 		// that does is a scheduled prompt — which has no triggering
@@ -131,7 +131,7 @@ func (h *Handler) applyRename(conv journal.Conv, e *inflightEntry) {
 	if e == nil || e.rename == nil {
 		return
 	}
-	h.inflightMu.Lock()
+	h.renameMu.Lock()
 	title := e.rename.title
 	anchor := e.rename.anchor
 	// A turn is only allowed to move the topic it had to itself. By the
@@ -141,8 +141,8 @@ func (h *Handler) applyRename(conv journal.Conv, e *inflightEntry) {
 	// fail-safe direction — the topic keeps a name that is merely
 	// wrong, instead of moving under a live turn — and the successor
 	// can ask for its own.
-	superseded := h.inflight[conv.ID] != nil
-	h.inflightMu.Unlock()
+	superseded := h.isInflight(conv.ID)
+	h.renameMu.Unlock()
 	if title == "" || title == conv.Key.Topic {
 		return
 	}

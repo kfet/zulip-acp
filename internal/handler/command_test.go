@@ -805,14 +805,14 @@ func TestModelChoiceSurvivesASessionSwap(t *testing.T) {
 // has since changed.
 func TestModelChoiceReplacedMidFlight(t *testing.T) {
 	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), nil)
-	hh.h.setModelOverride("c1", "b/two")
-	hh.h.applyModel(context.Background(), "c1", "sid-1")
-	hh.h.setModelOverride("c1", "a/one")
-	hh.h.applyModel(context.Background(), "c1", "sid-1")
+	_ = hh.h.convo.Overrides().Set("c1", "b/two")
+	hh.h.convo.ApplyModel(context.Background(), "c1", "sid-1")
+	_ = hh.h.convo.Overrides().Set("c1", "a/one")
+	hh.h.convo.ApplyModel(context.Background(), "c1", "sid-1")
 	if got := hh.a.selections(); len(got) != 2 {
 		t.Fatalf("selections = %v, want both pushes", got)
 	}
-	hh.h.applyModel(context.Background(), "c1", "sid-1")
+	hh.h.convo.ApplyModel(context.Background(), "c1", "sid-1")
 	if got := hh.a.selections(); len(got) != 2 {
 		t.Fatalf("selections = %v, want no extra push", got)
 	}
@@ -820,7 +820,7 @@ func TestModelChoiceReplacedMidFlight(t *testing.T) {
 
 func TestApplyModelWithNoChoice(t *testing.T) {
 	hh := dmCmdHarness(t, newAgent("x"), nil)
-	hh.h.applyModel(context.Background(), "c-nothing", "sid-1")
+	hh.h.convo.ApplyModel(context.Background(), "c-nothing", "sid-1")
 	if got := hh.a.selections(); len(got) != 0 {
 		t.Fatalf("selections = %v", got)
 	}

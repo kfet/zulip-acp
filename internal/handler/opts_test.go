@@ -427,9 +427,9 @@ func TestAPollSurvivesAReload(t *testing.T) {
 	}
 
 	// Everything in memory goes, exactly as an exec would take it.
-	hh.h.modelMu.Lock()
-	hh.h.modelChoices = map[string]modelChoice{}
-	hh.h.modelMu.Unlock()
+	for _, c := range hh.j.Convs() {
+		_ = hh.h.convo.Overrides().Set(c.ID, "")
+	}
 
 	castVote(t, hh, humanID, poll, 1, 1)
 

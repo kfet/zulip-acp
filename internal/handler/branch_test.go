@@ -502,11 +502,9 @@ func TestBranchAnchorsTheRenameInTheNewTopic(t *testing.T) {
 		if !ok {
 			return
 		}
-		hh.h.inflightMu.Lock()
-		if e := hh.h.inflight[conv.ID]; e != nil && e.rename != nil {
+		if e := hh.h.inflightOf(conv.ID); e != nil && e.rename != nil {
 			anchorTopic = hh.topicOf(e.rename.anchor)
 		}
-		hh.h.inflightMu.Unlock()
 	}
 	hh.branch(t, "planning", "!branch rework the splitter")
 	if anchorTopic != "rework the splitter" {
@@ -841,9 +839,7 @@ func (hh *harness) fork(t *testing.T, user, msgID int64) {
 // inflightOf reads the turn currently claimed for a conversation. Used
 // to prove, by pointer identity, that a branch did not supersede it.
 func (hh *harness) inflightOf(convID string) *inflightEntry {
-	hh.h.inflightMu.Lock()
-	defer hh.h.inflightMu.Unlock()
-	return hh.h.inflight[convID]
+	return hh.h.inflightOf(convID)
 }
 
 // TestBranchReactionSpinsTheMessageOut is the whole gesture: tapping

@@ -1052,3 +1052,16 @@ func TestDropPendingReactionsOnShutdown(t *testing.T) {
 		t.Fatalf("the released conversation did not accept a new turn (%d prompts)", got)
 	}
 }
+
+// TestReactionTurnFailureIsLogged: a claimed reaction turn that fails
+// is logged exactly as a message turn is.
+func TestReactionTurnFailureIsLogged(t *testing.T) {
+	hh, own := reactHarness(t, nil)
+	hh.s.mu.Lock()
+	hh.s.err = errors.New("agent is dead")
+	hh.s.mu.Unlock()
+	hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
+	if !hh.logged("turn for") {
+		t.Fatalf("failure not logged: %v", hh.logs)
+	}
+}
