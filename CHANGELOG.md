@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-23
+
 ### Added
 
-- `update_converge_cmd` config key and `scripts/chat-update.sh <bot>`: on a fleet host `!update` (any target) runs the converge flow (pull, `--tot`, commit+push `dist.lock` if a version moved, `<bot> --apply`) in its own systemd scope and reports old → new versions and the `dist.lock` change, or "already up to date" with the version table, into the topic. zbox-fir sets it.
+- `update_converge_cmd` config key and `scripts/chat-update.sh <bot>`: on a fleet host `!update` (any target) runs the converge flow (pull, `--tot`, commit+push `dist.lock` if a version moved, `<bot> --apply`) in its own systemd scope and reports old → new versions and the `dist.lock` change, or "already up to date" with the version table, into the topic. The job gets no relay credential in its environment, and a failed run restores `dist.lock` and drops its own commit. zbox-fir sets it.
 
 ### Changed
 
