@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/kfet/acp-kit/convo"
 	"io"
 	"io/fs"
 	"os"
@@ -463,23 +464,15 @@ type Config struct {
 // rename is the topic rename this turn has armed through the
 // `rename_topic` loopback tool, applied as the turn ends. It hangs off
 // the TURN rather than the conversation on purpose — see rename.go —
-// and is read and written under inflightMu, like the map itself.
+// and its title is read and written under renameMu.
+//
+// It rides as the Value of the acp-kit convo.Turn that registers the
+// turn; turn is that registration (nil for a turn started through
+// convo.Manager.Start, which ends it itself).
 type inflightEntry struct {
 	cancel context.CancelFunc
 	rename *pendingRename
-
-	// ended is closed by clearInflight, which every turn calls exactly
-	// when it has fully unwound — even after cancelInflight has already
-	// dropped it from the map. It is what lets `!update --force` wait
-	// for a cancelled turn to actually finish posting.
-	endedOnce, initOnce sync.Once
-	ended               chan struct{}
-}
-
-// endedCh returns the channel closed when the turn has unwound.
-func (e *inflightEntry) endedCh() chan struct{} {
-	e.initOnce.Do(func() { e.ended = make(chan struct{}) })
-	return e.ended
+	turn   *convo.Turn
 }
 
 // Handler implements the event side of the relay.
@@ -492,20 +485,19 @@ type Handler struct {
 	// are two different sentences to a user — see emptyModelNote.
 	sawModels atomic.Bool
 
-	inflightMu   sync.Mutex
-	cancelled    []chan struct{} // ended signals of CancelAll's turns
-	inflightCond *sync.Cond
-	inflight     map[string]*inflightEntry
+	// convo is acp-kit's shared conversation core: the in-flight turn
+	// registry (supersede, `!stop`, claim-when-idle), the sticky
+	// per-conversation `!model` choices, the turn liveness policy, the
+	// command.Controller and the command Dispatch.
+	//
+	// The model choices stay in memory only (no convo Store): a model
+	// choice is a session-shaped preference, and a relay restart drops
+	// the ACP sessions it applied to anyway, so persisting it would only
+	// preserve a claim about state that no longer exists.
+	convo *convo.Manager
 
-	// modelChoices holds the sticky per-conversation model set with
-	// `!model <id>`. In memory only: a model choice is a session-shaped
-	// preference, and a relay restart drops the ACP sessions it applied
-	// to anyway, so persisting it would only preserve a claim about
-	// state that no longer exists. It holds at most one entry per
-	// conversation a human has run `!model` in — the same order as the
-	// session map itself — so it needs no GC of its own.
-	modelMu      sync.Mutex
-	modelChoices map[string]modelChoice
+	// renameMu guards the pendingRename of every in-flight turn.
+	renameMu sync.Mutex
 
 	// dmNames remembers the display names of a DM's participants,
 	// learned from the messages arriving in it. The key holds user
@@ -625,8 +617,6 @@ func New(cfg Config) (*Handler, error) {
 	}
 	h := &Handler{
 		cfg:            cfg,
-		inflight:       map[string]*inflightEntry{},
-		modelChoices:   map[string]modelChoice{},
 		dmNames:        map[string][]string{},
 		ownMsgs:        newMsgIndex(reactionIndexSize),
 		badMsgs:        newMsgIndex(reactionIndexSize),
@@ -638,16 +628,11 @@ func New(cfg Config) (*Handler, error) {
 		reactPending:   map[string]*reactionBatch{},
 		lookupStart:    cfg.Now(),
 	}
-	h.inflightCond = sync.NewCond(&h.inflightMu)
 	// Wiring the Controller here rather than in the caller keeps the
 	// broker↔handler construction cycle out of main, and guarantees it
-	// happens before any event can arrive.
-	if cfg.Commands != nil {
-		cfg.Commands.SetController(h)
-		if cfg.Updater != nil {
-			cfg.Commands.AddHelp(update.HelpLine)
-		}
-	}
+	// happens before any event can arrive. convo.New does the wiring.
+	h.convo = mustConvo(h.newConvo())
+	h.convo.Active().OnWait = cfg.OnWaitForConv
 	return h, nil
 }
 
@@ -1089,20 +1074,27 @@ func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt strin
 // branched topic would keep its auto-generated placeholder name for
 // good.
 func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID, anchorID int64) {
-	// A follow-up supersedes whatever is still running in this topic.
-	h.cancelInflight(ctx, conv.ID)
-	// Cancellable only. The turn's real bound is the progress-resetting
+	// A follow-up supersedes whatever is still running in this topic:
+	// the convo Manager runs in Supersede mode. The turn's context is
+	// cancellable only; its real bound is the progress-resetting
 	// liveness clock, armed inside run once the agent is about to be
-	// prompted.
-	pctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	entry := &inflightEntry{cancel: cancel, rename: &pendingRename{anchor: anchorID}}
-	h.setInflight(conv.ID, entry)
-	h.runTurn(pctx, cancel, conv, entry, prompt, addressed, ackMsgID)
+	// prompted. LIFO as ever: endTurn (After) runs only once the turn
+	// is fully unwound and no longer in flight, so `new_session` cannot
+	// cancel the very turn that requested it.
+	entry := &inflightEntry{rename: &pendingRename{anchor: anchorID}}
+	h.convo.Start(ctx, convo.Job{
+		Conv:  conv.ID,
+		Value: entry,
+		Run: func(pctx context.Context, _ *convo.Turn) error {
+			return h.run(pctx, conv, prompt, addressed, ackMsgID)
+		},
+		After: func(*convo.Turn) { h.endTurn(conv, entry) },
+	})
 }
 
-// runTurn owns the turn goroutine and its unwinding. Both entry points
-// above end here, so there is exactly one place that decides what
-// happens as a turn finishes.
+// runTurn owns the goroutine and unwinding of a turn that was CLAIMED
+// (claimConvIdle) rather than started — a batched reaction. It unwinds
+// exactly as a started turn does.
 func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv journal.Conv, entry *inflightEntry, prompt string, addressed bool, ackMsgID int64) {
 	go func() {
 		// LIFO: deferred actions the agent asked for are applied only
@@ -1193,10 +1185,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	// wrapped OUTERMOST so buffered paths (the abstain ValidatingSink)
 	// cannot make a streaming agent look silent — liveness sees every
 	// update as it lands, before anything downstream holds it back.
-	live, lctx, stopLive := client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
-		NoProgressTimeout: h.cfg.NoProgressTimeout,
-		MaxTurnDuration:   h.cfg.TurnCeiling,
-	})
+	live, lctx, stopLive := h.convo.Arm(ctx)
 	defer stopLive()
 	sinkFor = live.Wrap(sinkFor)
 	// Outermost: notices bypass the chain entirely — see noticeRouter.
@@ -1219,7 +1208,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Sessions.Touch(sess)
-	h.applyModel(ctx, conv.ID, sess.SessionID)
+	h.convo.ApplyModel(ctx, conv.ID, sess.SessionID)
 	h.resolveModelInfo(sink)
 
 	text := prompt
@@ -1830,41 +1819,22 @@ func (h *Handler) describe(k journal.Key) string {
 // reports whether there was one. `!stop` uses that answer to tell the
 // difference between interrupting something and doing nothing.
 func (h *Handler) cancelInflight(ctx context.Context, convID string) bool {
-	h.inflightMu.Lock()
-	e, ok := h.inflight[convID]
-	if ok {
-		delete(h.inflight, convID)
-		h.inflightCond.Broadcast()
-	}
-	h.inflightMu.Unlock()
-	if ok {
-		e.cancel()
-		h.cfg.Sessions.Cancel(ctx, convID)
-	}
-	return ok
+	return h.convo.Active().Stop(ctx, convID)
 }
 
 // CancelAll stops every in-flight turn and returns where each one was,
 // for `!update --force`. WaitCancelled then waits for those turns to
 // unwind: WaitIdle cannot, because cancelling drops a turn from the
-// inflight map before it has finished posting.
+// inflight registry before it has finished posting.
 func (h *Handler) CancelAll() []string {
-	h.inflightMu.Lock()
-	ids := make([]string, 0, len(h.inflight))
-	for id, e := range h.inflight {
-		ids = append(ids, id)
-		h.cancelled = append(h.cancelled, e.endedCh())
-	}
-	h.inflightMu.Unlock()
+	ids := h.convo.Active().CancelAll(context.Background())
 	where := map[string]string{}
 	for _, c := range h.cfg.Journal.Convs() {
 		where[c.ID] = h.describe(c.Key)
 	}
-	var out []string
+	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if h.cancelInflight(context.Background(), id) {
-			out = append(out, where[id])
-		}
+		out = append(out, where[id])
 	}
 	sort.Strings(out)
 	return out
@@ -1873,66 +1843,32 @@ func (h *Handler) CancelAll() []string {
 // WaitCancelled blocks until every turn CancelAll cancelled has
 // unwound, then until no turn is in flight, or ctx is done.
 func (h *Handler) WaitCancelled(ctx context.Context) error {
-	h.inflightMu.Lock()
-	chs := h.cancelled
-	h.cancelled = nil
-	h.inflightMu.Unlock()
-	for _, ch := range chs {
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return h.WaitIdle(ctx)
+	return h.convo.Active().WaitCancelled(ctx)
 }
 
 // isInflight reports whether a turn is running for convID.
-func (h *Handler) isInflight(convID string) bool {
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	_, ok := h.inflight[convID]
-	return ok
+func (h *Handler) isInflight(convID string) bool { return h.convo.Active().Running(convID) }
+
+// inflightOf returns the entry of convID's running turn, or nil.
+func (h *Handler) inflightOf(convID string) *inflightEntry {
+	t, ok := h.convo.Active().Get(convID)
+	if !ok {
+		return nil
+	}
+	return t.Value.(*inflightEntry)
 }
 
 func (h *Handler) setInflight(convID string, e *inflightEntry) {
-	h.inflightMu.Lock()
-	h.inflight[convID] = e
-	h.inflightMu.Unlock()
+	e.turn = h.convo.Active().Begin(convID, e.cancel, e)
 }
 
-func (h *Handler) clearInflight(convID string, e *inflightEntry) {
-	e.endedOnce.Do(func() { close(e.endedCh()) })
-	h.inflightMu.Lock()
-	if cur, ok := h.inflight[convID]; ok && cur == e {
-		delete(h.inflight, convID)
-		h.inflightCond.Broadcast()
-	}
-	h.inflightMu.Unlock()
+func (h *Handler) clearInflight(_ string, e *inflightEntry) {
+	h.convo.Active().End(e.turn)
 }
 
 // WaitIdle blocks until no turn is in flight or ctx is done. Used for
 // graceful shutdown and to synchronise tests without polling.
-func (h *Handler) WaitIdle(ctx context.Context) error {
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-stop:
-			return
-		}
-		h.inflightMu.Lock()
-		h.inflightCond.Broadcast()
-		h.inflightMu.Unlock()
-	}()
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	for len(h.inflight) > 0 && ctx.Err() == nil {
-		h.inflightCond.Wait()
-	}
-	return ctx.Err()
-}
+func (h *Handler) WaitIdle(ctx context.Context) error { return h.convo.Active().WaitIdle(ctx) }
 
 // --- background loops ----------------------------------------------------
 

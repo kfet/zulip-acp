@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The conversation core now comes from acp-kit v0.24.0's shared `convo`
+  package: the in-flight turn registry (supersede, `!stop`, claim-when-idle
+  for scheduled prompts and reaction batches), the sticky `!model` table, the
+  turn liveness bound, the command dispatch and the `!status` controller are
+  the same code poe-acp and slack-acp run. This relay's own rules (`/me`
+  `/poll` `/todo`, the `!!` escape, `!opts`, `!archive`, `!update`,
+  `!branch`, the `!model` panel, the unknown-command panel) plug in as
+  dispatch filters. No behaviour change.
+
 ## [0.39.0] - 2026-09-23
 
 ### Added

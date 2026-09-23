@@ -30,10 +30,11 @@ package handler
 import (
 	"context"
 	"fmt"
+	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/convo"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
@@ -91,112 +92,155 @@ func isWidget(text string) bool {
 	return zulipWidgets[strings.ToLower(name)]
 }
 
-// dispatch classifies text and, when it names a command, hands it to
-// the broker.
+// dispatchMeta is the relay context carried on a convo.In through the
+// shared Dispatch: the triggering message (nil for a synthesised one)
+// and the conversation's key.
+type dispatchMeta struct {
+	m   *zulipproto.Message
+	key journal.Key
+}
+
+func metaOf(in *convo.In) dispatchMeta { return in.Meta.(dispatchMeta) }
+
+// dispatch classifies text and, when it names a command, runs it.
 //
 // It returns the prose to forward to the agent and whether the message
 // was consumed. handled=true means the relay is done with this message.
+//
+// The classification itself is acp-kit's shared convo.Manager.Dispatch
+// (broker first, then the passthrough rewrite); this relay contributes
+// its rules as filters around it — see beforeFilters and afterFilters,
+// whose order is load-bearing and documented there.
 func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) (prompt string, handled bool) {
-	// Zulip's own widgets win over everything, including a pending
-	// login: a /poll must never be eaten as a failed redirect paste.
-	if isWidget(text) {
-		return text, false
-	}
-	b := h.cfg.Commands
-	if b == nil {
-		return text, false
-	}
-	token := key.Token()
+	tok := key.Token()
+	res := h.convo.Dispatch(ctx, convo.In{Conv: tok, Token: tok, Text: text, Meta: dispatchMeta{m: m, key: key}})
+	return res.Prompt, res.Handled
+}
 
-	// A leading "!!" is this relay's escape for prose that genuinely
-	// starts with a sigil. Checked before the broker so the broker
-	// never sees it — and deliberately BEFORE the pending-login check
-	// too: someone typing "!!foo" mid-login is plainly not pasting a
-	// redirect URL, so honouring the escape does what they asked and
-	// leaves the login pending for the paste that follows. Consuming
-	// it as a malformed redirect would abort the login instead.
-	if rest, ok := strings.CutPrefix(text, doubleSigil); ok {
-		return command.DisplaySigil + rest, false
-	}
+// replySink posts a command's answer where the command arrived.
+func (h *Handler) replySink(ctx context.Context, in *convo.In, text string) error {
+	h.reply(ctx, metaOf(in).key, text)
+	return nil
+}
 
-	// `!opts` is this relay's own: it renders controls that already
-	// exist onto a surface only Zulip has (see opts.go), so the shared
-	// broker neither knows nor should know about it. Checked before
-	// the broker — which would not recognise it — and before the
-	// pending-login path, because a pasted redirect URL never carries
-	// a sigil and so cannot be mistaken for it.
-	if isOpts(text) {
-		h.showPanel(ctx, key, "")
-		return "", true
-	}
-
-	// `!archive` is this relay's own for the same reason `!opts` is:
-	// it moves a TOPIC between Zulip channels, which is not a thing
-	// poe-acp has. It arms exactly what the :wastebasket: reaction
-	// arms — one destructive path, two ways to start it (archive.go).
-	// Like `!opts` it runs ahead of the pending-login path: a pasted
-	// redirect URL never carries a sigil.
-	if isArchiveCommand(text) {
-		h.archiveCommand(ctx, key, senderName(m))
-		return "", true
-	}
-
-	// `!update` (acp-kit/update) authorises by sender, which the broker
-	// never sees, so it is dispatched here. The reply is posted BEFORE
-	// the reload is triggered.
-	if h.cfg.Updater != nil && update.IsCommand(text) {
-		res := h.cfg.Updater.Handle(ctx, update.Request{
-			ConvID: token, Requester: strconv.FormatInt(m.SenderID, 10),
-			Who: senderName(m), Text: text,
-			Post: func(s string) error { return h.PostTo(token, s) },
-		})
-		h.reply(ctx, key, res.Text)
-		if res.After != nil {
-			if err := res.After(); err != nil {
-				h.cfg.Logf("handler: !update reload: %v", err)
-				h.reply(ctx, key, fmt.Sprintf("❌ Reload failed: %v", err))
+// beforeFilters are this relay's rules that run BEFORE the shared
+// broker, in order.
+func (h *Handler) beforeFilters() []convo.Filter {
+	return []convo.Filter{
+		// Zulip's own widgets win over everything, including a pending
+		// login: a /poll must never be eaten as a failed redirect paste.
+		func(_ context.Context, in *convo.In) convo.Verdict {
+			if isWidget(in.Text) || h.cfg.Commands == nil {
+				return convo.Forward
 			}
-		}
-		return "", true
+			return convo.Pass
+		},
+		// A leading "!!" is this relay's escape for prose that genuinely
+		// starts with a sigil. Checked before the broker so the broker
+		// never sees it — and deliberately BEFORE the pending-login check
+		// too: someone typing "!!foo" mid-login is plainly not pasting a
+		// redirect URL, so honouring the escape does what they asked and
+		// leaves the login pending for the paste that follows. Consuming
+		// it as a malformed redirect would abort the login instead.
+		func(_ context.Context, in *convo.In) convo.Verdict {
+			if rest, ok := strings.CutPrefix(in.Text, doubleSigil); ok {
+				in.Text = command.DisplaySigil + rest
+				return convo.Forward
+			}
+			return convo.Pass
+		},
+		// `!opts` is this relay's own: it renders controls that already
+		// exist onto a surface only Zulip has (see opts.go), so the shared
+		// broker neither knows nor should know about it. Checked before
+		// the broker — which would not recognise it — and before the
+		// pending-login path, because a pasted redirect URL never carries
+		// a sigil and so cannot be mistaken for it.
+		func(ctx context.Context, in *convo.In) convo.Verdict {
+			if !isOpts(in.Text) {
+				return convo.Pass
+			}
+			h.showPanel(ctx, metaOf(in).key, "")
+			return convo.Handled
+		},
+		// `!archive` is this relay's own for the same reason `!opts` is:
+		// it moves a TOPIC between Zulip channels, which is not a thing
+		// poe-acp has. It arms exactly what the :wastebasket: reaction
+		// arms — one destructive path, two ways to start it (archive.go).
+		// Like `!opts` it runs ahead of the pending-login path: a pasted
+		// redirect URL never carries a sigil.
+		func(ctx context.Context, in *convo.In) convo.Verdict {
+			if !isArchiveCommand(in.Text) {
+				return convo.Pass
+			}
+			md := metaOf(in)
+			h.archiveCommand(ctx, md.key, senderName(md.m))
+			return convo.Handled
+		},
+		// `!update` (acp-kit/update) authorises by sender, which the broker
+		// never sees, so it is dispatched here. The reply is posted BEFORE
+		// the reload is triggered.
+		func(ctx context.Context, in *convo.In) convo.Verdict {
+			if h.cfg.Updater == nil || !update.IsCommand(in.Text) {
+				return convo.Pass
+			}
+			md := metaOf(in)
+			token := md.key.Token()
+			res := h.cfg.Updater.Handle(ctx, update.Request{
+				ConvID: token, Requester: strconv.FormatInt(md.m.SenderID, 10),
+				Who: senderName(md.m), Text: in.Text,
+				Post: func(s string) error { return h.PostTo(token, s) },
+			})
+			h.reply(ctx, md.key, res.Text)
+			if res.After != nil {
+				if err := res.After(); err != nil {
+					h.cfg.Logf("handler: !update reload: %v", err)
+					h.reply(ctx, md.key, fmt.Sprintf("❌ Reload failed: %v", err))
+				}
+			}
+			return convo.Handled
+		},
+		// `!branch` is this relay's own for the third time and the same
+		// reason: it CREATES a Zulip topic, which poe-acp has no analogue
+		// for. Like `!opts` and `!archive` it runs ahead of the
+		// pending-login path — a pasted redirect URL never carries a sigil
+		// — and, like them, the origin agent never sees the message.
+		func(ctx context.Context, in *convo.In) convo.Verdict {
+			arg, ok := isBranchCommand(in.Text)
+			if !ok {
+				return convo.Pass
+			}
+			md := metaOf(in)
+			h.branchCommand(ctx, md.m, md.key, arg)
+			return convo.Handled
+		},
+		h.modelRules,
 	}
+}
 
-	// `!branch` is this relay's own for the third time and the same
-	// reason: it CREATES a Zulip topic, which poe-acp has no analogue
-	// for. Like `!opts` and `!archive` it runs ahead of the
-	// pending-login path — a pasted redirect URL never carries a sigil
-	// — and, like them, the origin agent never sees the message.
-	if arg, ok := isBranchCommand(text); ok {
-		h.branchCommand(ctx, m, key, arg)
-		return "", true
-	}
-
-	// Every `!model` shape needs a model list, so an EMPTY catalogue is
-	// answered here, once, before the shapes are told apart. Without
-	// this, bare `!model` and `!model <filter>` both fall through to
-	// the broker's catalogue prose, whose empty-list line can only say
-	// "connect a provider with `!login`" — it has no way to know
-	// whether the agent has even been asked yet. This relay does (see
-	// emptyModelNote), and one wording serves both the panel and this
-	// reply so they cannot disagree.
-	//
-	// Fixing the shared broker instead would need probe state threaded
-	// through acp-kit's Controller; until all three relays report it,
-	// the honest answer belongs to the relay that knows.
-	//
-	// Like `!opts` and the knob below, this runs ahead of the
-	// pending-login path and for the same reason: a pasted redirect URL
-	// never carries a sigil, so a sigil-prefixed `!model` mid-login is
-	// plainly a question about models and not a malformed paste. The
-	// login stays pending for the paste that follows — where it used to
-	// be handed to the broker, which could abort the login to complain
-	// about it.
+// modelRules is the relay's `!model` handling ahead of the broker.
+//
+// Every `!model` shape needs a model list, so an EMPTY catalogue is
+// answered here, once, before the shapes are told apart. Without this,
+// bare `!model` and `!model <filter>` both fall through to the broker's
+// catalogue prose, whose empty-list line can only say "connect a
+// provider with `!login`" — it has no way to know whether the agent has
+// even been asked yet. This relay does (see emptyModelNote), and one
+// wording serves both the panel and this reply so they cannot disagree.
+//
+// Like `!opts`, all of this runs ahead of the pending-login path and for
+// the same reason: a pasted redirect URL never carries a sigil, so a
+// sigil-prefixed `!model` mid-login is plainly a question about models
+// and not a malformed paste. The login stays pending for the paste that
+// follows.
+func (h *Handler) modelRules(ctx context.Context, in *convo.In) convo.Verdict {
+	md := metaOf(in)
+	text := in.Text
 	if isModelCommand(text) {
 		if models, _ := h.models(); len(models) == 0 {
-			h.reply(ctx, key, h.emptyModelNote())
-			return "", true
+			h.reply(ctx, md.key, h.emptyModelNote())
+			return convo.Handled
 		}
 	}
-
 	// A knob CHANGE is applied here rather than being rendered as
 	// prose: it goes through the broker's exported action exactly as
 	// `!model` does, but is acknowledged with a reaction and a
@@ -204,78 +248,55 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 	// belongs in a reaction, not in the topic.
 	//
 	// Only an exact model id qualifies; a filter or a bare `!model`
-	// is a listing and falls through to the broker below. A change
-	// that FAILS also falls through, so the user hears why.
-	//
-	// Like `!opts` this runs ahead of the pending-login path, and for
-	// the same reason: a pasted redirect URL never carries a sigil, so
-	// `!model <id>` mid-login is plainly a settings change and not a
-	// malformed paste. The login stays pending for the paste that
-	// follows.
+	// is a listing and falls through to the broker. A change that
+	// FAILS also falls through, so the user hears why — deliberately
+	// NOT into the filter branch below: an exact id is a change
+	// request, and answering a failed change with a menu would swallow
+	// the reason it failed.
 	if id, ok := h.modelKnob(text); ok {
-		if h.applyModelKnob(ctx, key, m.ID, id) {
-			return "", true
+		if h.applyModelKnob(ctx, md.key, md.m.ID, id) {
+			return convo.Handled
 		}
-		// A change that FAILED falls through to the broker, which runs
-		// the same action and renders the reason. Deliberately NOT into
-		// the filter branch below: an exact id is a change request, and
-		// answering a failed change with a menu would swallow the
-		// reason it failed.
-	} else if filter, ok := modelFilter(text); ok {
-		// `!model <filter>` — an argument that is NOT an exact id — is
-		// a narrowing QUERY, and the answer is the control PAIR with
-		// its choice list narrowed: the same `!opts` surface, the same
-		// single live poll, filtered. The broker's prose answer left
-		// the user retyping an exact id by thumb, which is the exact
-		// problem the poll exists to solve, in the one place the
-		// panel's own "…and N more — `!model <filter>`" line sends
-		// them.
-		//
-		// Bare `!model` is NOT this: it keeps the broker's catalogue
-		// prose. See modelFilter for why.
-		//
-		// A filter matching nothing falls through, so the broker says
-		// "(none match …)" and the live pair is left alone. Replacing a
-		// working control with an empty poll to answer a typo is the
-		// wrong trade.
-		if h.showFilteredPair(ctx, key, filter) {
-			return "", true
+		return convo.Pass
+	}
+	// `!model <filter>` — an argument that is NOT an exact id — is a
+	// narrowing QUERY, and the answer is the control PAIR with its
+	// choice list narrowed: the same `!opts` surface, the same single
+	// live poll, filtered. The broker's prose answer left the user
+	// retyping an exact id by thumb, which is the exact problem the poll
+	// exists to solve, in the one place the panel's own "…and N more —
+	// `!model <filter>`" line sends them.
+	//
+	// Bare `!model` is NOT this: it keeps the broker's catalogue prose.
+	// See modelFilter for why. A filter matching nothing falls through,
+	// so the broker says "(none match …)" and the live pair is left
+	// alone. Replacing a working control with an empty poll to answer a
+	// typo is the wrong trade.
+	if filter, ok := modelFilter(text); ok && h.showFilteredPair(ctx, md.key, filter) {
+		return convo.Handled
+	}
+	return convo.Pass
+}
+
+// afterFilters run after the broker and the passthrough rewrite.
+//
+// Sigil-prefixed, command-shaped, and nothing recognised it. The panel
+// IS the answer: an unknown command is the moment a user is most in
+// need of the menu, and a failure that teaches is worth more than a
+// line of apology. Nothing is forwarded to the agent — a typo must not
+// burn a turn, and config chatter must not enter the transcript the
+// model reads.
+func (h *Handler) afterFilters() []convo.Filter {
+	return []convo.Filter{func(ctx context.Context, in *convo.In) convo.Verdict {
+		name, ok := unknownCommand(in.Text)
+		if !ok {
+			return convo.Pass
 		}
-	}
-
-	// A pasted redirect URL for an in-flight login is not sigil-
-	// prefixed, so it can only be recognised by asking the broker.
-	if b.HasPending(token) || b.IsCommand(text) {
-		out, err := b.Handle(ctx, token, text)
-		if err != nil {
-			h.cfg.Logf("handler: command %q in %s: %v", text, h.describe(key), err)
-			h.reply(ctx, key, fmt.Sprintf("Command failed: %v", err))
-			return "", true
-		}
-		h.reply(ctx, key, h.decorate(text, mustOutcome(out).Text))
-		return "", true
-	}
-
-	// An allowlisted agent command is rewritten to its slash form and
-	// forwarded through the normal prompt path, so the agent runs it
-	// and streams a reply like any other turn.
-	if rewritten, ok := b.Passthrough(text); ok {
-		return rewritten, false
-	}
-
-	// Sigil-prefixed, command-shaped, and nothing recognised it. The
-	// panel IS the answer: an unknown command is the moment a user is
-	// most in need of the menu, and a failure that teaches is worth
-	// more than a line of apology. Nothing is forwarded to the agent —
-	// a typo must not burn a turn, and config chatter must not enter
-	// the transcript the model reads.
-	if name, ok := unknownCommand(text); ok {
 		note := fmt.Sprintf("Unknown command `%s%s` — here is what this relay can do. Send `%s%s` to say it as text.",
 			command.DisplaySigil, name, doubleSigil, name)
-		h.showPanel(ctx, key, note)
-		return "", true
-	}
-	return text, false
+		h.showPanel(ctx, metaOf(in).key, note)
+		return convo.Handled
+	}}
 }
 
 // decorate appends the relay's own commands to a broker-rendered
@@ -416,15 +437,82 @@ func (h *Handler) whereFor(key journal.Key) string {
 // `!new` replaces the conv-id, so a broker holding one would be holding
 // a stale identity. See journal.Key.Token.
 
-// AvailableModels satisfies command.Controller.
-func (h *Handler) AvailableModels() (models []client.ModelInfo, currentID string) {
-	return h.models()
+// The Controller itself is acp-kit's shared convo.Manager (h.convo):
+// the sticky model table, validation, `!stop` and the status snapshots
+// live there. What follows are this relay's hooks into it, and the
+// Handler's own Controller methods, which delegate so every existing
+// caller (the options panel, the loopback tools) keeps one handle.
+
+// newConvo builds the Handler's convo Manager and wires it into the
+// broker as its Controller.
+func (h *Handler) newConvo() (*convo.Manager, error) {
+	cfg := h.cfg
+	if cfg.Commands != nil && cfg.Updater != nil {
+		cfg.Commands.AddHelp(update.HelpLine)
+	}
+	return convo.New(convo.Config{
+		Agent:      zulipAgent{h},
+		Sessions:   sessionsLen{cfg.Sessions, cfg.Journal},
+		Broker:     cfg.Commands,
+		NoCommands: cfg.Commands == nil,
+		Poster:     h,
+		Scheduler:  h,
+		Mode:       convo.Supersede,
+		Liveness: convo.ProgressClock{
+			NoProgressTimeout: cfg.NoProgressTimeout,
+			MaxTurnDuration:   cfg.TurnCeiling,
+		},
+		Sink:    convo.SinkFunc(h.replySink),
+		Before:  h.beforeFilters(),
+		After:   h.afterFilters(),
+		Logf:    cfg.Logf,
+		OnError: func(conv string, err error) { cfg.Logf("handler: turn for %s failed: %v", conv, err) },
+		Version: cfg.Version, AgentCmd: cfg.AgentCmd, StartTime: cfg.StartTime, Now: cfg.Now,
+		Hooks: convo.Hooks{
+			Resolve:      h.resolve,
+			Reset:        func(_ context.Context, token string) error { return h.resetSession(token) },
+			Status:       h.decorateStatus,
+			RelayInfo:    h.decorateRelayInfo,
+			ModelChanged: func(token, _, _ string) { h.refreshPanel(context.Background(), mustKey(token)) },
+			Decorate:     h.decorate,
+		},
+	})
 }
 
-// AgentCommands satisfies command.Controller.
-func (h *Handler) AgentCommands() []client.CommandInfo {
-	return h.cfg.Agent.AvailableCommands()
+// zulipAgent routes the Manager's model reads through h.models, which
+// records that a model list has been seen (see emptyModelNote).
+type zulipAgent struct{ h *Handler }
+
+func (a zulipAgent) Models() ([]client.ModelInfo, string) { return a.h.models() }
+func (a zulipAgent) AvailableCommands() []client.CommandInfo {
+	return a.h.cfg.Agent.AvailableCommands()
 }
+func (a zulipAgent) SetModel(ctx context.Context, sid acp.SessionId, id string) error {
+	return a.h.cfg.Agent.SetModel(ctx, sid, id)
+}
+func (a zulipAgent) SessionStats(sid acp.SessionId) (client.SessionStats, bool) {
+	return a.h.cfg.Agent.SessionStats(sid)
+}
+
+// sessionsLen gives the session manager the Len convo.Sessions wants:
+// on Zulip the count `!status` reports is the journal's active
+// conversations, not live ACP sessions.
+type sessionsLen struct {
+	Sessions
+	j *journal.Journal
+}
+
+func (s sessionsLen) Len() int { return s.j.ActiveCount() }
+
+// resolve maps a broker token to the conversation's id. This relay
+// passes the KEY's token, never the conv-id: `!new` replaces the
+// conv-id, so a broker holding one would be holding a stale identity.
+func (h *Handler) resolve(token string) (string, bool) {
+	_, conv, ok := h.convFor(token)
+	return conv.ID, ok
+}
+
+func (h *Handler) ctl() command.Controller { return h.convo.Controller() }
 
 // convFor resolves a broker token to its conversation, if one exists.
 // A token that does not parse is a programming error on the relay
@@ -440,115 +528,57 @@ func (h *Handler) convFor(token string) (journal.Key, journal.Conv, bool) {
 }
 
 // StatusFor satisfies command.Controller.
-func (h *Handler) StatusFor(token string) command.SessionStatus {
-	key, conv, engaged := h.convFor(token)
-	// One call, not two: separate reads could straddle a model-state
-	// update and report a current model that is not in the list.
-	models, current := h.models()
-	st := command.SessionStatus{
-		EffectiveModel:  current,
-		DefaultModel:    current,
-		HasSession:      engaged,
-		ModelsAvailable: len(models),
-		Where:           h.whereFor(key),
-	}
+func (h *Handler) StatusFor(token string) command.SessionStatus { return h.ctl().StatusFor(token) }
+
+// decorateStatus adds what only Zulip knows: where the conversation is,
+// its id and directory, and that on Zulip "has a session" means the
+// topic is engaged (the ACP session behind it may have been reaped).
+func (h *Handler) decorateStatus(token, convID string, engaged bool, st command.SessionStatus) command.SessionStatus {
+	key, _ := journal.ParseToken(token)
+	st.Where = h.whereFor(key)
+	st.HasSession = engaged
 	if engaged {
-		st.ConvID = conv.ID
-		st.StateDir = filepath.Join(h.cfg.Sessions.StateDir(), convsDir, conv.ID)
-		st.TurnRunning = h.isInflight(conv.ID)
-		if id, ok := h.modelOverride(conv.ID); ok {
-			st.OverrideModel, st.EffectiveModel = id, id
-		}
-		h.addSessionStats(&st, conv.ID)
+		st.ConvID = convID
+		st.StateDir = filepath.Join(h.cfg.Sessions.StateDir(), convsDir, convID)
 	}
 	return st
 }
 
-// addSessionStats fills the fields the agent reported over ACP for the
-// conversation's live session. A conversation with no live session
-// (never started, or reaped by idle GC) has none to show.
-func (h *Handler) addSessionStats(st *command.SessionStatus, convID string) {
-	sid, last, ok := h.cfg.Sessions.Live(convID)
-	if !ok {
-		return
-	}
-	if !last.IsZero() {
-		// max: Touch runs after a turn, so a racing read may see a
-		// last use a moment in the future.
-		st.LastActivity = max(h.now().Sub(last), 0).Round(time.Second).String()
-	}
-	ss, ok := h.cfg.Agent.SessionStats(sid)
-	if !ok {
-		return
-	}
-	st.Thinking = ss.Thinking
-	st.ContextUsed, st.ContextSize = ss.ContextUsed, ss.ContextSize
-	if ss.Cost != nil {
-		st.Cost = strings.TrimSpace(fmt.Sprintf("%.2f %s", ss.Cost.Amount, ss.Cost.Currency))
-	}
-}
-
 // RelayInfo satisfies command.Controller.
-func (h *Handler) RelayInfo(token string) command.RelayInfo {
-	_, conv, engaged := h.convFor(token)
-	models, _ := h.models()
-	ri := command.RelayInfo{
-		Version:         h.cfg.Version,
-		AgentCmd:        h.cfg.AgentCmd,
-		ModelsAvailable: len(models),
-		ActiveSessions:  h.cfg.Journal.ActiveCount(),
-	}
+func (h *Handler) RelayInfo(token string) command.RelayInfo { return h.ctl().RelayInfo(token) }
+
+func (h *Handler) decorateRelayInfo(_, convID string, engaged bool, ri command.RelayInfo) command.RelayInfo {
 	if ai := h.cfg.Agent.AgentInfo(); ai.Name != "" {
 		ri.AgentName, ri.AgentVersion = ai.Name, ai.Version
 	} else if h.cfg.AgentVersion != nil {
 		ri.AgentName = h.cfg.AgentVersion()
 	}
-	if !h.cfg.StartTime.IsZero() {
-		ri.Uptime = h.now().Sub(h.cfg.StartTime).Round(time.Second).String()
-	}
+	ri.SessionID, ri.EffectiveModel = "", ""
 	if engaged {
-		ri.SessionID = conv.ID
+		ri.SessionID = convID
 	}
 	return ri
 }
 
 // SetModelOverride satisfies command.Controller. The choice is sticky
 // per conversation and applied to the ACP session at the start of the
-// next turn — see applyModel.
+// next turn — see convo.Manager.ApplyModel. Every model change passes
+// through here — typed, tapped, or made by the agent through its
+// loopback tool — so the ModelChanged hook is the one place that keeps
+// the options panel honest.
 func (h *Handler) SetModelOverride(token, modelID string) error {
-	key, conv, engaged := h.convFor(token)
-	if !engaged {
-		return fmt.Errorf("there is no conversation here yet — send a message first")
-	}
-	models, _ := h.models()
-	found := len(models) == 0
-	for _, m := range models {
-		if m.ID == modelID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("unknown model %q", modelID)
-	}
-	h.setModelOverride(conv.ID, modelID)
-	// Every model change passes through here — typed, tapped, or made
-	// by the agent through its loopback tool — so this is the one
-	// place that keeps the options panel honest. Only a conversation
-	// that already HAS a panel gets one re-posted. context.Background
-	// because the broker's action carries none; see ResetSession.
-	h.refreshPanel(context.Background(), key)
-	return nil
+	return h.ctl().SetModelOverride(token, modelID)
 }
 
 // ResetSession satisfies command.Controller: it is what `!new` calls.
-//
-// On Zulip this RETIRES the journal entry and allocates a fresh
-// conv-id. The old state/convs/<id>/ directory is left exactly where it
-// is — retiring a conversation is not deleting work. The broker never
-// learns the id changed, which is precisely why it is handed a key
-// token rather than a conv-id.
-func (h *Handler) ResetSession(token string) error {
+func (h *Handler) ResetSession(token string) error { return h.ctl().ResetSession(token) }
+
+// resetSession is the Reset hook. On Zulip this RETIRES the journal
+// entry and allocates a fresh conv-id. The old state/convs/<id>/
+// directory is left exactly where it is — retiring a conversation is
+// not deleting work. The broker never learns the id changed, which is
+// precisely why it is handed a key token rather than a conv-id.
+func (h *Handler) resetSession(token string) error {
 	key, conv, engaged := h.convFor(token)
 	if engaged {
 		// A turn still running in the retired conversation would keep
@@ -570,7 +600,7 @@ func (h *Handler) ResetSession(token string) error {
 	}
 	// The model choice is the user's, not the conversation's: carry it
 	// across so `!new` clears context without silently reverting it.
-	h.carryModelOverride(prev.ID, fresh.ID)
+	_ = h.convo.Overrides().Carry(prev.ID, fresh.ID)
 	// The retired conversation owns no message any more. Retire has
 	// already cleared the persisted record; this drops the in-memory
 	// one, which would otherwise outlive the conversation it names.
@@ -584,19 +614,5 @@ func (h *Handler) ResetSession(token string) error {
 // HTTP request per turn and has no in-flight turn a later message
 // could reach. This relay streams into an editable message and does.
 func (h *Handler) StopTurn(token string) bool {
-	_, conv, engaged := h.convFor(token)
-	if !engaged {
-		return false
-	}
-	// context.Background: see ResetSession.
-	return h.cancelInflight(context.Background(), conv.ID)
+	return h.ctl().(command.TurnStopper).StopTurn(token)
 }
-
-// Compile-time proof that the Handler satisfies the broker's
-// interfaces. Without these, a signature drift in acp-kit would surface
-// as `!status` silently reporting "Session control is unavailable" at
-// runtime instead of as a build failure.
-var (
-	_ command.Controller  = (*Handler)(nil)
-	_ command.TurnStopper = (*Handler)(nil)
-)

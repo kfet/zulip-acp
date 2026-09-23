@@ -1,31 +1,27 @@
 package handler
 
-import "github.com/kfet/acp-kit/command"
+import (
+	"github.com/kfet/acp-kit/convo"
+	"github.com/kfet/zulip-acp/internal/journal"
+)
 
-// mustOutcome asserts the broker's contract: when the relay has
-// already established that a message is a command — either because a
-// login is pending for this conversation, or because Broker.IsCommand
-// said so — Broker.Handle returns an Outcome to render.
-//
-// It cannot be reached from a test, because it cannot be reached at
-// all: acp-kit's Handle returns (nil, nil) only for a sigil-prefixed
-// body that matches none of its cases, and every body IsCommand
-// accepts is one that Handle matches. The two functions are defined
-// against the same list, and both apply the same verb folding.
-//
-// The proof also rests on delivery being single-goroutine — Zulip's
-// /events runner is one long-poll loop — so nothing can clear a
-// pending login between the relay's HasPending check and Handle's own.
-//
-// It panics rather than returning a nil the caller would have to guard,
-// because the alternative — silently consuming a user's message and
-// posting nothing — is the one failure mode this relay must never
-// have. If acp-kit ever drifts so that the two lists disagree, a crash
-// on the first affected command is how we find out immediately instead
-// of through a user reporting that the bot went quiet.
-func mustOutcome(out *command.Outcome) *command.Outcome {
-	if out == nil {
-		panic("handler: acp-kit/command returned no outcome for a recognised command — IsCommand and Handle disagree")
+// mustKey parses a broker token the convo Manager has already resolved.
+// Its ModelChanged hook fires only after Resolve (convFor) parsed the
+// same token successfully, so a parse error here cannot happen.
+func mustKey(token string) journal.Key {
+	key, err := journal.ParseToken(token)
+	if err != nil {
+		panic("handler: resolved token no longer parses: " + err.Error())
 	}
-	return out
+	return key
+}
+
+// mustConvo panics if convo.New failed. The handler passes no override
+// Store and always an Agent — the only two ways it can fail — so an
+// error here is a wiring bug, not a runtime condition.
+func mustConvo(m *convo.Manager, err error) *convo.Manager {
+	if err != nil {
+		panic("handler: convo manager: " + err.Error())
+	}
+	return m
 }

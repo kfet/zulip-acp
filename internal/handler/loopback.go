@@ -344,34 +344,15 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 // lock in between. Returns ctx.Err() if it gives up first, in which case
 // nothing is claimed and the caller must not clear anything.
 //
-// The wait reuses the inflight condition variable, so neither this nor
-// any test polls a clock.
+// It is acp-kit's convo.Active.Claim, which waits on the registry's
+// condition variable, so neither this nor any test polls a clock.
 func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightEntry) error {
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-stop:
-			return
-		}
-		h.inflightMu.Lock()
-		h.inflightCond.Broadcast()
-		h.inflightMu.Unlock()
-	}()
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	for ctx.Err() == nil {
-		if _, busy := h.inflight[convID]; !busy {
-			h.inflight[convID] = e
-			return nil
-		}
-		if h.cfg.OnWaitForConv != nil {
-			h.cfg.OnWaitForConv(convID)
-		}
-		h.inflightCond.Wait()
+	t, err := h.convo.Active().Claim(ctx, convID, e.cancel, e)
+	if err != nil {
+		return err
 	}
-	return ctx.Err()
+	e.turn = t
+	return nil
 }
 
 // endTurn applies whatever the agent deferred during the turn that has

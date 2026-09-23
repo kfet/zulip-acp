@@ -80,21 +80,17 @@ func TestUpdateCommandRefusesNonOwner(t *testing.T) {
 }
 
 func TestWaitCancelledHonoursContext(t *testing.T) {
-	agent := newAgent("x")
-	agent.block = make(chan struct{})
-	hh := cmdHarness(t, agent, nil)
-	hh.h.Handle(context.Background(), channelEvent(humanID, "hacking", mention("go")))
-	<-agent.entered
-	hh.h.inflightMu.Lock()
-	hh.h.cancelled = append(hh.h.cancelled, make(chan struct{}))
-	hh.h.inflightMu.Unlock()
+	hh := cmdHarness(t, newAgent("x"), nil)
+	// Cancelled, but never unwound.
+	e := &inflightEntry{cancel: func() {}}
+	hh.h.setInflight("c", e)
+	hh.h.CancelAll()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := hh.h.WaitCancelled(ctx); err == nil {
 		t.Fatal("want ctx error")
 	}
-	close(agent.block)
-	waitIdle(t, hh)
+	hh.h.clearInflight("c", e)
 }
 
 // TestUpdateCommandFleetReportsThroughPost: on a fleet host `!update`
