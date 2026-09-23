@@ -324,6 +324,21 @@ func TestResolveBin(t *testing.T) {
 	}
 }
 
+func TestConvergeWrap(t *testing.T) {
+	env := func(v string) func(string) string { return func(string) string { return v } }
+	found := func(string) string { return "/usr/bin/systemd-run" }
+	missing := func(string) string { return "" }
+	if w := convergeWrap(env(""), found); w != nil {
+		t.Fatal("not under systemd:", w)
+	}
+	if w := convergeWrap(env("abc"), missing); w != nil {
+		t.Fatal("no systemd-run:", w)
+	}
+	if w := convergeWrap(env("abc"), found); strings.Join(w, " ") != "/usr/bin/systemd-run --user --scope --quiet --collect" {
+		t.Fatal(w)
+	}
+}
+
 func TestNewUpdater(t *testing.T) {
 	cfg := &config.Config{StateDir: t.TempDir()}
 	if newUpdater(cfg, "1", "", nil, nil, nil) != nil {

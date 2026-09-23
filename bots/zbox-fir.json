@@ -54,7 +54,8 @@
     "update_owner_ids": [
       8
     ],
-    "fleet_lock_file": "/home/kfet/src/zulip-acp/dist.lock"
+    "fleet_lock_file": "/home/kfet/src/zulip-acp/dist.lock",
+    "update_converge_cmd": "/home/kfet/src/zulip-acp/scripts/chat-update.sh zbox-fir"
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"

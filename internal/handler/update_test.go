@@ -96,3 +96,32 @@ func TestWaitCancelledHonoursContext(t *testing.T) {
 	close(agent.block)
 	waitIdle(t, hh)
 }
+
+// TestUpdateCommandFleetReportsThroughPost: on a fleet host `!update`
+// runs the converge job, and the job's report reaches the SAME
+// conversation after the command has returned.
+func TestUpdateCommandFleetReportsThroughPost(t *testing.T) {
+	u := update.New(update.Config{
+		RelayName: "zulip-acp", RelayVersion: "0.1.0", RelayBin: "/relay",
+		Owners: []string{strconv.FormatInt(humanID, 10)}, StateDir: t.TempDir(),
+		Fleet: true, ConvergeCmd: "true", PollInterval: 1,
+		Version: func(context.Context, string) string { return "v" },
+	})
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) { c.Updater = u })
+	report := make(chan string, 1)
+	hh.z.mu.Lock()
+	hh.z.sendHook = func(s string) error {
+		if strings.Contains(s, "up to date") {
+			report <- s
+		}
+		return nil
+	}
+	hh.z.mu.Unlock()
+	hh.deliverDM(t, humanID, "!update", humanID, botID)
+	if got := <-report; !strings.HasPrefix(got, "✅ Already up to date.") {
+		t.Fatal(got)
+	}
+	if got := strings.Join(hh.z.stored(), "\n"); !strings.Contains(got, "running converge") {
+		t.Fatal(got)
+	}
+}

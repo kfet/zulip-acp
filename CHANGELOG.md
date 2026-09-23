@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `update_converge_cmd` config key and `scripts/chat-update.sh <bot>`: on a fleet host `!update` (any target) runs the converge flow (pull, `--tot`, commit+push `dist.lock` if a version moved, `<bot> --apply`) in its own systemd scope and reports old → new versions and the `dist.lock` change, or "already up to date" with the version table, into the topic. zbox-fir sets it.
+
+### Changed
+
+- `!update` on a fleet host no longer refuses; `--force` now only cancels in-flight turns before the reload and no longer bypasses the lock (acp-kit v0.23.2).
+
 ## [0.38.0] - 2026-09-22
 
 ### Added

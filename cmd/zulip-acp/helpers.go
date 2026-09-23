@@ -214,16 +214,35 @@ func newUpdater(cfg *config.Config, version string, agentBin string, agentVersio
 		StateDir:     cfg.StateDir,
 		Fleet:        cfg.IsFleetManaged(),
 		LockFile:     cfg.FleetLockFile,
-		UpdateSelf:   update.CommandHook(self, "update"),
-		AgentVersion: agentVersion,
-		AgentPID:     func() int { return childPID(procRoot, os.Getpid(), agentBin) },
-		CancelAll:    cancelAll,
-		WaitIdle:     waitIdle,
+		ConvergeCmd:  cfg.UpdateConvergeCmd,
+		ConvergeWrap: convergeWrap(os.Getenv, resolveBin),
+		// The job needs no relay credential; same list the agent loses.
+		SecretEnvNames: cfg.AgentClientConfig(nil).SecretEnvNames,
+		Logf:           log.Printf,
+		UpdateSelf:     update.CommandHook(self, "update"),
+		AgentVersion:   agentVersion,
+		AgentPID:       func() int { return childPID(procRoot, os.Getpid(), agentBin) },
+		CancelAll:      cancelAll,
+		WaitIdle:       waitIdle,
 	}
 	if agentBin != "" {
 		u.UpdateAgent = update.CommandHook(agentBin, "update")
 	}
 	return update.New(u)
+}
+
+// convergeWrap returns the argv prefix for the `!update` converge job.
+// Under systemd the job runs in its own transient scope: converge may
+// hard-restart this unit, and that kills every process in the unit's
+// cgroup — the job itself included, before it can report.
+func convergeWrap(getenv func(string) string, lookup func(string) string) []string {
+	if getenv("INVOCATION_ID") == "" {
+		return nil
+	}
+	if bin := lookup("systemd-run"); bin != "" {
+		return []string{bin, "--user", "--scope", "--quiet", "--collect"}
+	}
+	return nil
 }
 
 // procRoot is /proc, a test seam.

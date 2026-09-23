@@ -138,11 +138,15 @@ type Config struct {
 	UpdateOwnerIDs []int64 `json:"update_owner_ids,omitempty"`
 
 	// FleetManaged marks a host whose versions are owned by
-	// converge/dist.lock: `!update` then refuses without --force.
-	// FleetLockFile, if set, is that host's dist.lock, shown by
-	// `!update --check`; setting it implies FleetManaged.
-	FleetManaged  bool   `json:"fleet_managed,omitempty"`
-	FleetLockFile string `json:"fleet_lock_file,omitempty"`
+	// converge/dist.lock: `!update` then runs UpdateConvergeCmd (a
+	// shell command) instead of updating binaries in place, and refuses
+	// when it is unset. FleetLockFile, if set, is that host's
+	// dist.lock, shown by `!update --check` and diffed in the report.
+	// Setting either FleetLockFile or UpdateConvergeCmd implies
+	// FleetManaged.
+	FleetManaged      bool   `json:"fleet_managed,omitempty"`
+	FleetLockFile     string `json:"fleet_lock_file,omitempty"`
+	UpdateConvergeCmd string `json:"update_converge_cmd,omitempty"`
 
 	// AgentCmd is the argv used to spawn the ACP agent.
 	// Default: ["fir", "--mode", "acp"].
@@ -783,7 +787,9 @@ func (c *Config) UpdateOwners() []string {
 }
 
 // IsFleetManaged reports whether converge owns this host's versions.
-func (c *Config) IsFleetManaged() bool { return c.FleetManaged || c.FleetLockFile != "" }
+func (c *Config) IsFleetManaged() bool {
+	return c.FleetManaged || c.FleetLockFile != "" || c.UpdateConvergeCmd != ""
+}
 
 func (c *Config) AllowedUsers() map[int64]struct{} {
 	if len(c.AllowedUserIDs) == 0 {

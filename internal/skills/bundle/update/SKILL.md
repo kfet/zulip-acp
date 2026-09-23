@@ -21,8 +21,14 @@ upgrade/recycle mechanics.
 > **From chat:** an owner (`update_owner_ids`) can send `!update` (fir + relay),
 > `!update fir`, `!update relay`, `!update --check`, or `!update fir --rollback`.
 > It updates on disk, then does the same graceful SIGHUP reload described below
-> and reports the version change in the topic afterwards. On a fleet host
-> (`fleet_managed` / `fleet_lock_file`) it refuses without `--force` — use converge.
+> and reports the version change in the topic afterwards. `--force` cancels
+> in-flight turns first. On a fleet host (`fleet_managed` / `fleet_lock_file` /
+> `update_converge_cmd`) every form except `--check` runs `update_converge_cmd`
+> instead — for zbox, `scripts/chat-update.sh zbox-fir`: pull, `--tot`, commit
+> and push `dist.lock` if a version moved, `zbox-fir --apply`. The topic gets
+> the old → new versions and the `dist.lock` change, or "already up to date"
+> with the version table. A fleet host with no converge command refuses, and
+> `--rollback` is refused there (pin the version in `dist.lock` instead).
 
 ## reload vs restart — pick the right verb
 

@@ -740,4 +740,7 @@ func TestUpdateOwnersAndFleet(t *testing.T) {
 	if !(&Config{FleetManaged: true}).IsFleetManaged() {
 		t.Fatal("fleet")
 	}
+	if !(&Config{UpdateConvergeCmd: "converge"}).IsFleetManaged() {
+		t.Fatal("converge command implies fleet")
+	}
 }

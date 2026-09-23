@@ -148,6 +148,7 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 		res := h.cfg.Updater.Handle(ctx, update.Request{
 			ConvID: token, Requester: strconv.FormatInt(m.SenderID, 10),
 			Who: senderName(m), Text: text,
+			Post: func(s string) error { return h.PostTo(token, s) },
 		})
 		h.reply(ctx, key, res.Text)
 		if res.After != nil {
