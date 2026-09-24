@@ -988,10 +988,17 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	// `!help` in a topic the relay has never answered in leaves no
 	// state behind and retopics nothing. A command consumes the
 	// message; nothing here reaches the agent.
-	prompt, handled := h.dispatch(ctx, m, key, h.promptText(text))
+	in := h.promptText(text)
+	prompt, handled := h.dispatch(ctx, m, key, in)
 	if handled {
 		return
 	}
+	// A passthrough command (`!reload` → `/reload`) must reach the
+	// agent byte-exact: fir runs a slash command only when the prompt
+	// text STARTS with "/". The sender prefix, link hydration and the
+	// rename hint below would all bury it, and the agent would get a
+	// prose question about /reload instead of running it.
+	passthrough := isPassthrough(in, prompt)
 
 	if lobby {
 		// The move happens BEFORE the lookup below, so the
@@ -1024,13 +1031,19 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		h.badMsgs.dropValue(key.Label())
 	}
 
-	prompt = "[" + m.SenderName + "] " + prompt
-	// Hydration runs after the conversation exists — it dedupes per
-	// conversation — and before the rename hint, so the relay's own
-	// instruction stays the last thing in the prompt.
-	prompt += h.hydrateLinks(ctx, conv.ID, m)
-	if named != "" && h.cfg.Loopback != nil {
-		prompt += renameHint(named)
+	if passthrough {
+		// Always addressed: a command the user typed wants its
+		// answer, so it never runs on the abstain path.
+		addressed = true
+	} else {
+		prompt = "[" + m.SenderName + "] " + prompt
+		// Hydration runs after the conversation exists — it dedupes per
+		// conversation — and before the rename hint, so the relay's own
+		// instruction stays the last thing in the prompt.
+		prompt += h.hydrateLinks(ctx, conv.ID, m)
+		if named != "" && h.cfg.Loopback != nil {
+			prompt += renameHint(named)
+		}
 	}
 
 	h.startTurn(ctx, conv, prompt, addressed, m.ID)
@@ -1211,15 +1224,23 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	h.convo.ApplyModel(ctx, conv.ID, sess.SessionID)
 	h.resolveModelInfo(sink)
 
-	text := prompt
-	if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
-		text = prefix + "\n\n" + text
+	var blocks []acp.ContentBlock
+	if isSlashPrompt(prompt) {
+		// A passthrough command goes to the agent verbatim. The pending
+		// system prompt stays pending for the next real prompt: put in
+		// front, it would stop the agent seeing the leading "/".
+		blocks = []acp.ContentBlock{acp.TextBlock(prompt)}
+	} else {
+		text := prompt
+		if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
+			text = prefix + "\n\n" + text
+		}
+		// Inbound attachments are ingested here, and not at intake, for one
+		// reason: the files go in the conversation's working directory, and
+		// the session is what knows where that is. See inbox.go.
+		note, extra := h.ingestAttachments(ctx, sess.Cwd, text)
+		blocks = append([]acp.ContentBlock{acp.TextBlock(text + note)}, extra...)
 	}
-	// Inbound attachments are ingested here, and not at intake, for one
-	// reason: the files go in the conversation's working directory, and
-	// the session is what knows where that is. See inbox.go.
-	note, extra := h.ingestAttachments(ctx, sess.Cwd, text)
-	blocks := append([]acp.ContentBlock{acp.TextBlock(text + note)}, extra...)
 
 	if !h.cfg.BatchEdits {
 		// Arm the "still writing" marker for the whole turn. It costs
@@ -2009,4 +2030,19 @@ func (p *convPoster) PostWidget(ctx context.Context, content, widget string) (in
 		return p.client.SendDirectMessageWidget(ctx, p.key.UserIDs, content, widget)
 	}
 	return p.client.SendMessageWidget(ctx, p.key.StreamID, p.key.Topic, content, widget)
+}
+
+// isPassthrough reports whether dispatch rewrote the user's text into
+// an agent slash command (acp-kit Broker.Passthrough: "!reload" →
+// "/reload"). A user who literally types "/x" is NOT one: dispatch
+// returns that text unchanged, and it is prose like any other.
+func isPassthrough(in, out string) bool {
+	return out != in && isSlashPrompt(out)
+}
+
+// isSlashPrompt reports whether a turn prompt is a bare agent slash
+// command. Every other prompt the relay builds starts with a "[sender]"
+// attribution, so only a passthrough turn can start with "/".
+func isSlashPrompt(prompt string) bool {
+	return strings.HasPrefix(prompt, "/")
 }
