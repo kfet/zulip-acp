@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.2] - 2026-09-24
+
+### Fixed
+
+- Passthrough commands (`!reload`, `!mcp`, `!compact`, `!skills`, …) now reach the agent as the bare slash command. The sender prefix and pending system prompt made fir treat them as prose, so the agent explained the command instead of running it.
+
 ## [0.39.1] - 2026-09-24
 
 ### Changed
