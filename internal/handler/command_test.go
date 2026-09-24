@@ -333,9 +333,30 @@ func TestAgentCommandPassthrough(t *testing.T) {
 	agent := newAgent("reloaded")
 	agent.agentCmds = []client.CommandInfo{{Name: "reload", Description: "reload config"}}
 	hh := dmCmdHarness(t, agent, nil)
+	hh.s.pending = "SYSTEM RULES"
 	hh.deliverDM(t, humanID, "!reload", humanID, botID)
-	if len(hh.a.prompts) != 1 || !strings.Contains(hh.a.prompts[0], "/reload") {
-		t.Fatalf("prompts = %q, want the rewritten /reload", hh.a.prompts)
+	// Byte-exact, not Contains: fir runs a slash command only when the
+	// prompt STARTS with "/". A "[sender] " prefix or a system prompt in
+	// front turned `!reload` into a prose question about /reload.
+	if len(hh.a.prompts) != 1 || hh.a.prompts[0] != "/reload" {
+		t.Fatalf("prompts = %q, want exactly \"/reload\"", hh.a.prompts)
+	}
+	// The system prompt stays pending for the next real prompt.
+	hh.deliverDM(t, humanID, "hi", humanID, botID)
+	if len(hh.a.prompts) != 2 || !strings.HasPrefix(hh.a.prompts[1], "SYSTEM RULES\n\n") {
+		t.Fatalf("prompts = %q, want the system prompt on the next turn", hh.a.prompts)
+	}
+}
+
+// TestLiteralSlashIsProse: a user who types "/reload" themselves is not
+// a passthrough; it keeps the sender attribution like any message.
+func TestLiteralSlashIsProse(t *testing.T) {
+	agent := newAgent("x")
+	agent.agentCmds = []client.CommandInfo{{Name: "reload"}}
+	hh := dmCmdHarness(t, agent, nil)
+	hh.deliverDM(t, humanID, "/reload", humanID, botID)
+	if len(hh.a.prompts) != 1 || strings.HasPrefix(hh.a.prompts[0], "/") {
+		t.Fatalf("prompts = %q, want an attributed prose prompt", hh.a.prompts)
 	}
 }
 
