@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A dead agent child no longer wedges the relay. acp-kit v0.25.0 supervises it: the exit is logged with its code or signal and the last lines of the agent's stderr, the agent is re-spawned with backoff, and each topic's session is re-attached on its next turn — previously every later turn failed with `write |1: file already closed` until a manual restart.
+- A turn cut short by the agent dying now says the agent is restarting and to resend, instead of a raw pipe error.
+
 ## [0.39.2] - 2026-09-24
 
 ### Fixed

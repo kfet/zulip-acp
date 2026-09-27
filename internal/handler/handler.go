@@ -1419,6 +1419,10 @@ func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollov
 			h.cfg.TurnCeiling)
 	case errors.Is(c, context.Canceled):
 		suffix = "\n\n*(superseded by your next message)*"
+	case errors.Is(cause, client.ErrAgentDied):
+		// acp-kit re-spawns the agent and re-attaches this topic's
+		// session on the next turn; the raw pipe error helps nobody.
+		suffix = "\n\n*(the agent process died mid-turn and is being restarted — send your message again)*"
 	}
 	fctx := context.WithoutCancel(ctx)
 	if err := split.Close(fctx, suffix); err != nil {

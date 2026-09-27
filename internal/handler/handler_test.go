@@ -2923,6 +2923,41 @@ func TestSupersededTurnReadsAsSuperseded(t *testing.T) {
 	}
 }
 
+// TestAgentDeathReadsAsRestart: a turn cut short by the agent child dying
+// tells the reader to resend (acp-kit respawns the agent), and the next
+// turn on the same topic goes through.
+func TestAgentDeathReadsAsRestart(t *testing.T) {
+	agent := newAgent("reply")
+	agent.err = fmt.Errorf("%w (signal: killed)", client.ErrAgentDied)
+	hh := newHarness(t, agent, nil)
+	msg := func(text string) zulipproto.Event {
+		return zulipproto.Event{Type: zulipproto.EventMessage, Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: text,
+			StreamID: 4, Topic: "crash", Type: "stream",
+		}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hh.h.Handle(context.Background(), msg(mention("first")))
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	all := strings.Join(hh.z.stored(), "\n")
+	if !strings.Contains(all, "is being restarted") || strings.Contains(all, "signal: killed") {
+		t.Fatalf("stored = %q", all)
+	}
+	agent.mu.Lock()
+	agent.err = nil
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), msg(mention("second")))
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if all := strings.Join(hh.z.stored(), "\n"); !strings.Contains(all, "reply") {
+		t.Fatalf("second turn: %q", all)
+	}
+}
+
 // --- sentinel watch ------------------------------------------------------
 
 // chunkSplits returns the same text as: one chunk, one rune per chunk,

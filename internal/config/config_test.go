@@ -407,6 +407,9 @@ func TestAgentClientConfig(t *testing.T) {
 	if _, ok := got.ClientMeta[statusline.ExtensionID]; !ok {
 		t.Fatalf("status-line extension not advertised: %v", got.ClientMeta)
 	}
+	if got.NoRespawn {
+		t.Fatal("agent supervision must stay on: a dead child would wedge every later turn")
+	}
 }
 
 func TestNoopPosterIsInert(t *testing.T) {
