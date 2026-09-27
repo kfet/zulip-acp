@@ -1,0 +1,58 @@
+{
+  "name": "bot-m",
+  "host": "ko2",
+  "platform": "linux/arm64",
+  "supervisor": "systemd-user",
+  "unit": "zulip-acp",
+  "binary": "~/.local/bin/zulip-acp",
+  "require": {
+    "zulip_acp": ">=0.31.3",
+    "fir": ">=1.11.0"
+  },
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
+  "service": {
+    "config_path": "~/.config/zulip-acp/config.json"
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s",
+    "timeout_stop_sec": "90s"
+  },
+  "config": {
+    "site": "https://chat-a.example.invalid",
+    "site_aliases": [
+      "chat-b.example.invalid"
+    ],
+    "bot_email": "bot-m-bot@chat-b.example.invalid",
+    "channels": [
+      "*"
+    ],
+    "ambient_channels": [
+      "ask-ko2"
+    ],
+    "autotopic_channels": [
+      "ask-ko2"
+    ],
+    "dms": true,
+    "relay_mcp": true,
+    "state_dir": "/home/kfet/.config/zulip-acp/state",
+    "hide_thinking": false,
+    "system_prompt": "Treat every message you receive as addressed to you, whether or not the bot is mentioned. Reply to all of them; never emit the silent sentinel.\n\nWrite in ASD-STE100 (Simplified Technical English): short sentences, active voice, one idea per sentence, plain approved vocabulary.",
+    "allowed_user_ids": [
+      8
+    ],
+    "stream_edits": false
+  },
+  "credentials": {
+    "env_file": "~/.config/zulip-acp/env"
+  }
+}
