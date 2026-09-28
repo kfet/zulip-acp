@@ -739,6 +739,12 @@ socket and advertises it to its own child agent. The agent can then:
   the turn** — a turn posts into the topic it started in, so moving it early
   would split the answer in two — and it moves the whole topic, so the
   conversation and its session follow it.
+- `branch` — spin work out into up to 10 new topics in the same channel at
+  once, each with its own session that starts on its seed immediately. It is
+  the agent twin of `!branch`: each task names a `from_msg` in **this** topic
+  (the branch point, as `history` shows it) and an optional `seed` and
+  `title`. The relay posts the links in this topic, and one line in the root
+  topic when a branch branches again.
 - read `history` — the conversation's **own earlier messages**, oldest first,
   as raw markdown, including the bot's own past replies. That is how an agent
   whose session was cleared (or that started after a restart) recovers what a
@@ -755,7 +761,9 @@ prompt-injected agent could do. Three things bound it:
   user as an argument, so there is no way to address anywhere else — and that
   applies to reading as much as to posting: `history` can only read the topic
   or DM the call came from, and `rename_topic` can only rename that same
-  topic.
+  topic. `branch` is the one tool that writes elsewhere: it opens NEW topics in
+  the caller's own channel, posts a notification line in the root topic of its
+  branch tree, and its branch point must be in the caller's topic.
 - **Output is bounded.** `history` caps each message body and the reply as a
   whole, keeps the newest end, and states the `before_id` to page further
   back — one call cannot flood the agent's context window.

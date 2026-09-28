@@ -107,7 +107,18 @@ func (h *Handler) ConvKey(sessionKey string) (journal.Key, bool) {
 // after `!new` keeps the origin it started with.
 func (h *Handler) ConvOrigin(sessionKey string) (journal.Parent, bool) {
 	c, ok := h.cfg.Journal.LookupID(sessionKey)
-	if !ok || c.Parent == nil || c.Parent.MessageID == 0 {
+	if !ok {
+		return journal.Parent{}, false
+	}
+	return h.resolveOrigin(c)
+}
+
+// resolveOrigin is ConvOrigin for a conversation already in hand. The
+// `branch` tool walks a chain of them with it to find the root of a
+// branch tree, one hop at a time, with the same refusals at every hop.
+func (h *Handler) resolveOrigin(c journal.Conv) (journal.Parent, bool) {
+	sessionKey := c.ID
+	if c.Parent == nil || c.Parent.MessageID == 0 {
 		return journal.Parent{}, false
 	}
 	parent := *c.Parent

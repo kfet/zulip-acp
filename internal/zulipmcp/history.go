@@ -94,6 +94,11 @@ type Config struct {
 	// rename must not land while the turn is still posting into the
 	// old topic. The returned string is what the agent is told.
 	Rename func(key journal.Key, title string) (string, error)
+	// Branch runs the tasks of one `branch` call out of the conversation
+	// the session key names. Required. The tool has validated the
+	// arguments' shape and the task count; everything that needs Zulip
+	// or the journal is the Handler's.
+	Branch func(sessionKey string, tasks []BranchTask) ([]BranchResult, error)
 	// Timeout bounds one Zulip round-trip. The agent's turn is blocked
 	// until the tool call returns, so an unbounded fetch would let one
 	// wedged request hang the turn forever.
@@ -134,6 +139,9 @@ func NewTools(cfg Config) (*Tools, error) {
 	if cfg.Rename == nil {
 		return nil, errors.New("zulipmcp: Rename is required")
 	}
+	if cfg.Branch == nil {
+		return nil, errors.New("zulipmcp: Branch is required")
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -167,6 +175,10 @@ func (t *Tools) Register(h *mcphost.Host) {
 // asking about. It is still resolved from the session key and nothing
 // else; there is simply nothing for a tool body to pass it.
 type caller struct {
+	// session is the mcphost session key itself, for a hook that must
+	// resolve more than the key — `branch` walks the journal from it.
+	// It is still the token's, never an argument's.
+	session string
 	// key is the conversation the call came from.
 	key journal.Key
 	// origin resolves the conversation this one was branched from.
@@ -183,7 +195,7 @@ func (t *Tools) Tools() []Tool {
 			"session started, or before the context was cleared. Long replies are truncated: page " +
 			"further back with before_id. With origin=true it instead reads the conversation THIS " +
 			"topic was branched out of, up to the moment of the branch — available only when the relay " +
-			"opened this topic with `!branch`. Those two are the only conversations it can ever read; " +
+			"opened this topic with `!branch`, the fork reaction or the `branch` tool. Those two are the only conversations it can ever read; " +
 			"there is no way to address any other topic or DM, and the origin's own origin is not " +
 			"reachable.",
 		Schema: map[string]any{
@@ -221,7 +233,7 @@ func (t *Tools) Tools() []Tool {
 			}
 			return t.history(c, a.Limit, a.BeforeID, a.Origin)
 		}),
-	}, t.renameTool()}
+	}, t.renameTool(), t.branchTool()}
 }
 
 // history fetches and renders one page, of this conversation or of its
@@ -373,8 +385,9 @@ func (t *Tools) wrap(fn func(c caller, args json.RawMessage) (string, error)) mc
 			return "", errors.New("this conversation is no longer active")
 		}
 		return fn(caller{
-			key:    key,
-			origin: func() (journal.Parent, bool) { return t.cfg.Origin(sessionKey) },
+			session: sessionKey,
+			key:     key,
+			origin:  func() (journal.Parent, bool) { return t.cfg.Origin(sessionKey) },
 		}, args)
 	}
 }

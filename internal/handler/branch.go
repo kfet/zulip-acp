@@ -264,6 +264,14 @@ type branchPlan struct {
 	// Gesture names the entry point in the log line, so an operator
 	// reading the journal can tell a typed branch from a tapped one.
 	Gesture string
+	// Title, when set, is the topic name asked for. It still goes
+	// through the collision walk. Empty means "derive it from Text",
+	// which is what both human entry points do.
+	Title string
+	// Quiet suppresses the "branched → …" pointer in the origin. The
+	// `branch` tool sets it, because it posts ONE message for all the
+	// branches of a call instead (see BranchTasks).
+	Quiet bool
 }
 
 // performBranch is the half both entry points share: choose the title,
@@ -278,16 +286,29 @@ type branchPlan struct {
 // Nothing is created until every refusal has been checked; see the file
 // comment for why that ordering is the whole feature.
 func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv, bool) {
+	conv, _, err := h.branchOnce(ctx, p)
+	if err != nil {
+		h.reply(ctx, p.Origin, err.Error())
+		return journal.Conv{}, false
+	}
+	return conv, true
+}
+
+// branchOnce is performBranch without the reply: it returns the refusal
+// or failure as an error, worded for whoever asked, together with the
+// `#**channel>topic**` link of the topic it created. The `branch` tool
+// calls it directly, because its errors go back to the agent and not
+// into the topic.
+func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, string, error) {
 	// Detached and bounded: the branch outlives the event that started
 	// it (it posts twice and starts a turn), and a wedged Zulip request
 	// must not hold the poll loop.
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), branchTimeout)
 	defer cancel()
 
-	title, err := h.branchTitle(bctx, p.Dest, p.Text)
+	title, err := h.branchTitle(bctx, p.Dest, p.Text, p.Title)
 	if err != nil {
-		h.reply(ctx, p.Origin, err.Error())
-		return journal.Conv{}, false
+		return journal.Conv{}, "", err
 	}
 	// A branch that lands where it started is not a branch. It is
 	// reachable — `!branch planning`, typed in the topic "planning",
@@ -296,8 +317,7 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv
 	// the seed message, or the relay would post an opening message
 	// into the very conversation it was spinning out of.
 	if !p.Origin.IsDM() && p.Origin.StreamID == p.Dest && strings.EqualFold(p.Origin.Topic, title) {
-		h.reply(ctx, p.Origin, fmt.Sprintf("That would branch this topic into itself: the new topic would be called %q, which is where you already are. Give it a different opening line.", title))
-		return journal.Conv{}, false
+		return journal.Conv{}, "", fmt.Errorf("That would branch this topic into itself: the new topic would be called %q, which is where you already are. Give it a different opening line.", title)
 	}
 
 	// The seed message CREATES the topic, and it is the first thing
@@ -308,8 +328,7 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv
 	seed, err := (&convPoster{client: h.cfg.Client, key: newKey}).Post(bctx, branchSeed(p.Actor, h.describe(p.Origin)))
 	if err != nil {
 		h.cfg.Logf("handler: branching %s into #%s: the opening message failed (%v) — nothing was created", h.describe(p.Origin), p.Channel, err)
-		h.reply(ctx, p.Origin, fmt.Sprintf("I could not open a topic in #%s (%v). Nothing was created.", p.Channel, err))
-		return journal.Conv{}, false
+		return journal.Conv{}, "", fmt.Errorf("I could not open a topic in #%s (%v). Nothing was created.", p.Channel, err)
 	}
 
 	link := topicMention(p.Channel, title)
@@ -317,14 +336,19 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv
 	// The conversation and its origin are one atomic write: a branched
 	// conversation must never exist without the pointer that says what
 	// it may read.
+	//
+	// The audit record — who, when, with what — rides on the same
+	// write, so there is no branch without it.
+	p.Parent.By = senderName(p.Actor)
+	p.Parent.At = h.now().Unix()
+	p.Parent.Seed = truncateRunes(p.Text, journal.SeedAuditRunes)
 	conv, err := h.cfg.Journal.Branch(newKey, p.Parent)
 	if err != nil {
 		// The topic exists and the seed message is in it, so the user
 		// is not left with nothing — but without a conversation there
 		// is nothing to run the turn in.
 		h.cfg.Logf("handler: branching into %s: %v", h.describe(newKey), err)
-		h.reply(ctx, p.Origin, fmt.Sprintf("I opened %s but could not start a conversation there (%v). Send a message in it to try again.", link, err))
-		return journal.Conv{}, false
+		return journal.Conv{}, "", fmt.Errorf("I opened %s but could not start a conversation there (%v). Send a message in it to try again.", link, err)
 	}
 	h.rememberOwn(conv.ID, seed)
 
@@ -336,8 +360,13 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv
 	// It is also the ONLY write this makes to the origin conversation:
 	// no turn is started there, no claim is taken, and whatever the
 	// origin's agent is doing carries on undisturbed.
-	if _, err := (&convPoster{client: h.cfg.Client, key: p.Origin}).Post(bctx, "branched → "+link); err != nil {
-		h.cfg.Logf("handler: branched into %s but could not say so in %s: %v", h.describe(newKey), h.describe(p.Origin), err)
+	//
+	// The `branch` tool sets Quiet and says it itself, once for every
+	// branch it made.
+	if !p.Quiet {
+		if _, err := (&convPoster{client: h.cfg.Client, key: p.Origin}).Post(bctx, "branched → "+link); err != nil {
+			h.cfg.Logf("handler: branched into %s but could not say so in %s: %v", h.describe(newKey), h.describe(p.Origin), err)
+		}
 	}
 
 	h.cfg.Logf("handler: %s branched %s (%s on message %d) into %s as %s",
@@ -348,8 +377,15 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (journal.Conv
 	// `!branch` message, or the one they tapped — while the rename
 	// anchor is the seed message, which is the one in the topic being
 	// renamed. See startTurnAnchored.
-	h.startTurnAnchored(ctx, conv, h.branchPrompt(p, title), true, p.Ack, seed)
-	return conv, true
+	//
+	// A zero Ack — the `branch` tool, where no human is looking at any
+	// one message — puts the reaction on the seed instead.
+	ack := p.Ack
+	if ack == 0 {
+		ack = seed
+	}
+	h.startTurnAnchored(ctx, conv, h.branchPrompt(p, title), true, ack, seed)
+	return conv, link, nil
 }
 
 // BranchReaction is the reaction entry point, wired alongside
@@ -569,8 +605,14 @@ func (h *Handler) branchDestination(key journal.Key, named string) (int64, strin
 // A branch that silently appended into a live session's topic would
 // drop two conversations into one agent session; a branch that
 // appended into a human's topic would be worse still.
-func (h *Handler) branchTitle(ctx context.Context, streamID int64, text string) (string, error) {
+//
+// An explicit title (the `branch` tool's `title`) replaces the
+// heuristic but not the collision walk.
+func (h *Handler) branchTitle(ctx context.Context, streamID int64, text, explicit string) (string, error) {
 	base := autotopic.NameAt(text, h.now())
+	if explicit != "" {
+		base = explicit
+	}
 	existing, err := h.cfg.Client.Topics(ctx, streamID)
 	if err != nil {
 		// Refuse rather than post blind. Creating a topic is a write

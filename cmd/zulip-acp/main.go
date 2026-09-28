@@ -609,6 +609,9 @@ func main() {
 			ConvKey: func(k string) (journal.Key, bool) { return h.ConvKey(k) },
 			Origin:  func(k string) (journal.Parent, bool) { return h.ConvOrigin(k) },
 			Rename:  func(k journal.Key, title string) (string, error) { return h.RenameTopic(k, title) },
+			Branch: func(k string, tasks []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
+				return h.BranchTasks(k, tasks)
+			},
 			Timeout: config.DefaultZulipCallTimeout,
 			Logf:    log.Printf,
 		})

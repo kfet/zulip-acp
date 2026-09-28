@@ -1635,8 +1635,8 @@ implemented, plus two OPTIONAL capabilities in the shape of `TurnStopper`:
 | `Poster` | `post` tool | yes | no — nothing to speak on after the response |
 | `Scheduler` | `schedule` tools, `!schedules`, `!unschedule` | yes | no — same reason |
 
-`history` and `rename_topic` sit outside that table on purpose: neither has a
-`!command` twin or a Broker action, because neither is a relay-generic control
+`history`, `rename_topic` and `branch` sit outside that table on purpose: none
+has a Broker action, because neither is a relay-generic control
 at all. See below.
 
 ### What is deliberately not exposed
@@ -1710,6 +1710,31 @@ capability the relay should own rather than leak.
 - **`origin: true` reads the conversation this topic was BRANCHED out of** —
   the one and only cross-conversation read the relay permits. See
   [Branching a topic](#branching-a-topic-branch-fork_and_knife).
+
+`branch` is the agent twin of `!branch` and :fork_and_knife:. It takes up to
+`zulipmcp.MaxBranchTasks` (10) tasks of `{title?, seed?, from_msg?}` and returns
+`{topic, link, conv_id}` or `{error}` per task. Every task goes through
+`branchOnce`, the same code as the two human gestures, so there is one way to
+create a branch. What differs is only at the edges:
+
+- `from_msg` is the branch point and must be a message in the caller's own
+  topic; the child's `history(origin: true)` is clamped there. An id from
+  another topic is refused, because it would widen that read to a conversation
+  nobody granted. Omitted, it is the newest message the relay did not send —
+  the newest one is usually the caller's own in-flight answer.
+- `seed` omitted: the text of `from_msg` is the seed, as for the reaction.
+  `title` omitted: `branchTitle`, as for `!branch`. Both still get the
+  collision walk.
+- There is no per-branch "branched →" line. The call posts ONE message in the
+  caller's topic that lists every link with its one-line goal and, when the
+  caller is itself a branch, one line in the ROOT of the branch tree. The root
+  is found by walking parent pointers, each hop resolved from its branch-point
+  message as `ConvOrigin` does. The walk reads only locations, so the one-hop
+  read rule is unchanged.
+- Nested branching is allowed. No approval gate and no rate limit; the cap per
+  call is a guard against a runaway loop.
+- The journal records who, when and the seed (cut to `journal.SeedAuditRunes`)
+  beside every branch point, for all three entry points.
 
 `rename_topic` exists because of `autotopic_channels`. The relay names a new
 topic from the opening line of the message that starts it — a pure heuristic

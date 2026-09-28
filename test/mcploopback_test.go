@@ -268,6 +268,7 @@ func runRelayChild() {
 		ConvKey: func(k string) (journal.Key, bool) { return journal.Channel(streamID, topic), k == convID },
 		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
 		Rename:  func(journal.Key, string) (string, error) { return "", nil },
+		Branch:  func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
 		Timeout: 10 * time.Second,
 		Logf:    func(string, ...any) {},
 	})

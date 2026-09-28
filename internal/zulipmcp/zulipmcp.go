@@ -3,9 +3,9 @@
 // the loopback: the `relay` server identity, the env var names, the
 // redirector subcommand and the socket naming.
 //
-// It owns exactly ONE tool, and only because that tool cannot live
-// anywhere else: `history`, which reads back the conversation's own
-// earlier messages. Everything relay-generic — status, model, post,
+// It owns the tools that cannot live anywhere else: `history`, which
+// reads back the conversation's own earlier messages; `rename_topic`;
+// and `branch`, which spins new topics out of this one. Everything relay-generic — status, model, post,
 // schedule — is acp-kit/relaytool's, because poe-acp and slack-acp
 // need those identically. The dividing line the package doc always
 // stated still holds: if a tool needs to know something only Zulip

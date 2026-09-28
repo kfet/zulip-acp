@@ -28,7 +28,8 @@ func renameTools(t *testing.T, key journal.Key, reply string, rerr error) (*Tool
 			calls = append(calls, renameCall{k, title})
 			return reply, rerr
 		},
-		Logf: func(string, ...any) {},
+		Branch: noBranch,
+		Logf:   func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)

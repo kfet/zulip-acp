@@ -599,7 +599,10 @@ func TestBranchedSessionReadsItsParentAndNothingElse(t *testing.T) {
 		ConvKey: func(k string) (journal.Key, bool) { return hh.h.ConvKey(k) },
 		Origin:  func(k string) (journal.Parent, bool) { return hh.h.ConvOrigin(k) },
 		Rename:  func(k journal.Key, title string) (string, error) { return hh.h.RenameTopic(k, title) },
-		Logf:    func(string, ...any) {},
+		Branch: func(k string, ts []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
+			return hh.h.BranchTasks(k, ts)
+		},
+		Logf: func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)

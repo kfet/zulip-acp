@@ -180,3 +180,21 @@ func TestPreBranchJournalStillLoads(t *testing.T) {
 		t.Fatal("the branched conversation is not addressable by id")
 	}
 }
+
+// TestBranchKeepsItsAuditRecord: who branched, when and with what
+// survive a reload beside the branch point.
+func TestBranchKeepsItsAuditRecord(t *testing.T) {
+	j, path := openTemp(t)
+	c, err := j.Branch(Channel(4, "spun out"), Parent{Key: Channel(4, "origin"), MessageID: 7, By: "bot", At: 1700000000, Seed: "go"})
+	if err != nil {
+		t.Fatalf("Branch: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got, _ := reopened.LookupID(c.ID)
+	if p := got.Parent; p == nil || p.By != "bot" || p.At != 1700000000 || p.Seed != "go" {
+		t.Fatalf("audit record = %+v", got.Parent)
+	}
+}

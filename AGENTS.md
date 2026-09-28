@@ -11,7 +11,8 @@ one MCP server — on a private unix socket, advertised only to its own child
 agent — so the agent can drive the relay from inside a turn: post out of band,
 schedule a prompt back into the same conversation, and read that
 conversation's own earlier messages (`history`), and rename the topic it is
-talking in (`rename_topic`). ACP has no
+talking in (`rename_topic`), and branch work out into new topics
+(`branch`). ACP has no
 agent-initiated message and the streaming sink is bound per turn, but an MCP
 tool call runs agent→client, so this is the mechanism the protocol already
 gives us. It is **off by default** (`"relay_mcp": true`), because it widens
@@ -153,11 +154,14 @@ Zulip wire protocol it stays here.
   Zulip knows: conv-id → broker token / `journal.Key`, posting through the
   splitter, and re-applying the relay's gates when a schedule fires.
 - **A tool that needs something only Zulip knows lives in
-  `internal/zulipmcp`.** That is `history` and `rename_topic` today — a narrow
-  over a topic or a DM, and a topic move, both resolved from
-  `Handler.ConvKey`. Neither has a `!command` twin or a Broker action, because
-  neither is a relay-generic control. Do not push them to acp-kit, and do not
-  add a relay-generic tool here.
+  `internal/zulipmcp`.** That is `history`, `rename_topic` and `branch` today —
+  a narrow over a topic or a DM, a topic move, and a topic fan-out, all
+  resolved from `Handler.ConvKey`. None has a Broker action, because none is a
+  relay-generic control. `branch` is the agent twin of `!branch` and
+  :fork_and_knife:, and all three MUST go through `branchOnce` in
+  `internal/handler/branch.go` — never a second way to create a branch. Do not
+  push them to acp-kit (see `BRANCH-REUSE.md` for the part that could move),
+  and do not add a relay-generic tool here.
 - **A tool whose result can be large must bound it.** `history` caps each
   message body and the whole reply, keeps the newest end, and states the
   `before_id` to page back. One tool call must never be able to flood the

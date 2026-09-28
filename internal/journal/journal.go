@@ -154,7 +154,20 @@ type Parent struct {
 	// before it, so a branched session never sees what its origin
 	// went on to say afterwards.
 	MessageID int64 `json:"message_id,omitempty"`
+	// By, At and Seed are the audit record of the branch: who started
+	// it (a user name, or the relay's own name when an agent called the
+	// `branch` tool), when (Unix seconds), and the first message it was
+	// started with, cut to SeedAuditRunes. They grant nothing — the
+	// permission model is Key and MessageID alone — and an entry written
+	// before they existed simply has them empty.
+	By   string `json:"by,omitempty"`
+	At   int64  `json:"at,omitempty"`
+	Seed string `json:"seed,omitempty"`
 }
+
+// SeedAuditRunes bounds Parent.Seed, so a long opening message cannot
+// bloat the journal, which is rewritten whole on every commit.
+const SeedAuditRunes = 500
 
 // Conv is one conversation: its key, its stable conv-id, and the id of
 // the tail message the relay currently owns.

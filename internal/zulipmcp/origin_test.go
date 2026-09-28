@@ -110,6 +110,7 @@ func TestHistoryOriginIsOneHop(t *testing.T) {
 			return journal.Parent{Key: journal.Channel(4, "child"), MessageID: 500}, true
 		},
 		Rename: func(journal.Key, string) (string, error) { return "", nil },
+		Branch: noBranch,
 		Logf:   func(string, ...any) {},
 	})
 	if err != nil {

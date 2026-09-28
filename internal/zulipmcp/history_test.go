@@ -55,6 +55,7 @@ func newBranchedTools(t *testing.T, c *fakeClient, convID string, key journal.Ke
 			return *parent, true
 		},
 		Rename: func(journal.Key, string) (string, error) { return "armed", nil },
+		Branch: noBranch,
 		Logf:   func(string, ...any) {},
 	})
 	if err != nil {
@@ -70,7 +71,7 @@ func only(t *testing.T, tools *Tools) Tool { return pick(t, tools, ToolHistory) 
 func pick(t *testing.T, tools *Tools, name string) Tool {
 	t.Helper()
 	set := tools.Tools()
-	if len(set) != 2 {
+	if len(set) != 3 {
 		t.Fatalf("tool set = %+v", set)
 	}
 	for _, x := range set {
@@ -92,19 +93,22 @@ func TestNewToolsRequiresItsDependencies(t *testing.T) {
 	key := func(string) (journal.Key, bool) { return journal.Key{}, true }
 	origin := func(string) (journal.Parent, bool) { return journal.Parent{}, false }
 	rename := func(journal.Key, string) (string, error) { return "", nil }
-	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Client must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no ConvKey has no identity and must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Origin must not construct: history(origin) would panic on the first call")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Rename must not construct: rename_topic would panic on the first call")
 	}
-	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename})
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename}); err == nil {
+		t.Fatal("a Tools with no Branch must not construct: branch would panic on the first call")
+	}
+	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
 	}
@@ -224,6 +228,7 @@ func TestHistoryTimesOut(t *testing.T) {
 		ConvKey: func(string) (journal.Key, bool) { return journal.Channel(4, "t"), true },
 		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
 		Rename:  func(journal.Key, string) (string, error) { return "", nil },
+		Branch:  noBranch,
 		Timeout: time.Millisecond,
 	})
 	if err != nil {
