@@ -10,7 +10,7 @@
     "fir": ">=1.11.0"
   },
   "agent": {
-    "cmd": "fir --mode acp",
+    "cmd": "fir --mode acp --model claude-opus-5-5",
     "kind": "fir"
   },
   "fir": {
