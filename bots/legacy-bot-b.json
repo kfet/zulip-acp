@@ -32,7 +32,7 @@
     "site_aliases": [
       "chat-b.example.invalid"
     ],
-    "bot_email": "bot-m-bot@chat-b.example.invalid",
+    "bot_email": "bot-b-bot@chat-b.example.invalid",
     "channels": [
       "*"
     ],
