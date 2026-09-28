@@ -1,6 +1,6 @@
 {
-  "name": "bot-m",
-  "host": "ko2",
+  "name": "bot-b",
+  "host": "host-f",
   "platform": "linux/arm64",
   "supervisor": "systemd-user",
   "unit": "zulip-acp",
@@ -37,10 +37,10 @@
       "*"
     ],
     "ambient_channels": [
-      "ask-ko2"
+      "chan-b"
     ],
     "autotopic_channels": [
-      "ask-ko2"
+      "chan-b"
     ],
     "dms": true,
     "relay_mcp": true,
