@@ -301,6 +301,10 @@ type Conv struct {
 type file struct {
 	Version int    `json:"version"`
 	Convs   []Conv `json:"convs"`
+	// Alarms maps a schedule id to the relay message that carries its
+	// :alarm_clock: reaction. See SetAlarm. Absent in a pre-alarm
+	// journal, so no version bump is needed.
+	Alarms map[string]int64 `json:"alarms,omitempty"`
 }
 
 const currentVersion = 1
@@ -312,13 +316,16 @@ type Journal struct {
 	mu    sync.Mutex
 	byID  map[string]*Conv
 	byKey map[string]*Conv
+	// alarms is file.Alarms: schedule id → the message id that
+	// carries the schedule's reaction.
+	alarms map[string]int64
 }
 
 // Open loads the journal at path, creating an empty one if the file
 // does not exist. A corrupt file is an error, not a silent reset: the
 // operator should see it.
 func Open(path string) (*Journal, error) {
-	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}}
+	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return j, nil
@@ -346,6 +353,9 @@ func Open(path string) (*Journal, error) {
 			c.Parent = nil
 		}
 		j.index(&c)
+	}
+	for id, msg := range f.Alarms {
+		j.alarms[id] = msg
 	}
 	return j, nil
 }
@@ -622,6 +632,54 @@ func (j *Journal) SetLastOwn(convID string, msgID int64) error {
 	return j.commit(func() { c.LastOwnID = prev })
 }
 
+// SetAlarm records that msgID carries the :alarm_clock: reaction for
+// the schedule schedID.
+//
+// It is keyed by the schedule, not by the conversation, because the
+// two lifecycles differ: a schedule belongs to the PLACE (its token),
+// and survives `!new`, which retires the conversation. It is persisted
+// because a graceful reload is routine, and a reaction that no restart
+// can ever clear is a false claim that something is still armed.
+func (j *Journal) SetAlarm(schedID string, msgID int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	prev, had := j.alarms[schedID]
+	j.alarms[schedID] = msgID
+	return j.commit(func() {
+		if had {
+			j.alarms[schedID] = prev
+		} else {
+			delete(j.alarms, schedID)
+		}
+	})
+}
+
+// TakeAlarm forgets the reaction record of schedID and returns the
+// message that carried it. shared is true when another schedule still
+// points at the same message: the caller must then keep the reaction,
+// because one turn can arm several schedules. ok is false when there is
+// no record.
+func (j *Journal) TakeAlarm(schedID string) (msgID int64, shared, ok bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	msgID, ok = j.alarms[schedID]
+	if !ok {
+		return 0, false, false
+	}
+	delete(j.alarms, schedID)
+	for _, m := range j.alarms {
+		if m == msgID {
+			shared = true
+			break
+		}
+	}
+	// A failed write only means the record returns on the next start,
+	// where the next take clears it again; the reaction is removed
+	// either way. That is why the error is not surfaced.
+	_ = j.commit(func() {})
+	return msgID, shared, true
+}
+
 // Branch allocates the conversation for a freshly branched topic,
 // recording where it came from in the SAME atomic write that mints it.
 //
@@ -776,7 +834,7 @@ func (j *Journal) save() error {
 		convs = append(convs, *c)
 	}
 	sort.Slice(convs, func(a, b int) bool { return convs[a].ID < convs[b].ID })
-	b := append(mustMarshal(file{Version: currentVersion, Convs: convs}), '\n')
+	b := append(mustMarshal(file{Version: currentVersion, Convs: convs, Alarms: j.alarms}), '\n')
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
 		return fmt.Errorf("journal: mkdir: %w", err)
 	}

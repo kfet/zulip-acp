@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Schedule indicators. A turn that arms, cancels or is started by a schedule shows it in the footer (`⏰ +1 → <time:…> · 2 pending`, `⏰ −1`, `⏰ fired`); a turn that changes nothing shows no marker. The reply that armed a schedule carries an :alarm_clock: reaction until the schedule fires (one-shot) or is cancelled. New `!sched` command lists the pending schedules with Zulip global times; `!help` and `!opts` advertise it.
+
 ## [0.40.1] - 2026-09-28
 
 ### Fixed

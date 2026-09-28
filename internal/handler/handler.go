@@ -544,6 +544,11 @@ type Handler struct {
 	// four above — see alreadyBranched.
 	branchedMsgs *msgIndex
 
+	// schedMu guards schedTurns: per conversation token, what the
+	// running turn did to the schedule set (see schedmark.go).
+	schedMu    sync.Mutex
+	schedTurns map[string]*schedTurn
+
 	// lastOwn is the NEWEST message the relay has posted in each
 	// conversation. The archive control needs more than "this message
 	// is ours" (ownMsgs): reacting to an old answer from last week
@@ -1103,7 +1108,7 @@ func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prom
 		Conv:  conv.ID,
 		Value: entry,
 		Run: func(pctx context.Context, _ *convo.Turn) error {
-			return h.run(pctx, conv, prompt, addressed, ackMsgID)
+			return h.run(pctx, conv, prompt, addressed, ackMsgID, false)
 		},
 		After: func(*convo.Turn) { h.endTurn(conv, entry) },
 	})
@@ -1120,7 +1125,7 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 		defer h.endTurn(conv, entry)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, addressed, ackMsgID); err != nil {
+		if err := h.run(pctx, conv, prompt, addressed, ackMsgID, false); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -1155,8 +1160,11 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 // typing.go, and note that the comment which used to justify the
 // placeholder here ("Zulip has no typing indicator") is stale: it does,
 // for channels as well as DMs, verified on Zulip 12.2.
-func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64) error {
+func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, fired bool) error {
 	defer h.ack(ctx, msgID)()
+	token := conv.Key.Token()
+	st := h.beginSchedTurn(token, fired)
+	defer h.endSchedTurn(token, st)
 
 	post := &convPoster{client: h.cfg.Client, key: conv.Key}
 	split, err := rollover.New(rollover.Config{
@@ -1297,6 +1305,8 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	// BEFORE Close flushes, so the body the end-of-turn repost copies
 	// already carries it. Close then has nothing of its own to append.
 	split.Append(suffix)
+	pending := h.Schedules(token)
+	sink.setSchedMarker(h.schedMarker(st, pending))
 	sink.maybeAppendFooter()
 	cerr := split.Close(fctx, "")
 	if cerr != nil {
@@ -1309,6 +1319,9 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		// the archive gesture, resolve without an API lookup.
 		h.trackTail(conv.ID, split)
 		h.repostForNotify(fctx, conv, split)
+		// After the repost, which replaces the message ids: the
+		// reaction must sit on the message that stays.
+		h.markArmed(fctx, st, pending, split.TailID())
 	}
 	h.clearTail(conv.ID)
 	return cerr

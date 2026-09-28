@@ -901,8 +901,10 @@ func inlineDims(t *testing.T, b acp.ContentBlock) (int, int) {
 func TestInboundImageIsDownscaledForTheModel(t *testing.T) {
 	a := newAgent("ok")
 	a.imageCap = true
-	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 1568 })
-	original := realPNG(t, 2400, 1800)
+	// Small on purpose: the ratio is what matters, and a photo-sized
+	// PNG made this test miss its deadline under -race on a busy box.
+	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 392 })
+	original := realPNG(t, 600, 450)
 	hh.z.addUpload("/user_uploads/2/20/H/book.png", "image/png", original)
 
 	hh.deliver(t, "photos", mention("![book.png](/user_uploads/2/20/H/book.png)"))
@@ -912,8 +914,8 @@ func TestInboundImageIsDownscaledForTheModel(t *testing.T) {
 		t.Fatalf("blocks = %#v, want text + image", blocks)
 	}
 	w, h := inlineDims(t, blocks[1])
-	if w != 1568 || h != 1176 {
-		t.Fatalf("inlined at %dx%d, want 1568x1176", w, h)
+	if w != 392 || h != 294 {
+		t.Fatalf("inlined at %dx%d, want 392x294", w, h)
 	}
 	// The FILE is untouched: an agent reading a page of text out of a
 	// photo opens it from disk and must get what the human sent.

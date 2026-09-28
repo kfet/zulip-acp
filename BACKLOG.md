@@ -330,3 +330,12 @@ compare — so the block has no key for it.
   dance the panel already did; and a vote is not a third encoding of the
   command list — it dispatches the same `!model <id>` string a chip, a button
   and a typed command do.
+
+- **A schedule does not follow its topic when the topic is renamed or moved.**
+  `schedule.Item.Conv` is the conversation token, and the token is the
+  (channel, topic) key. After `rename_topic`, a human rename or `!archive`, the
+  next fire parses the OLD key, `Journal.Lookup` misses, and `FireSchedule`
+  returns `ErrGone`: the schedule is dropped (its :alarm_clock: reaction goes
+  with it). Fix needs a re-key action in `acp-kit/schedule` (for example
+  `Store.Rekey(old, new string)`), called from the journal's `Rename`/`Move`
+  paths in the handler. Found while adding the schedule indicators.

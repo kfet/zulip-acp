@@ -1832,6 +1832,23 @@ None of that removes the need for a human to be able to **look and kill**:
 `!schedules` lists what is armed here, `!unschedule <id>` cancels one, and
 `!status` reports the count so armed work nobody started is noticed.
 
+The user must also see a change WITHOUT asking (`internal/handler/schedmark.go`):
+
+- A turn that changed the schedule set says so in its footer: `⏰ +1 → <time:…>`
+  (with `· N pending` for the OTHER pending ones), `⏰ +2 → <time:earliest>`,
+  `⏰ −1 · N pending`, or `⏰ fired · N pending` for a turn a schedule started.
+  A turn that changed nothing has no marker. The changes are recorded in the
+  Handler's own `Schedule` / `Unschedule`, which every path goes through.
+- The reply that armed a schedule carries an :alarm_clock: reaction. It goes
+  when the schedule is cancelled, fires as a one-shot, or is dropped because
+  its conversation is gone. One reply can stand for several schedules, so the
+  reaction stays until the last one goes. The schedule → message map is in the
+  journal, because a graceful reload must not orphan a reaction.
+- `!sched` lists the pending schedules with each due time as a Zulip
+  `<time:>`, which every client shows in the reader's own time zone. It is a
+  relay command, not a broker one, for that reason; it reads the broker's
+  `ScheduleList` action. `!help` and `!opts` advertise it when scheduling is on.
+
 Two semantics worth stating out loud, because both are choices:
 
 - **Delivery is at-most-once.** A due item is claimed — advanced, or removed if

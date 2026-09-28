@@ -219,6 +219,7 @@ offer the same surface.
 | `!stop` | interrupt the turn currently running here |
 | `!schedules` | list the prompts the agent has armed here (needs `relay_mcp`) |
 | `!unschedule <id>` | cancel one of them |
+| `!sched` | the same list, with due times in your own time zone |
 | `!login [provider]` | connect an LLM provider by OAuth; paste the redirect URL back as your next message |
 | `!login cancel` | abort a login in progress |
 

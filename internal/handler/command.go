@@ -213,6 +213,20 @@ func (h *Handler) beforeFilters() []convo.Filter {
 			h.branchCommand(ctx, md.m, md.key, arg)
 			return convo.Handled
 		},
+		// `!sched` is this relay's own: it renders the broker's
+		// ScheduleList action with Zulip global times, which only this
+		// relay can draw. Like `!opts` it runs ahead of the
+		// pending-login path.
+		func(ctx context.Context, in *convo.In) convo.Verdict {
+			// Without a store it is no command at all, exactly as
+			// `!schedules` is not: it falls through to the unknown-
+			// command answer.
+			if !isSchedCommand(in.Text) || !h.CanSchedule() {
+				return convo.Pass
+			}
+			h.schedCommand(ctx, metaOf(in).key)
+			return convo.Handled
+		},
 		h.modelRules,
 	}
 }
@@ -317,6 +331,9 @@ func (h *Handler) decorate(text, out string) string {
 		// a command that answers "not configured here" teaches the
 		// wrong thing.
 		extra += archiveHelp
+	}
+	if h.CanSchedule() {
+		extra += schedHelp
 	}
 	// Inserted right after the `!help` bullet rather than appended:
 	// the broker's help ends with an optional "Agent commands:"

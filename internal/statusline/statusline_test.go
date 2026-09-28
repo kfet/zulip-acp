@@ -85,3 +85,17 @@ func TestLive(t *testing.T) {
 		t.Fatalf("Live() = %q, want %q", got, want)
 	}
 }
+
+func TestFooterWith(t *testing.T) {
+	s := Status{ProviderEmoji: "🏛️", Model: "opus-5.5"}
+	if got, want := FooterWith(s, "⏰ fired"), "\n\n*🏛️ opus-5.5 • ⏰ fired*"; got != want {
+		t.Fatalf("FooterWith = %q, want %q", got, want)
+	}
+	if got := FooterWith(s, ""); got != Footer(s) {
+		t.Fatalf("empty extra = %q, want Footer's %q", got, Footer(s))
+	}
+	// The marker renders even with no model known.
+	if got, want := FooterWith(Status{}, "⏰ −1"), "\n\n*⏰ −1*"; got != want {
+		t.Fatalf("FooterWith = %q, want %q", got, want)
+	}
+}

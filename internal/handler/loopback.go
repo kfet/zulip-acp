@@ -257,7 +257,11 @@ func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration
 	if _, err := journal.ParseToken(token); err != nil {
 		return schedule.Item{}, err
 	}
-	return h.cfg.Schedules.Add(token, text, at, every)
+	it, err := h.cfg.Schedules.Add(token, text, at, every)
+	if err == nil {
+		h.noteArmed(it)
+	}
+	return it, err
 }
 
 // Schedules satisfies command.Scheduler.
@@ -273,7 +277,14 @@ func (h *Handler) Unschedule(token, id string) error {
 	if h.cfg.Schedules == nil {
 		return errors.New("scheduling is not enabled on this relay")
 	}
-	return h.cfg.Schedules.Remove(token, id)
+	if err := h.cfg.Schedules.Remove(token, id); err != nil {
+		return err
+	}
+	h.noteCancelled(token, id)
+	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
+	defer cancel()
+	h.unmarkAlarm(ctx, id)
+	return nil
 }
 
 // --- firing --------------------------------------------------------------
@@ -303,7 +314,19 @@ func (h *Handler) Unschedule(token, id string) error {
 // it can only exist because an allowed user drove a turn that armed it,
 // and it re-enters that same conversation, so it can never reach
 // anywhere its author could not.
-func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
+func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error) {
+	// A one-shot schedule has left the store by now, and one whose
+	// conversation is gone is about to: either way its reaction must
+	// go. A repeating one stays armed, and so does its reaction.
+	defer func() {
+		if it.Every == 0 || errors.Is(err, schedule.ErrGone) {
+			// Bounded: the store's drain waits for every fire, so a
+			// wedged request must not hold up a reload.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.ZulipCallTimeout)
+			defer cancel()
+			h.unmarkAlarm(rctx, it.ID)
+		}
+	}()
 	key, err := journal.ParseToken(it.Conv)
 	if err != nil {
 		return fmt.Errorf("%w: %v", schedule.ErrGone, err)
@@ -347,7 +370,7 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) error {
 	// triggering message to react to, and a scheduled turn that decided
 	// to abstain would leave the user with no sign anything happened.
 	// msgID 0 skips the :eyes: acknowledgement for the same reason.
-	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0)
+	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, true)
 }
 
 // claimConvIdle blocks until no turn is in flight for convID and then

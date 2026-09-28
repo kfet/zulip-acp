@@ -50,13 +50,6 @@ var ProviderEmojiForModel = kit.ProviderEmojiForModel
 // design: it is a label, never an id to send back on the wire.
 var ShortModelName = kit.ShortModelName
 
-// line joins the non-empty status segments with " • ". Returns "" when
-// there is nothing to show. The provider emoji and the model name share
-// the first segment ("🏛️ opus-4.5"): they name one thing.
-func line(s Status) string {
-	return strings.Join(kit.Segments(s), " • ")
-}
-
 // Footer renders the status line as it is appended to the END of a
 // finished answer: a blank line, then the line in Zulip italics.
 //
@@ -69,8 +62,19 @@ func line(s Status) string {
 // The leading blank line is part of the footer, not the caller's job:
 // it is what stops Zulip's markdown renderer folding the italic line
 // into the answer's last paragraph.
-func Footer(s Status) string {
-	l := line(s)
+func Footer(s Status) string { return FooterWith(s, "") }
+
+// FooterWith is Footer with one relay-owned segment appended after the
+// agent's — today, the schedule marker (see the handler's schedmark.go).
+// An empty extra renders exactly as Footer. A non-empty extra renders
+// even when every status segment is empty: the marker reports a change
+// the user must see, whether or not the model is known.
+func FooterWith(s Status, extra string) string {
+	segs := kit.Segments(s)
+	if extra != "" {
+		segs = append(segs, extra)
+	}
+	l := strings.Join(segs, " • ")
 	if l == "" {
 		return ""
 	}

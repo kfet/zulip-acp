@@ -41,6 +41,9 @@ type streamingSink struct {
 	statusMu      sync.Mutex
 	status        statusline.Status
 	footerEmitted bool
+	// schedMarker is the relay-owned schedule segment for the footer
+	// (see schedmark.go). Set once, just before maybeAppendFooter.
+	schedMarker string
 	// notice is the latest out-of-band operational message from the
 	// agent, shown on the live placeholder. Latest-wins: a retry
 	// notice is only interesting while it is current.
@@ -247,6 +250,13 @@ func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 	}
 }
 
+// setSchedMarker installs the schedule segment the footer carries.
+func (s *streamingSink) setSchedMarker(m string) {
+	s.statusMu.Lock()
+	s.schedMarker = m
+	s.statusMu.Unlock()
+}
+
 // maybeAppendFooter appends the status line to the transcript as the
 // LAST thing in the answer — a blank line, then the line in italics:
 //
@@ -293,7 +303,7 @@ func (s *streamingSink) maybeAppendFooter() {
 		return
 	}
 	s.footerEmitted = true
-	footer := statusline.Footer(s.status)
+	footer := statusline.FooterWith(s.status, s.schedMarker)
 	s.statusMu.Unlock()
 	if footer == "" || strings.TrimSpace(s.split.Transcript()) == "" {
 		return
