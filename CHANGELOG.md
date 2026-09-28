@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-09-28
+
 ### Fixed
 
 - The status footer names the model of the session that served the turn. It used the agent's process-wide current model — the model of whichever conversation's session was opened or resumed last — so a conversation switched with `!model` showed another conversation's model. Needs acp-kit v0.26.0 (`AgentProc.CurrentModel`); falls back to the old value only when the session's model is unknown.
