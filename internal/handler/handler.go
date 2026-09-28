@@ -69,6 +69,10 @@ type Agent interface {
 	// <id>`; the relay never calls it unless a user asked for a
 	// specific model.
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
+	// CurrentModel is the model one session is running. The footer
+	// names it; Models' current is process-wide and names whichever
+	// session was opened last.
+	CurrentModel(sid acp.SessionId) (string, bool)
 	// AvailableCommands is the agent's advertised command catalog,
 	// which gates the passthrough allowlist: the relay forwards
 	// `!reload` as `/reload` only when the agent actually offers it.
@@ -1216,13 +1220,13 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	// names the model. It is resolved again below, once applyModel has
 	// settled a sticky `!model` choice, so the footer tracks the model
 	// that actually served the turn.
-	h.resolveModelInfo(sink)
+	h.resolveModelInfo(sink, sess.SessionID)
 
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Sessions.Touch(sess)
 	h.convo.ApplyModel(ctx, conv.ID, sess.SessionID)
-	h.resolveModelInfo(sink)
+	h.resolveModelInfo(sink, sess.SessionID)
 
 	var blocks []acp.ContentBlock
 	if isSlashPrompt(prompt) {
@@ -1319,8 +1323,17 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 // status line should name the model that actually served the turn. An
 // agent that reports no current model leaves the previous snapshot
 // alone rather than blanking a known one.
-func (h *Handler) resolveModelInfo(sink *streamingSink) {
-	if _, currentID := h.models(); currentID != "" {
+//
+// It is the model of sid, the session serving the turn. The
+// process-wide current from Models is only a fallback for a session
+// whose model the agent never reported: one agent serves every
+// conversation, so that value is whichever session was opened last.
+func (h *Handler) resolveModelInfo(sink *streamingSink, sid acp.SessionId) {
+	currentID, ok := h.cfg.Agent.CurrentModel(sid)
+	if !ok || currentID == "" {
+		_, currentID = h.models()
+	}
+	if currentID != "" {
 		sink.SetModelInfo(
 			statusline.ProviderEmojiForModel(currentID),
 			statusline.ShortModelName(currentID),

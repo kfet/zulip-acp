@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The status footer names the model of the session that served the turn. It used the agent's process-wide current model — the model of whichever conversation's session was opened or resumed last — so a conversation switched with `!model` showed another conversation's model. Needs acp-kit v0.26.0 (`AgentProc.CurrentModel`); falls back to the old value only when the session's model is unknown.
+- `test/converge_render.sh` goldens follow the revert of the bot-a model pin, so `make all` passes again.
+
 ## [0.40.0] - 2026-09-28
 
 ### Added

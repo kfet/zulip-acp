@@ -672,6 +672,8 @@ type fakeAgent struct {
 	// info and stats back AgentInfo and SessionStats.
 	info  client.AgentInfo
 	stats map[acp.SessionId]client.SessionStats
+	// perModel backs CurrentModel; SetModel writes it, as acp-kit does.
+	perModel map[acp.SessionId]string
 }
 
 func newAgent(chunks ...string) *fakeAgent {
@@ -693,7 +695,18 @@ func (a *fakeAgent) SetModel(_ context.Context, sid acp.SessionId, modelID strin
 		return a.setErr
 	}
 	a.setModel = append(a.setModel, string(sid)+"="+modelID)
+	if a.perModel == nil {
+		a.perModel = map[acp.SessionId]string{}
+	}
+	a.perModel[sid] = modelID
 	return nil
+}
+
+func (a *fakeAgent) CurrentModel(sid acp.SessionId) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m, ok := a.perModel[sid]
+	return m, ok
 }
 
 // AuthMethods and Authenticate satisfy the broker's Authenticator.
@@ -1226,6 +1239,43 @@ func TestStatusFooterSurvivesTheRepost(t *testing.T) {
 	// The placeholder it was edited over left nothing behind.
 	if strings.Contains(hh.z.lastBody(), "Thinking") {
 		t.Fatalf("placeholder survived into the answer: %q", hh.z.lastBody())
+	}
+}
+
+// TestStatusFooterNamesEachSessionsModel: one agent serves every
+// conversation, so Models' current is whichever session was opened
+// last. The footer must name the model of the session serving the
+// turn, and fall back to Models' current only when that is unknown.
+func TestStatusFooterNamesEachSessionsModel(t *testing.T) {
+	agent := newAgent("ok")
+	agent.model = "anthropic/claude-opus-5"
+	hh := newHarness(t, agent, nil)
+
+	hh.deliver(t, "a", mention("hi"))
+	if got := hh.z.lastBody(); !strings.HasSuffix(got, "*🏛️ opus-5*") {
+		t.Fatalf("unknown session model must fall back to Models: %q", got)
+	}
+	hh.deliver(t, "b", mention("hi"))
+	var sa, sb acp.SessionId
+	for _, c := range hh.j.Convs() {
+		switch c.Topic {
+		case "a":
+			sa = "sid-" + acp.SessionId(c.ID)
+		case "b":
+			sb = "sid-" + acp.SessionId(c.ID)
+		}
+	}
+	agent.mu.Lock()
+	agent.perModel = map[acp.SessionId]string{sa: "anthropic/claude-opus-5-5", sb: "anthropic/claude-opus-5"}
+	agent.mu.Unlock()
+
+	hh.deliver(t, "a", mention("again"))
+	if got := hh.z.lastBody(); !strings.HasSuffix(got, "*🏛️ opus-5.5*") {
+		t.Fatalf("conversation a footer = %q", got)
+	}
+	hh.deliver(t, "b", mention("again"))
+	if got := hh.z.lastBody(); !strings.HasSuffix(got, "*🏛️ opus-5*") {
+		t.Fatalf("conversation b footer = %q", got)
 	}
 }
 
