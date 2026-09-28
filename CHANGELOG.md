@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-28
+
 ### Added
 
 - Relay MCP tool `branch`: the agent can spin up to 10 new topics out of its conversation in one call, each with a session that starts on its seed at once. It uses the same code as `!branch` and :fork_and_knife:. `from_msg` sets the branch point and must be in the caller's topic; the seed defaults to that message's text. The relay posts one message with the links in the caller's topic, and one line in the root topic when a branch branches again.
@@ -14,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `test/converge_render.sh` has goldens for `bots/bot-b.json`, so `make all` passes again.
+- `test/converge_render.sh` goldens match `bots/bot-b.json` and the pinned model in `bots/bot-a.json`, so `make all` passes again.
 
 ## [0.39.3] - 2026-09-27
 
