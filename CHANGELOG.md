@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!m` is an alias of `!model` everywhere. It is an exact verb: `!me`, `/me` and `!msg` do not match it.
+
+### Changed
+
+- `!model <q>` resolves the query with acp-kit `command.ResolveModel`. An exact id or one fuzzy candidate switches the model; a fuzzy switch replies `→ <full id>`. Several candidates post the filtered panel. The relay logs the query and the resolved id.
+- Bump `github.com/kfet/acp-kit` to v0.28.0.
+
 ## [0.41.0] - 2026-09-28
 
 ### Added

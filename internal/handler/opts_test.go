@@ -1114,31 +1114,68 @@ func TestIsOpts(t *testing.T) {
 	}
 }
 
-// TestModelKnobOnlyMatchesAnExactID: a filter is a listing, not a
-// change. Switching models off an approximate match would be the worst
-// kind of surprise.
-func TestModelKnobOnlyMatchesAnExactID(t *testing.T) {
-	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two"), nil)
+// TestModelKnobResolvesOneModel: an exact id, or a fuzzy query with
+// exactly one candidate, is a change. Several candidates are a listing.
+func TestModelKnobResolvesOneModel(t *testing.T) {
+	hh := dmCmdHarness(t, withModels(newAgent("x"), "a/one", "a/one", "b/two", "b/twofold"), nil)
 	for _, tc := range []struct {
 		name, in, want string
+		exact          bool
 	}{
-		{"exact id", "!model b/two", "b/two"},
-		{"padded", "!model   b/two  ", "b/two"},
-		{"capitalised verb", "!Model b/two", "b/two"},
-		{"filter", "!model two", ""},
-		{"bare", "!model", ""},
-		{"other command", "!status now", ""},
-		{"no sigil", "model b/two", ""},
+		{"exact id", "!model b/two", "b/two", true},
+		{"padded", "!model   b/two  ", "b/two", true},
+		{"capitalised verb", "!Model b/two", "b/two", true},
+		{"m alias", "!m b/two", "b/two", true},
+		{"m alias capitalised", "!M b/two", "b/two", true},
+		{"fuzzy single", "!model one", "a/one", false},
+		{"m fuzzy single", "!m one", "a/one", false},
+		{"ambiguous", "!model tw", "", false},
+		{"no match", "!model zzz", "", false},
+		{"bare", "!model", "", false},
+		{"bare m", "!m", "", false},
+		{"tab separator", "!m\tone", "", false},
+		{"me", "!me one", "", false},
+		{"slash me", "/me one", "", false},
+		{"msg", "!msg one", "", false},
+		{"other command", "!status now", "", false},
+		{"no sigil", "model b/two", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := hh.h.modelKnob(tc.in)
+			got, exact, ok := hh.h.modelKnob(tc.in)
 			if (tc.want == "") == ok {
 				t.Fatalf("modelKnob(%q) = %q, %v", tc.in, got, ok)
 			}
-			if got != tc.want {
-				t.Fatalf("modelKnob(%q) = %q, want %q", tc.in, got, tc.want)
+			if got != tc.want || exact != tc.exact {
+				t.Fatalf("modelKnob(%q) = %q,%v want %q,%v", tc.in, got, exact, tc.want, tc.exact)
 			}
 		})
+	}
+}
+
+// TestFuzzyModelSwitchEchoesTheFullID: a query that resolves to one
+// model switches and names the full id, so the user sees what it picked.
+func TestFuzzyModelSwitchEchoesTheFullID(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!m haiku", humanID, botID)
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/haiku-4-5" {
+		t.Fatalf("override = %q,%v want a/haiku-4-5", id, ok)
+	}
+	if got := hh.z.body(lastMsg(t, hh)); got != "→ `a/haiku-4-5`" {
+		t.Fatalf("reply = %q", got)
+	}
+}
+
+// TestAmbiguousMAliasPostsTheNarrowedPair: `!m opus` has two candidates,
+// so it narrows the pair exactly as `!model opus` does.
+func TestAmbiguousMAliasPostsTheNarrowedPair(t *testing.T) {
+	hh := filterHarness(t)
+	hh.deliverDM(t, humanID, "!m opus", humanID, botID)
+	_, options := pollWidget(t, hh, pollMsg(hh))
+	if !slices.Equal(options, []string{"opus-4-5", "GPT-5-opus"}) {
+		t.Fatalf("poll options = %v", options)
+	}
+	if _, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); ok {
+		t.Fatal("an ambiguous query switched the model")
 	}
 }
 
@@ -1586,15 +1623,15 @@ func TestAVoteInAFilteredPollSwitchesModel(t *testing.T) {
 }
 
 // TestAFilteredPollDoesNotForceTheCurrentModelIn: a filter is a
-// question about the catalogue. Answering "haiku" with a sonnet the
+// question about the catalogue. Answering "gpt" with a sonnet the
 // user did not ask about would make the list something other than the
 // matches — safe to omit precisely because the table is persisted.
 func TestAFilteredPollDoesNotForceTheCurrentModelIn(t *testing.T) {
 	hh := filterHarness(t)
-	hh.deliverDM(t, humanID, "!model haiku", humanID, botID)
+	hh.deliverDM(t, humanID, "!model gpt", humanID, botID)
 
 	_, options := pollWidget(t, hh, pollMsg(hh))
-	if !slices.Equal(options, []string{"haiku-4-5"}) {
+	if !slices.Equal(options, []string{"GPT-5-opus", "gpt-5-mini"}) {
 		t.Fatalf("poll options = %v, want only the match", options)
 	}
 	// Absent from the options, present in the question.
@@ -1602,8 +1639,8 @@ func TestAFilteredPollDoesNotForceTheCurrentModelIn(t *testing.T) {
 		t.Fatalf("question %q does not say the state", q)
 	}
 	castVote(t, hh, humanID, pollMsg(hh), 0, 1)
-	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "a/haiku-4-5" {
-		t.Fatalf("model = %q,%v want the only match", id, ok)
+	if id, ok := hh.h.modelOverride(hh.j.Convs()[0].ID); !ok || id != "b/GPT-5-opus" {
+		t.Fatalf("model = %q,%v want the first match", id, ok)
 	}
 }
 
@@ -1670,6 +1707,13 @@ func TestModelFilterParsing(t *testing.T) {
 		{"!model   opus  ", "opus"},
 		{".model opus", "opus"},
 		{"!model a/b c/d", "a/b c/d"},
+		{"!m opus", "opus"},
+		{"!M opus", "opus"},
+		{"!m\topus", ""},
+		{"!me opus", ""},
+		{"!msg opus", ""},
+		{"/me opus", ""},
+		{"!m", ""},
 		// Flattened at the parse boundary: the filter is echoed into a
 		// poll question (where a newline splits into an extra option)
 		// and a markdown list item (where it breaks the list).
@@ -1721,8 +1765,8 @@ func TestAFilteredPairIsCappedToo(t *testing.T) {
 // filtered pair self-healing rather than stuck narrow.
 func TestARepaintGoesBackToTheFullList(t *testing.T) {
 	hh := filterHarness(t)
-	hh.deliverDM(t, humanID, "!model haiku", humanID, botID)
-	if _, options := pollWidget(t, hh, pollMsg(hh)); len(options) != 1 {
+	hh.deliverDM(t, humanID, "!model gpt", humanID, botID)
+	if _, options := pollWidget(t, hh, pollMsg(hh)); len(options) != 2 {
 		t.Fatalf("options = %v, want the filtered one", options)
 	}
 

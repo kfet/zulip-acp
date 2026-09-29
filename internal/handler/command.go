@@ -261,19 +261,24 @@ func (h *Handler) modelRules(ctx context.Context, in *convo.In) convo.Verdict {
 	// repainted panel instead of a new message. Settings chatter
 	// belongs in a reaction, not in the topic.
 	//
-	// Only an exact model id qualifies; a filter or a bare `!model`
-	// is a listing and falls through to the broker. A change that
+	// A query that resolves to ONE model qualifies (see modelKnob); a
+	// fuzzy one also echoes the full id, so the user sees what it
+	// picked. An exact id needs no echo: the user typed it. Several
+	// candidates or a bare `!model` are a listing. A change that
 	// FAILS also falls through, so the user hears why — deliberately
 	// NOT into the filter branch below: an exact id is a change
 	// request, and answering a failed change with a menu would swallow
 	// the reason it failed.
-	if id, ok := h.modelKnob(text); ok {
+	if id, exact, ok := h.modelKnob(text); ok {
 		if h.applyModelKnob(ctx, md.key, md.m.ID, id) {
+			if !exact {
+				h.reply(ctx, md.key, "→ `"+id+"`")
+			}
 			return convo.Handled
 		}
 		return convo.Pass
 	}
-	// `!model <filter>` — an argument that is NOT an exact id — is a
+	// `!model <filter>` — an argument with several candidates — is a
 	// narrowing QUERY, and the answer is the control PAIR with its
 	// choice list narrowed: the same `!opts` surface, the same single
 	// live poll, filtered. The broker's prose answer left the user

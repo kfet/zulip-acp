@@ -255,7 +255,7 @@ func modelFilter(text string) (string, bool) {
 		return "", false
 	}
 	verb, arg, found := strings.Cut(strings.TrimSpace(body), " ")
-	if !found || !strings.EqualFold(verb, "model") {
+	if !found || !isModelVerb(verb) {
 		return "", false
 	}
 	// Flattened to ONE LINE at the parse boundary, because the filter is
@@ -281,7 +281,7 @@ func modelFilter(text string) (string, bool) {
 	return strings.TrimSpace(zulipproto.OneLine(arg)), true
 }
 
-// isModelCommand reports whether text is `!model` in ANY form — bare,
+// isModelCommand reports whether text is `!model` (or `!m`) in ANY form — bare,
 // with a filter, or with an exact id — or its `!models` alias, which
 // the broker folds into the same answer. It exists so one check can
 // cover every shape at the point where an empty catalogue makes all of
@@ -299,33 +299,41 @@ func isModelCommand(text string) bool {
 		return false
 	}
 	verb, _, _ := strings.Cut(strings.TrimSpace(body), " ")
-	return strings.EqualFold(verb, "model") || strings.EqualFold(verb, "models")
+	return isModelVerb(verb) || strings.EqualFold(verb, "models")
 }
 
-// modelKnob reports whether text is `!model <id>` naming a model the
-// agent actually has, i.e. a knob CHANGE rather than a listing.
-//
-// Only an exact id counts. `!model opus` is a filter query and belongs
-// to the filtered control pair (see showFilteredPair), falling through
-// to the broker's prose only when it matches nothing; treating it as a
-// change would silently switch models off an approximate match.
-func (h *Handler) modelKnob(text string) (string, bool) {
-	body, ok := command.StripSigil(strings.TrimSpace(text))
-	if !ok {
-		return "", false
+// isModelVerb reports whether verb names the model knob: `model`, or
+// its `m` alias. The alias is an EXACT verb, so `!me`, `!msg` and
+// `/me` never match it.
+func isModelVerb(verb string) bool {
+	return strings.EqualFold(verb, "model") || strings.EqualFold(verb, "m")
+}
+
+// modelKnob reports whether text is `!model <q>` (or `!m <q>`) that
+// resolves to ONE model the agent has, i.e. a knob CHANGE rather than
+// a listing. Resolution is acp-kit's command.ResolveModel: an exact id,
+// or a fuzzy query with exactly one candidate. exact tells the caller
+// whether the user typed the id; if not, the caller echoes the full id
+// so the user sees what the query picked. Several candidates are a
+// filter query for the filtered control pair (see showFilteredPair),
+// which narrows with MatchModels — the same candidates.
+func (h *Handler) modelKnob(text string) (id string, exact, ok bool) {
+	body, isCmd := command.StripSigil(strings.TrimSpace(text))
+	if !isCmd {
+		return "", false, false
 	}
 	verb, arg, found := strings.Cut(strings.TrimSpace(body), " ")
-	if !found || !strings.EqualFold(verb, "model") {
-		return "", false
+	if !found || !isModelVerb(verb) {
+		return "", false, false
 	}
 	arg = strings.TrimSpace(arg)
 	models, _ := h.models()
-	for _, m := range models {
-		if m.ID == arg {
-			return arg, true
-		}
+	exact, cands := command.ResolveModel(models, arg)
+	if len(cands) != 1 {
+		return "", false, false
 	}
-	return "", false
+	h.cfg.Logf("handler: model query %q resolved to %q (exact=%v)", arg, cands[0].ID, exact)
+	return cands[0].ID, exact, true
 }
 
 // applyModelKnob performs a knob change end to end: apply, then
