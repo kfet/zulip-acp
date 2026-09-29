@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-29
+
 ### Added
 
 - `!m` is an alias of `!model` everywhere. It is an exact verb: `!me`, `/me` and `!msg` do not match it.
