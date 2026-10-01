@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-01
+
+### Added
+
+- `!upgrade` is an alias of `!update`; `!restart [--force]` reloads the relay and fir gracefully without updating anything (owner-only, allowed on fleet hosts). Both appear in `!help` and the agent's system prompt (acp-kit v0.29.0).
+
 ## [0.42.0] - 2026-09-29
 
 ### Added

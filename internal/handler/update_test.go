@@ -121,3 +121,24 @@ func TestUpdateCommandFleetReportsThroughPost(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestRestartAndUpgradeRouted(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"!restart", "Restarting gracefully"},
+		{"!upgrade relay", "Updated on disk"},
+	} {
+		var h *Handler
+		reloads := 0
+		hh := dmCmdHarness(t, newAgent("x"), func(c *Config) { c.Updater = testUpdater(t, &h, nil, &reloads) })
+		h = hh.h
+		hh.deliverDM(t, humanID, "!help", humanID, botID)
+		if help := hh.only(t); !strings.Contains(help, "!restart") || !strings.Contains(help, "!upgrade") {
+			t.Fatalf("help = %q", help)
+		}
+		hh.z.reset()
+		hh.deliverDM(t, humanID, tc.text, humanID, botID)
+		if got := strings.Join(hh.z.stored(), "\n"); !strings.Contains(got, tc.want) || reloads != 1 {
+			t.Fatalf("%s: reloads=%d reply=%q", tc.text, reloads, got)
+		}
+	}
+}
