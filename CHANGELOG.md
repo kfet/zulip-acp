@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.2] - 2026-10-02
+
 ### Changed
 - `scripts/converge.sh` reads the shared fleet bot registry `~/sync/shared/fleet/bots/` (override `FLEET_BOTS_DIR`) and acts only on `"relay": "zulip-acp"` entries; the in-repo `bots/` is gone. Tests use synthetic specs in `test/fixtures/bots/`.
 - Docs, tests and goldens use synthetic bot, host and user names.
