@@ -11,7 +11,7 @@ relay. See the `deploy` skill for the canonical file layout; this skill owns the
 upgrade/recycle mechanics.
 
 > **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
-> bot with a spec in `bots/<name>.json`, version moves go through the lock:
+> bot with a spec in the fleet registry (`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots/<name>.json`), version moves go through the lock:
 > `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
 > `scripts/converge.sh <bot> --apply` per host. Everywhere else the verb is
 > `zulip-acp update`. **Never place a binary by hand** — no `cp`, no staged
@@ -24,7 +24,7 @@ upgrade/recycle mechanics.
 > and reports the version change in the topic afterwards. `--force` cancels
 > in-flight turns first. On a fleet host (`fleet_managed` / `fleet_lock_file` /
 > `update_converge_cmd`) every form except `--check` runs `update_converge_cmd`
-> instead — for hosta, `scripts/chat-update.sh bot-a`: pull, `--tot`, commit
+> instead — for host-a, `scripts/chat-update.sh bot-a`: pull, `--tot`, commit
 > and push `dist.lock` if a version moved, `bot-a --apply`. The topic gets
 > the old → new versions and the `dist.lock` change, or "already up to date"
 > with the version table. A fleet host with no converge command refuses, and
@@ -67,7 +67,7 @@ Use **restart** — a hard, destructive restart — only for:
 
 ## The canonical order — pick the FIRST one that applies
 
-1. **Fleet host with a spec in `bots/<name>.json` → converge, always.**
+1. **Fleet host with a spec in the fleet registry (`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots/<name>.json`) → converge, always.**
    `scripts/converge.sh --tot` rewrites `dist.lock` (review + commit), then
    `scripts/converge.sh <bot> --apply` converges that host. **Converge is the
    only sanctioned way to touch a fleet host** — it moves the binary, `fir`,
@@ -82,7 +82,7 @@ Use **restart** — a hard, destructive restart — only for:
    evidence:
 
    ```text
-   == local target: hosta -> chat-a.example.invalid matches this machine's hostname — no ssh
+   == local target: host-a -> chat-a.example.invalid matches this machine's hostname — no ssh
    ```
 
    Only a certain yes changes the transport, so every other host still goes
@@ -148,7 +148,7 @@ converge silently disagrees with the host.
 Confirm with the user before acting:
 
 1. **Host** — `local` or `user@host`. Default local. If it has a spec in
-   `bots/`, use converge (rule 1) and stop reading the per-host steps.
+   the fleet registry, use converge (rule 1) and stop reading the per-host steps.
 2. **Target version** — default: latest `vX.Y.Z` release. Override only if
    asked. If `VERSION` is ahead of every pushed tag, an unpublished release
    exists — run the `release` flow first.
@@ -190,7 +190,7 @@ once, and reload from then on.
 
 ### 3. Upgrade
 
-**Fleet host (has a `bots/<name>.json` spec):**
+**Fleet host (has a fleet registry spec):**
 ```bash
 scripts/converge.sh --tot                    # resolve the newest releases that
                                              # satisfy every spec's `require`,
@@ -362,8 +362,8 @@ the error and stop — do not paper over.
 ## Finish on the FLEET, not on one host
 
 **A deploy is done when the fleet is converged, not when a host is.** This relay
-is listed in the fleet inventory (`~/sync/shared/fleet/inventory/bot-a.json`).
-That inventory is shared across all three relays and belongs to none of
+is listed in the shared fleet bot registry (`~/sync/shared/fleet/bots/<name>.json`).
+That registry is shared across all three relays and belongs to none of
 them; deploying is this repo's job, above. Close every
 release/deploy/update with the read-only sweep:
 
@@ -378,16 +378,16 @@ the `bot-a` row is `ok`. Paste the output into your reply.
 
 Nothing to bump after a release: the sweep takes this relay's wanted
 version from its latest git tag, so cutting the tag IS the declaration.
-(An instance can hold back with `.pin` in its inventory entry, which
+(An instance can hold back with `.pin` in its registry entry, which
 requires a `.notes` reason.)
 
 **`.pin` is NOT subsumed by a spec's `require` block, and stays.** They answer
 different questions in different systems. `require` is this repo's, per bot
 spec, and constrains *resolution*: what `--tot` may write into `dist.lock` and
 what `--apply` will accept — a floor ("this host needs at least X"). `.pin` is
-the shared cross-relay inventory's, per *instance*, and overrides the sweep's
+read by the shared fleet sweep, per *instance*, and overrides the sweep's
 **wanted** version for all three relays — a ceiling, held by a host that must
-stay behind the tag for a stated reason. `fleet.sh` never reads `bots/`, so a
+stay behind the tag for a stated reason. `fleet.sh` ignores `require`, so a
 `require` cannot hold an instance back in the sweep, and a `.pin` cannot stop
 converge applying a lock. Removing either would lose a real capability.
 

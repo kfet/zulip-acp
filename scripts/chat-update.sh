@@ -2,7 +2,7 @@
 # chat-update.sh <bot> — the `!update` flow of a fleet host.
 #
 # A fleet host's relay runs this as its `update_converge_cmd`, from the
-# checkout that holds its bots/ spec and dist.lock. It is the same
+# checkout that holds dist.lock (specs come from the shared fleet registry). It is the same
 # sequence an operator types by hand:
 #
 #   1. git pull --ff-only             pick up spec and lock changes

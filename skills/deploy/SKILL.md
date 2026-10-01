@@ -93,12 +93,12 @@ ssh <host> 'brew install kfet/ai/zulip-acp'
 > `TOK=$(gh auth token); ssh <host> "curl -fsSL … | GITHUB_TOKEN=$TOK BIN_DIR=\$HOME/.local/bin sh"`.
 
 **Every subsequent upgrade is `zulip-acp update` on the host, or converge for
-a fleet host with a `bots/<name>.json` spec — never another hand-placed
+a fleet host with a fleet registry spec — never another hand-placed
 binary.** See the `update` skill; it owns the upgrade order. Converge runs on
 the target host itself — it uses no ssh when the spec names the machine it
 runs on.
 
-Add the host to `bots/` while you are here: a spec plus `dist.lock` is what
+Add the host to the fleet registry while you are here: a spec plus `dist.lock` is what
 makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.
 The spec declares **requirements** (an optional `"require": {"zulip_acp":
 ">=X.Y.Z", "fir": ">=X.Y.Z"}`); `dist.lock` records the **resolution** of
@@ -304,8 +304,8 @@ dir once the systemd service is verified live.
 ## Finish on the FLEET, not on one host
 
 **A deploy is done when the fleet is converged, not when a host is.** This relay
-is listed in the fleet inventory (`~/sync/shared/fleet/inventory/bot-a.json`).
-That inventory is shared across all three relays and belongs to none of
+is listed in the shared fleet bot registry (`~/sync/shared/fleet/bots/<name>.json`).
+That registry is shared across all three relays and belongs to none of
 them; deploying is this repo's job, above. Close every
 release/deploy/update with the read-only sweep:
 
@@ -320,16 +320,16 @@ the `bot-a` row is `ok`. Paste the output into your reply.
 
 Nothing to bump after a release: the sweep takes this relay's wanted
 version from its latest git tag, so cutting the tag IS the declaration.
-(An instance can hold back with `.pin` in its inventory entry, which
+(An instance can hold back with `.pin` in its registry entry, which
 requires a `.notes` reason.)
 
 **`.pin` is NOT subsumed by a spec's `require` block, and stays.** They answer
 different questions in different systems. `require` is this repo's, per bot
 spec, and constrains *resolution*: what `--tot` may write into `dist.lock` and
 what `--apply` will accept — a floor ("this host needs at least X"). `.pin` is
-the shared cross-relay inventory's, per *instance*, and overrides the sweep's
+read by the shared fleet sweep, per *instance*, and overrides the sweep's
 **wanted** version for all three relays — a ceiling, held by a host that must
-stay behind the tag for a stated reason. `fleet.sh` never reads `bots/`, so a
+stay behind the tag for a stated reason. `fleet.sh` ignores `require`, so a
 `require` cannot hold an instance back in the sweep, and a `.pin` cannot stop
 converge applying a lock. Removing either would lose a real capability.
 
@@ -378,5 +378,5 @@ Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 - [ ] Real message into a served channel round-trips to an agent reply.
 - [ ] Realm edit window is unlimited; 10k truncation understood.
 - [ ] Any old bare-process deploy retired, state migrated first.
-- [ ] Instance is listed in `~/sync/shared/fleet/inventory/`.
+- [ ] Instance is listed in `~/sync/shared/fleet/bots/`.
 - [ ] **`fleet.sh status` run, and the `bot-a` row is `ok`.**

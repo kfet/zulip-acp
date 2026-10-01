@@ -1,0 +1,47 @@
+{
+  "name": "bot-d",
+  "host": "host-d",
+  "platform": "linux/arm64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-bot-d",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8347",
+    "poe_path": "/bot-d",
+    "config_path": "~/.config/poe-acp/bot-bot-d/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m",
+    "enable_mcp_attach": true,
+    "introduction": "bot-d — fir over ACP on host-d (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "bot_name": "bot-d",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium"
+    }
+  },
+  "credentials": {
+    "env_file": "~/.config/poe-acp/bot-bot-d/env"
+  },
+  "relay": "poe-acp",
+  "state": "active",
+  "source": {
+    "deploy_skill": "poe-acp: scripts/converge.sh",
+    "repo": "github.com/kfet/poe-acp"
+  }
+}

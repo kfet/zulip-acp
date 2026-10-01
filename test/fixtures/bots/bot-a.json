@@ -1,7 +1,7 @@
 {
-  "name": "bot-b",
-  "host": "host-f",
-  "platform": "linux/arm64",
+  "name": "bot-a",
+  "host": "host-a",
+  "platform": "linux/amd64",
   "supervisor": "systemd-user",
   "unit": "zulip-acp",
   "binary": "~/.local/bin/zulip-acp",
@@ -32,27 +32,42 @@
     "site_aliases": [
       "chat-b.example.invalid"
     ],
-    "bot_email": "bot-b-bot@chat-b.example.invalid",
+    "bot_email": "bot-a@example.invalid",
     "channels": [
       "*"
     ],
     "ambient_channels": [
-      "chan-b"
+      "chan-a"
     ],
     "autotopic_channels": [
-      "chan-b"
+      "chan-a"
     ],
     "dms": true,
     "relay_mcp": true,
-    "state_dir": "/home/kfet/.config/zulip-acp/state",
+    "state_dir": "/home/user-a/.config/zulip-acp/state",
     "hide_thinking": false,
     "system_prompt": "Treat every message you receive as addressed to you, whether or not the bot is mentioned. Reply to all of them; never emit the silent sentinel.\n\nWrite in ASD-STE100 (Simplified Technical English): short sentences, active voice, one idea per sentence, plain approved vocabulary.",
     "allowed_user_ids": [
-      8
+      1001
     ],
-    "stream_edits": false
+    "stream_edits": false,
+    "update_owner_ids": [
+      1001
+    ],
+    "fleet_lock_file": "/home/user-a/src/zulip-acp/dist.lock",
+    "update_converge_cmd": "/home/user-a/src/zulip-acp/scripts/chat-update.sh bot-a"
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"
-  }
+  },
+  "relay": "zulip-acp",
+  "state": "active",
+  "source": {
+    "deploy_skill": "zulip-acp: scripts/converge.sh bot-a --apply",
+    "repo": "github.com/kfet/zulip-acp"
+  },
+  "notes": "Zulip relay for the fir fleet (bot-a-bot). Converge-managed by zulip-acp scripts/converge.sh. Formerly inventoried as bot-a. host-a is the ONLY clone to release zulip-acp from — a release cut from the host-b clone produced two different v0.14.0s on 2026-09-04. Graceful reload is `systemctl --user reload zulip-acp` (SIGHUP: drain, then re-exec in place).",
+  "aliases": [
+    "bot-a"
+  ]
 }

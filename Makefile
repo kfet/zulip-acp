@@ -255,5 +255,5 @@ publish: build notices
 # was how a host ended up running something nobody could name: no checksum,
 # no atomic swap, no record. The verbs are `zulip-acp update` (checksum-
 # verified, ETXTBSY-safe, in place) for a host that already runs the relay,
-# `scripts/converge.sh <bot> --apply` for a host with a spec in bots/, and
+# `scripts/converge.sh <bot> --apply` for a host with a spec in the fleet registry, and
 # install.sh for a first install.

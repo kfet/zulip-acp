@@ -18,7 +18,12 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONVERGE="$ROOT/scripts/converge.sh"
 GOLDEN="$ROOT/test/golden"
-mapfile -t BOTS < <(cd "$ROOT/bots" && ls ./*.json | sed 's|^\./||; s|\.json$||')
+# The live registry is ~/sync/shared/fleet/bots (shared by every relay);
+# tests run against a frozen copy so they are hermetic.
+FIXTURES="$ROOT/test/fixtures/bots"
+export FLEET_BOTS_DIR="$FIXTURES"
+mapfile -t BOTS < <(cd "$FIXTURES" && for f in ./*.json; do
+  [ "$(jq -r '.relay // empty' "$f")" = zulip-acp ] && basename "$f" .json; done)
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $1"; }
@@ -48,13 +53,15 @@ trap 'rm -rf "$tmpd"' EXIT
 mkdir -p "$tmpd/repo/bots" "$tmpd/repo/scripts" "$tmpd/repo/test"
 cp "$CONVERGE" "$tmpd/repo/scripts/"
 cp "$ROOT/dist.lock" "$tmpd/repo/"
-FAKE_CONVERGE="$tmpd/repo/scripts/converge.sh"
+FAKE_CONVERGE="$tmpd/fake-converge"
+printf '#!/bin/sh\nFLEET_BOTS_DIR=%s exec %s "$@"\n' "$tmpd/repo/bots" "$tmpd/repo/scripts/converge.sh" >"$FAKE_CONVERGE"
+chmod +x "$FAKE_CONVERGE"
 DEFAULT_AGENT='{"cmd": "fir --mode acp", "kind": "fir"}'
 mkspec() { # <name> <service-json-extra> [agent-json]
   local agent=${3:-$DEFAULT_AGENT}
   cat >"$tmpd/repo/bots/$1.json" <<EOF
 {
-  "name": "$1", "host": "nowhere", "platform": "linux/amd64",
+  "name": "$1", "relay": "zulip-acp", "host": "nowhere", "platform": "linux/amd64",
   "supervisor": "systemd-user", "unit": "zulip-acp-$1",
   "binary": "~/.local/bin/zulip-acp",
   "agent": $agent,
@@ -130,7 +137,7 @@ case "$("$FAKE_CONVERGE" render bare unit)" in
 esac
 cat >"$tmpd/repo/bots/emac.json" <<'EOF'
 {
-  "name": "emac", "host": "nowhere", "platform": "darwin/arm64",
+  "name": "emac", "relay": "zulip-acp", "host": "nowhere", "platform": "darwin/arm64",
   "supervisor": "launchd", "unit": "dev.kfet.zulip-acp",
   "binary": "~/.local/bin/zulip-acp",
   "agent": {"cmd": "fir --mode acp", "kind": "fir"},
@@ -236,7 +243,13 @@ reqspec reqok '{"zulip_acp": ">=0.1.0", "fir": "~>1.11.0"}'
 # Absent require == today's behaviour, exactly.
 "$FAKE_CONVERGE" render bare unit >/dev/null \
   && ok "a spec with no require block still renders" || bad "require must stay optional"
-# Every real spec in bots/ must validate.
+# A registry entry for another relay is never ours.
+if "$CONVERGE" render bot-d unit >/dev/null 2>&1; then
+  bad "a poe-acp registry entry must be refused"
+else
+  ok "non-zulip-acp registry entry (bot-d) refused"
+fi
+# Every zulip-acp spec in the registry fixture must validate.
 for bot in "${BOTS[@]}"; do
   "$CONVERGE" render "$bot" unit >/dev/null \
     && ok "$bot: require block validates" || bad "$bot: require block rejected"
@@ -389,7 +402,7 @@ LOCKED=$(jq -r .zulip_acp "$ROOT/dist.lock")
 printf '#!/bin/sh\necho %s\n' "$LOCKED" >"$fake/.local/bin/zulip-acp"
 chmod +x "$fake/.local/bin/zulip-acp"
 BOT=${BOTS[0]}
-env_file=$(jq -r '.credentials.env_file' "$ROOT/bots/$BOT.json" | sed "s|^~|$fake|")
+env_file=$(jq -r '.credentials.env_file' "$FIXTURES/$BOT.json" | sed "s|^~|$fake|")
 
 # A unit whose EnvironmentFile is missing starts and dies with no usable
 # journal line, so --apply must refuse before it recycles into that.
@@ -408,8 +421,8 @@ case "$out" in
   *"zulip-acp $LOCKED ✓"*) ok "stub binary version matches lock" ;;
   *) bad "expected zulip-acp version ✓"; echo "$out" ;;
 esac
-cfg_path=$(jq -r '.service.config_path' "$ROOT/bots/$BOT.json" | sed "s|^~|$fake|")
-unit_name=$(jq -r '.unit' "$ROOT/bots/$BOT.json")
+cfg_path=$(jq -r '.service.config_path' "$FIXTURES/$BOT.json" | sed "s|^~|$fake|")
+unit_name=$(jq -r '.unit' "$FIXTURES/$BOT.json")
 [ ! -f "$cfg_path" ] && ok "dry run wrote nothing" || bad "dry run must not write config"
 
 out=$("$CONVERGE" "$BOT" --target-root "$fake" --apply)
@@ -520,7 +533,7 @@ grep -q -- "daemon-reload" "$fake3/.stub/log" && bad "graceful path must not dae
 # A config-only change still recycles, and reports the accepted reload even
 # though no version move is observable.
 : >"$fake3/.stub/log"
-echo '{"x":2}' >"$fake3$(jq -r '.service.config_path' "$ROOT/bots/$BOT.json" | sed 's|^~||')"
+echo '{"x":2}' >"$fake3$(jq -r '.service.config_path' "$FIXTURES/$BOT.json" | sed 's|^~||')"
 out=$("$CONVERGE" "$BOT" --target-root "$fake3" --apply)
 case "$out" in
   *"reload accepted"*"nothing observable to verify"*) ok "config-only change reloads, and says what it could not verify" ;;

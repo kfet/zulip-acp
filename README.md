@@ -941,7 +941,7 @@ The whole mechanism is [distkit](https://github.com/kfet/distkit), shared with
 `fir`, `harb`, `mintick` and the sibling relays; `internal/updater` is just
 the four strings that name this binary.
 
-Hosts with a spec in `bots/` are converged instead, from `dist.lock`:
+Hosts with a spec in the fleet registry (`~/sync/shared/fleet/bots`, `FLEET_BOTS_DIR`) are converged instead, from `dist.lock`:
 
 ```bash
 scripts/converge.sh --tot            # resolve latest-of-everything into dist.lock

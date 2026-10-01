@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # converge.sh — the only sanctioned way to change a zulip-acp bot host.
 #
-# Reads bots/<bot>.json + dist.lock and makes the target host match. Version
+# Reads $BOTS_DIR/<bot>.json (shared ~/sync/shared/fleet/bots, relay=zulip-acp) + dist.lock and makes the target host match. Version
 # moves go through the lock, never through a hand-typed command on a host.
 #
 # Usage:
@@ -54,7 +54,26 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BOTS_DIR="$REPO_ROOT/bots"
+# ONE bot registry for the whole relay fleet, shared with poe-acp, slack-acp
+# and fleet.sh. Only entries with .relay == zulip-acp are ours.
+BOTS_DIR="${FLEET_BOTS_DIR:-$HOME/sync/shared/fleet/bots}"
+RELAY=zulip-acp
+# bot_specs: our relay's spec files, one per line.
+bot_specs() {
+  local f
+  for f in "$BOTS_DIR"/*.json; do
+    [ -f "$f" ] && [ "$(jq -r '.relay // empty' "$f")" = "$RELAY" ] && echo "$f"
+  done
+  return 0
+}
+# bot_spec <name>: path of that bot's spec; dies unless it is ours.
+bot_spec() {
+  local spec="$BOTS_DIR/$1.json" r
+  [ -f "$spec" ] || die "no such bot spec: $spec"
+  r=$(jq -r '.relay // empty' "$spec")
+  [ "$r" = "$RELAY" ] || die "$1 is a ${r:-relay-less} bot, not $RELAY: $spec"
+  echo "$spec"
+}
 LOCK="$REPO_ROOT/dist.lock"
 STAMP=$(date +%Y%m%d-%H%M%S)
 TMPD=$(mktemp -d)
@@ -192,7 +211,7 @@ spec_require() { jq -r --arg k "$2" '.require[$k] // empty' "$1"; }
 # all_requires <component> — "<bot>\t<constraint>" for every spec that has one.
 all_requires() {
   local f bot c
-  for f in "$BOTS_DIR"/*.json; do
+  for f in $(bot_specs); do
     [ -f "$f" ] || continue
     bot=$(basename "$f" .json)
     c=$(spec_require "$f" "$1")
@@ -302,7 +321,7 @@ enforce_require() {
   c=$(spec_require "$SPEC" "$comp")
   [ -n "$c" ] || return 0
   ver_satisfies "$locked" "$c" && return 0
-  die "$host ($bot): dist.lock has $comp $locked, which does not satisfy bots/$bot.json require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
+  die "$host ($bot): dist.lock has $comp $locked, which does not satisfy $SPEC require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
 }
 
 # service key helpers: "absent or false or null" => not emitted
@@ -1006,7 +1025,7 @@ tot() {
 
   # Every spec's require block is validated BEFORE any network call: a lock
   # resolved against a malformed constraint would be resolved against nothing.
-  for f in "$BOTS_DIR"/*.json; do
+  for f in $(bot_specs); do
     [ -f "$f" ] || continue
     SPEC="$f"; validate_require
   done
@@ -1036,7 +1055,7 @@ tot() {
   echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
   echo "   git diff dist.lock"
   local f
-  for f in "$BOTS_DIR"/*.json; do
+  for f in $(bot_specs); do
     echo "   scripts/converge.sh $(basename "$f" .json) --apply"
   done
 }
@@ -1080,8 +1099,7 @@ case "$1" in
     tot ;;
   render)
     [ $# -eq 3 ] || usage
-    SPEC="$BOTS_DIR/$2.json"
-    [ -f "$SPEC" ] || die "no such bot spec: $SPEC"
+    SPEC=$(bot_spec "$2")
     validate_spec
     case "$3" in
       config)    render_config ;;
@@ -1111,8 +1129,7 @@ case "$1" in
   -*) usage ;;
   *)
     BOT=$1; shift
-    SPEC="$BOTS_DIR/$BOT.json"
-    [ -f "$SPEC" ] || die "no such bot spec: $SPEC"
+    SPEC=$(bot_spec "$BOT")
     validate_spec
     APPLY=0
     while [ $# -gt 0 ]; do

@@ -38,17 +38,17 @@ git -C "$tmp/wc" push --quiet origin main 2>/dev/null
 
 commits() { git -C "$tmp/remote.git" rev-list --count main; }
 
-out=$(NEXT_FIR=1.0.0 "$tmp/wc/scripts/chat-update.sh" hosta)
+out=$(NEXT_FIR=1.0.0 "$tmp/wc/scripts/chat-update.sh" host-a)
 if [ "$(commits)" = 1 ] && [ -z "$(git -C "$tmp/wc" status --porcelain)" ] &&
-	grep -q "no version moved" <<<"$out" && grep -q "applied hosta --apply" <<<"$out"; then
+	grep -q "no version moved" <<<"$out" && grep -q "applied host-a --apply" <<<"$out"; then
 	ok "unchanged versions: lock restored, nothing committed, applied"
 else
 	bad "unchanged versions: $out"
 fi
 
-out=$(NEXT_FIR=2.0.0 "$tmp/wc/scripts/chat-update.sh" hosta)
+out=$(NEXT_FIR=2.0.0 "$tmp/wc/scripts/chat-update.sh" host-a)
 if [ "$(commits)" = 2 ] && [ "$(git -C "$tmp/remote.git" log -1 --format=%s main)" = "dist.lock: zulip-acp 0.1.0, fir 2.0.0" ] &&
-	grep -q "applied hosta --apply" <<<"$out"; then
+	grep -q "applied host-a --apply" <<<"$out"; then
 	ok "moved version: lock committed, pushed, applied"
 else
 	bad "moved version: $out"
@@ -56,7 +56,7 @@ fi
 
 # A push that fails leaves neither a local commit nor a dirty lock.
 mv "$tmp/remote.git" "$tmp/gone.git"
-if NEXT_FIR=4.0.0 "$tmp/wc/scripts/chat-update.sh" hosta >/dev/null 2>&1; then
+if NEXT_FIR=4.0.0 "$tmp/wc/scripts/chat-update.sh" host-a >/dev/null 2>&1; then
 	bad "failed pull/push reported success"
 elif [ -z "$(git -C "$tmp/wc" status --porcelain)" ] && [ "$(git -C "$tmp/wc" rev-list --count HEAD)" = 2 ]; then
 	ok "failure restores the checkout"
@@ -65,7 +65,7 @@ else
 fi
 git -C "$tmp/wc" remote set-url --push origin "$tmp/nowhere.git"
 mv "$tmp/gone.git" "$tmp/remote.git"
-if NEXT_FIR=5.0.0 "$tmp/wc/scripts/chat-update.sh" hosta >/dev/null 2>&1; then
+if NEXT_FIR=5.0.0 "$tmp/wc/scripts/chat-update.sh" host-a >/dev/null 2>&1; then
 	bad "failed push reported success"
 elif [ -z "$(git -C "$tmp/wc" status --porcelain)" ] && [ "$(git -C "$tmp/wc" rev-list --count HEAD)" = 2 ]; then
 	ok "failed push drops the local lock commit"

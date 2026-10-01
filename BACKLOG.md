@@ -4,7 +4,7 @@ Things deliberately not done in v1, with the reason.
 
 ## Fleet versioning: what `require` deliberately did NOT become
 
-`bots/<name>.json` now declares `require` constraints and `dist.lock` is their
+The registry spec now declares `require` constraints and `dist.lock` is their
 resolution (`--tot` resolves, `--apply` enforces). Two adjacent ideas were left
 out of that change on purpose, and both would have to be argued for on their
 own merits:
