@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-10-01
+
 ### Changed
 
 - Bump acp-kit to v0.30.0: no panics in production code, the updater survives Homebrew deleting the agent directory, and a crash on a nil conversation outcome is fixed.
