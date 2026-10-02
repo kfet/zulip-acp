@@ -941,7 +941,14 @@ The whole mechanism is [distkit](https://github.com/kfet/distkit), shared with
 `fir`, `harb`, `mintick` and the sibling relays; `internal/updater` is just
 the four strings that name this binary.
 
-Hosts with a spec in the fleet registry (`~/sync/shared/fleet/bots`, `FLEET_BOTS_DIR`) are converged instead, from `dist.lock`:
+Hosts with a spec in the fleet registry (`~/sync/shared/fleet/bots`, `FLEET_BOTS_DIR`) are converged instead, from `dist.lock`.
+A bot spec holds only what differs from `distro.json` (the defaults shared by
+every zulip-acp bot); converge.sh deep-merges `distro.json` <- bot file before
+validating or rendering (bot wins, objects merge, arrays replace, `null`
+unsets, bot key order first; `"managed": false` entries are not merged).
+`distro.json` never names a bot, host, site, channel, e-mail or user;
+`make all` runs `scripts/check-no-leak.sh` to keep registry identifiers out of
+the tracked tree (skipped when the registry is absent).
 
 ```bash
 scripts/converge.sh --tot            # resolve latest-of-everything into dist.lock

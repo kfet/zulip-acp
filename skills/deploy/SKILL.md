@@ -98,7 +98,8 @@ binary.** See the `update` skill; it owns the upgrade order. Converge runs on
 the target host itself — it uses no ssh when the spec names the machine it
 runs on.
 
-Add the host to the fleet registry while you are here: a spec plus `dist.lock` is what
+Add the host to the fleet registry while you are here (the spec holds only
+what differs from `distro.json`): a spec plus `dist.lock` is what
 makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.
 The spec declares **requirements** (an optional `"require": {"zulip_acp":
 ">=X.Y.Z", "fir": ">=X.Y.Z"}`); `dist.lock` records the **resolution** of

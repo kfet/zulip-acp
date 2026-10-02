@@ -1,0 +1,38 @@
+{
+  "supervisor": "systemd-user",
+  "binary": "~/.local/bin/zulip-acp",
+  "require": {
+    "zulip_acp": ">=0.31.3",
+    "fir": ">=1.11.0"
+  },
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
+  "service": {
+    "config_path": "~/.config/zulip-acp/config.json"
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s",
+    "timeout_stop_sec": "90s"
+  },
+  "config": {
+    "channels": [
+      "*"
+    ],
+    "dms": true,
+    "relay_mcp": true,
+    "hide_thinking": false,
+    "stream_edits": false
+  },
+  "credentials": {
+    "env_file": "~/.config/zulip-acp/env"
+  }
+}

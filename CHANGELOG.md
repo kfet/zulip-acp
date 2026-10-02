@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `distro.json`: the defaults shared by every zulip-acp bot. `scripts/converge.sh` deep-merges `distro.json` <- the bot's registry file (bot wins; objects merge, arrays replace, `null` unsets; `"managed": false` entries are not merged) before validating and rendering, so a bot file holds only what differs.
+- `scripts/check-no-leak.sh`, run by `make all`: fails if any bot-instance identifier from the fleet registry appears in the tracked tree; skipped when the registry is absent.
+
 ## [0.43.2] - 2026-10-02
 
 ### Changed

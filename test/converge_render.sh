@@ -585,6 +585,48 @@ else
   ok "pid move during a reload fails loudly"
 fi
 
+echo "== distro.json <- bot merge"
+mtmp=$(mktemp -d)
+mkdir -p "$mtmp/bots"
+cat >"$mtmp/distro.json" <<'JSON'
+{"binary": "~/.local/bin/zulip-acp",
+ "config": {"mode": "default", "list": ["d1", "d2"],
+            "nested": {"keep": "d", "swap": "d"}, "gone": "d"}}
+JSON
+cat >"$mtmp/bots/bot-a.json" <<'JSON'
+{"name": "bot-a", "relay": "zulip-acp", "host": "host-a",
+ "config": {"site": "https://bot-a.example.invalid", "list": ["b1"],
+            "nested": {"swap": "b"}, "gone": null}}
+JSON
+cat >"$mtmp/bots/bot-u.json" <<'JSON'
+{"name": "bot-u", "relay": "zulip-acp", "host": "host-a", "managed": false,
+ "config": {"site": "https://bot-u.example.invalid"}}
+JSON
+mrender() { FLEET_DISTRO="$mtmp/distro.json" FLEET_BOTS_DIR="$mtmp/bots" "$CONVERGE" render "$1" config | jq -c "$2"; }
+[ "$(mrender bot-a .mode)" = '"default"' ] && ok "merge: a default fills an absent key" || bad "merge: default not used"
+[ "$(mrender bot-a .site)" = '"https://bot-a.example.invalid"' ] && ok "merge: a bot-only key survives" || bad "merge: bot-only key lost"
+[ "$(mrender bot-a .list)" = '["b1"]' ] && ok "merge: a bot array replaces the default array" || bad "merge: arrays were not replaced"
+[ "$(mrender bot-a .nested)" = '{"swap":"b","keep":"d"}' ] && ok "merge: nested objects merge, bot wins, bot key order first" || bad "merge: nested merge wrong: $(mrender bot-a .nested)"
+[ "$(mrender bot-a .gone)" = 'null' ] && ok "merge: a bot null overrides a default" || bad "merge: null did not override"
+[ "$(mrender bot-a 'keys_unsorted')" = '["site","list","nested","gone","mode"]' ] && ok "merge: bot key order kept, default-only keys appended" || bad "merge: key order $(mrender bot-a keys_unsorted)"
+[ "$(mrender bot-u .)" = '{"site":"https://bot-u.example.invalid"}' ] && ok "merge: managed=false bots are not merged" || bad "merge: unmanaged bot got defaults"
+[ "$(FLEET_DISTRO="$mtmp/absent.json" FLEET_BOTS_DIR="$mtmp/bots" "$CONVERGE" render bot-a config | jq -c .mode)" = null ] && ok "merge: no distro file means the bot file as-is" || bad "merge: absent distro not handled"
+jq -e 'type == "object"' "$ROOT/distro.json" >/dev/null && ok "distro.json is a JSON object" || bad "distro.json is not a JSON object"
+leak=$(jq -r '[paths | map(strings) | .[] | select(IN("name","host","unit","state","pin","notes","aliases","site","site_aliases","bot_email","bot_name","allowed_user_ids","state_dir"))] | unique | join(",")' "$ROOT/distro.json")
+[ -z "$leak" ] && ok "distro.json holds no per-bot keys" || bad "distro.json holds per-bot keys: $leak"
+rm -rf "$mtmp"
+
+echo "== no-leak check"
+ltmp=$(mktemp -d)
+out=$(FLEET_BOTS_DIR="$ltmp/absent" "$ROOT/scripts/check-no-leak.sh" 2>&1) && case "$out" in *skipped*) ok "no-leak: skipped without a registry" ;; *) bad "no-leak: no skip notice: $out" ;; esac || bad "no-leak: absent registry failed"
+mkdir -p "$ltmp/bots"
+tok="unseen$RANDOM$RANDOM$RANDOM"  # built at run time so it is in no tracked file
+printf '{"name": "bot-%s", "host": "host-%s", "config": {"site": "https://%s.example.invalid"}}' "$tok" "$tok" "$tok" >"$ltmp/bots/bot-a.json"
+FLEET_BOTS_DIR="$ltmp/bots" "$ROOT/scripts/check-no-leak.sh" >/dev/null 2>&1 && ok "no-leak: unseen identifiers pass" || bad "no-leak: unseen identifiers flagged"
+echo '{"name": "converge", "host": "host-a"}' >"$ltmp/bots/bot-b.json"
+FLEET_BOTS_DIR="$ltmp/bots" "$ROOT/scripts/check-no-leak.sh" >/dev/null 2>&1 && bad "no-leak: a tracked identifier passed" || ok "no-leak: a tracked identifier fails the check"
+rm -rf "$ltmp"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

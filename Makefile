@@ -41,7 +41,7 @@ else
   endef
 endif
 
-.PHONY: all _parallel build build-all install fmt tidy vet \
+.PHONY: all _parallel check-no-leak build build-all install fmt tidy vet \
         test test-race-cover test-scripts test-cover open-coverage \
         clean notices check-licenses check-installsh publish FORCE
 
@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover test-scripts build build-all notices check-licenses check-installsh
+_parallel: check-no-leak vet test-race-cover test-scripts build build-all notices check-licenses check-installsh
 
 fmt:
 	@gofmt -s -w .
@@ -111,6 +111,11 @@ test-race-cover: | $(BINDIR)
 # Shell tooling under scripts/ (converge.sh) — offline black-box assertions:
 # golden renders, the recycle-mechanism matrix, and a fake host with stubbed
 # systemd and /proc. No network, no ssh, no real service.
+# Public repo: no bot-instance identifier from the private fleet registry
+# may appear in the tracked tree (skipped when the registry is absent).
+check-no-leak:
+	$(call RUN,check (no-leak),./scripts/check-no-leak.sh)
+
 test-scripts:
 	$(call RUN,test (scripts),./test/converge_render.sh)
 	$(call RUN,test (install.sh),./test/installsh_guard.sh)

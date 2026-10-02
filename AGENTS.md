@@ -58,6 +58,7 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 
 ```
 test/fixtures/bots/     synthetic bot specs for tests (live registry: ~/sync/shared/fleet/bots)
+distro.json             defaults shared by every bot; a registry bot file holds only overrides
 cmd/zulip-acp/          entry point: flags + wiring
 dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
 docs/                   design doc + Zulip protocol reference
@@ -110,6 +111,11 @@ sanctioned way to touch a host that has a spec in the fleet registry; the root
 deliberately **no `make deploy`**: it skipped the checksum, was not an atomic
 swap, and left a version `dist.lock` could not see. See
 `internal/skills/bundle/update/SKILL.md`.
+
+This repo is public. It holds ONE distro spec (`distro.json`), never bot
+instances: no bot, host, site, channel, e-mail or user id from the fleet
+registry in any tracked file. `make all` enforces it via
+`scripts/check-no-leak.sh`.
 
 ## Think before you specialise
 

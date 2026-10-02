@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # converge.sh — the only sanctioned way to change a zulip-acp bot host.
 #
-# Reads $BOTS_DIR/<bot>.json (shared ~/sync/shared/fleet/bots, relay=zulip-acp) + dist.lock and makes the target host match. Version
+# Reads distro.json <- $BOTS_DIR/<bot>.json (deep-merged; shared ~/sync/shared/fleet/bots, relay=zulip-acp) + dist.lock and makes the target host match. Version
 # moves go through the lock, never through a hand-typed command on a host.
 #
 # Usage:
@@ -66,13 +66,40 @@ bot_specs() {
   done
   return 0
 }
-# bot_spec <name>: path of that bot's spec; dies unless it is ours.
+# distro.json (next to dist.lock) holds the defaults shared by every bot of
+# this relay; a bot file holds only what differs. merged_spec deep-merges
+# distro <- bot: the bot wins, objects merge recursively, any other value
+# (arrays included) is replaced wholesale, and a bot null unsets a default.
+# Merged objects keep the BOT's key order with default-only keys appended,
+# so a bot that needs a rendered key order (config.json) can restate keys.
+# Bots with "managed": false are tracked, not distro instances: no merge.
+DISTRO="${FLEET_DISTRO:-$REPO_ROOT/distro.json}"
+MERGE_JQ='def dmerge($d; $b):
+  if ($d|type) == "object" and ($b|type) == "object" then
+    (reduce ($b|keys_unsorted[]) as $k ({};
+       .[$k] = (if ($d|has($k)) then dmerge($d[$k]; $b[$k]) else $b[$k] end))) as $r
+    | reduce ($d|keys_unsorted[]) as $k ($r; if has($k) then . else .[$k] = $d[$k] end)
+  else $b end;
+if $bot[0].managed == false then $bot[0] else dmerge($distro[0]; $bot[0]) end'
+# merged_spec <bot-file> — print the path of the bot's merged spec.
+merged_spec() {
+  local out
+  out=$(mktemp "$TMPD/spec.XXXXXX")
+  if [ -f "$DISTRO" ]; then
+    jq -n --slurpfile distro "$DISTRO" --slurpfile bot "$1" "$MERGE_JQ" >"$out" \
+      || die "cannot merge $DISTRO <- $1"
+  else
+    cp "$1" "$out"
+  fi
+  echo "$out"
+}
+# bot_spec <name>: path of that bot's MERGED spec; dies unless it is ours.
 bot_spec() {
   local spec="$BOTS_DIR/$1.json" r
   [ -f "$spec" ] || die "no such bot spec: $spec"
   r=$(jq -r '.relay // empty' "$spec")
   [ "$r" = "$RELAY" ] || die "$1 is a ${r:-relay-less} bot, not $RELAY: $spec"
-  echo "$spec"
+  merged_spec "$spec"
 }
 LOCK="$REPO_ROOT/dist.lock"
 STAMP=$(date +%Y%m%d-%H%M%S)
@@ -214,7 +241,7 @@ all_requires() {
   for f in $(bot_specs); do
     [ -f "$f" ] || continue
     bot=$(basename "$f" .json)
-    c=$(spec_require "$f" "$1")
+    c=$(spec_require "$(merged_spec "$f")" "$1")
     [ -n "$c" ] && printf '%s\t%s\n' "$bot" "$c"
   done
   return 0
@@ -243,6 +270,8 @@ resolve_satisfying() {
 # Spec access ($SPEC is set in main)
 # ---------------------------------------------------------------------------
 SPEC=""
+# SPEC_SRC: the bot file SPEC was merged from — what error messages name.
+SPEC_SRC=""
 
 jqs() { jq -r "$1" "$SPEC"; }
 
@@ -296,20 +325,20 @@ validate_require() {
   case "$t" in
     absent|null) return 0 ;;
     object) : ;;
-    *) die "$SPEC: .require must be an object like {\"zulip_acp\": \">=0.31.3\"} (got $t)" ;;
+    *) die "$SPEC_SRC: .require must be an object like {\"zulip_acp\": \">=0.31.3\"} (got $t)" ;;
   esac
   # while-read, not `for k in $(...)`: a key that word-splits to nothing (the
   # empty key) would otherwise skip the loop body entirely and validate.
   while IFS= read -r k; do
     case " $REQUIRE_COMPONENTS " in
       *" $k "*) : ;;
-      *) die "$SPEC: unknown .require key \"$k\" (known: $REQUIRE_COMPONENTS)" ;;
+      *) die "$SPEC_SRC: unknown .require key \"$k\" (known: $REQUIRE_COMPONENTS)" ;;
     esac
     c=$(jq -r --arg k "$k" '.require[$k]' "$SPEC")
     [ "$(jq -r --arg k "$k" '.require[$k] | type' "$SPEC")" = string ] \
-      || die "$SPEC: .require.$k must be a string constraint (e.g. \">=0.31.3\")"
+      || die "$SPEC_SRC: .require.$k must be a string constraint (e.g. \">=0.31.3\")"
     valid_constraint "$c" \
-      || die "$SPEC: invalid .require.$k constraint \"$c\" — expected whitespace-separated terms of >=X.Y.Z, <=X.Y.Z, >X.Y.Z, <X.Y.Z, ~>X.Y.Z or an exact X.Y.Z"
+      || die "$SPEC_SRC: invalid .require.$k constraint \"$c\" — expected whitespace-separated terms of >=X.Y.Z, <=X.Y.Z, >X.Y.Z, <X.Y.Z, ~>X.Y.Z or an exact X.Y.Z"
   done < <(jq -r '.require | keys[]' "$SPEC")
 }
 
@@ -321,7 +350,7 @@ enforce_require() {
   c=$(spec_require "$SPEC" "$comp")
   [ -n "$c" ] || return 0
   ver_satisfies "$locked" "$c" && return 0
-  die "$host ($bot): dist.lock has $comp $locked, which does not satisfy $SPEC require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
+  die "$host ($bot): dist.lock has $comp $locked, which does not satisfy $SPEC_SRC require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
 }
 
 # service key helpers: "absent or false or null" => not emitted
@@ -1027,7 +1056,7 @@ tot() {
   # resolved against a malformed constraint would be resolved against nothing.
   for f in $(bot_specs); do
     [ -f "$f" ] || continue
-    SPEC="$f"; validate_require
+    SPEC=$(merged_spec "$f"); SPEC_SRC=$f; validate_require
   done
   SPEC=""
 
@@ -1099,7 +1128,7 @@ case "$1" in
     tot ;;
   render)
     [ $# -eq 3 ] || usage
-    SPEC=$(bot_spec "$2")
+    SPEC=$(bot_spec "$2"); SPEC_SRC="$BOTS_DIR/$2.json"
     validate_spec
     case "$3" in
       config)    render_config ;;
@@ -1129,7 +1158,7 @@ case "$1" in
   -*) usage ;;
   *)
     BOT=$1; shift
-    SPEC=$(bot_spec "$BOT")
+    SPEC=$(bot_spec "$BOT"); SPEC_SRC="$BOTS_DIR/$BOT.json"
     validate_spec
     APPLY=0
     while [ $# -gt 0 ]; do
