@@ -25,6 +25,11 @@ import (
 // The encoding is Key.index(), which is already canonical, already
 // keeps the two conversation shapes in disjoint namespaces, and is
 // already the map key — so a token cannot disagree with a lookup.
+//
+// It carries the BASE topic (see BaseTopic), so resolving a topic does
+// not change its token and a schedule armed in "foo" still fires once
+// the topic reads "✔ foo". A key parsed back from it must go through
+// Journal.Current before it is posted to.
 func (k Key) Token() string { return k.index() }
 
 // ParseToken reverses Token.

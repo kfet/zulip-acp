@@ -116,6 +116,86 @@ func TestRenameKeepsConvID(t *testing.T) {
 	}
 }
 
+// TestResolvedPrefixIsOneConversation: "foo" and "✔ foo" are the same
+// key, so resolving a topic never costs it its session; a move between
+// them only changes the topic string posted to.
+func TestResolvedPrefixIsOneConversation(t *testing.T) {
+	if BaseTopic("✔ ✔ foo") != "foo" || BaseTopic("foo") != "foo" || !IsResolved("✔ foo") || IsResolved("foo") {
+		t.Fatal("BaseTopic / IsResolved")
+	}
+	j, path := tmpJournal(t)
+	c, err := j.Ensure(Channel(4, "foo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := j.Lookup(Channel(4, "✔ foo")); !ok || got.ID != c.ID {
+		t.Fatalf("resolved lookup = %+v ok=%v", got, ok)
+	}
+	if Channel(4, "✔ foo").Token() != Channel(4, "foo").Token() {
+		t.Fatal("token must ignore the prefix")
+	}
+	got, ok, err := j.Rename(4, "foo", "✔ foo")
+	if err != nil || !ok || got.ID != c.ID || got.Topic != "✔ foo" {
+		t.Fatalf("resolve = %+v ok=%v err=%v", got, ok, err)
+	}
+	if k := j.Current(Channel(4, "foo")); k.Topic != "✔ foo" {
+		t.Fatalf("Current = %+v", k)
+	}
+	if k := j.Current(Channel(4, "other")); k.Topic != "other" {
+		t.Fatalf("Current of unknown = %+v", k)
+	}
+	// The echoed event finds nothing left to do.
+	if _, ok, err := j.Rename(4, "foo", "✔ foo"); ok || err != nil {
+		t.Fatalf("echo: ok=%v err=%v", ok, err)
+	}
+	if _, ok, _ := j.Rename(4, "nope", "✔ nope"); ok {
+		t.Fatal("unknown topic moved")
+	}
+	j2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := j2.Lookup(Channel(4, "foo")); !ok || got.Topic != "✔ foo" {
+		t.Fatalf("not persisted: %+v", got)
+	}
+	// A failed write rolls the topic string back.
+	j.path = filepath.Join(path, "sub", "journal.json")
+	if _, _, err := j.Rename(4, "✔ foo", "foo"); err == nil {
+		t.Fatal("want save error")
+	}
+	if got, _ := j.Lookup(Channel(4, "foo")); got.Topic != "✔ foo" {
+		t.Fatalf("not rolled back: %+v", got)
+	}
+}
+
+// TestOpenRetiresAPrefixClash: an old journal can hold "foo" and
+// "✔ foo" as two live conversations. The one answered in last keeps the
+// key, whichever order the file lists them in.
+func TestOpenRetiresAPrefixClash(t *testing.T) {
+	for _, order := range [][2]string{{"a", "b"}, {"b", "a"}} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "journal.json")
+		convs := map[string]string{
+			"a": `{"id":"a","stream_id":4,"topic":"foo","last_own_id":5}`,
+			"b": `{"id":"b","stream_id":4,"topic":"✔ foo","last_own_id":9}`,
+		}
+		body := `{"version":1,"convs":[` + convs[order[0]] + `,` + convs[order[1]] + `]}`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		j, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c, ok := j.Lookup(Channel(4, "foo")); !ok || c.ID != "b" {
+			t.Fatalf("order %v: key held by %+v", order, c)
+		}
+		if c, ok := j.LookupID("a"); !ok || !c.Retired {
+			t.Fatalf("order %v: loser %+v", order, c)
+		}
+	}
+}
+
 func TestRenameEdgeCases(t *testing.T) {
 	j, _ := tmpJournal(t)
 	// Unknown source topic: nothing to migrate.

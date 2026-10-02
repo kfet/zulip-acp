@@ -827,6 +827,47 @@ out of a catch-all topic nobody follows, before anyone could have read it there,
 and the destination notice would only tell you your own message was moved into
 the topic you are already looking at.
 
+These flags do NOT suppress the "marked this topic as resolved" notice. Zulip
+sends that notice for every resolve, whatever the flags say (measured, Zulip
+12.2). An unresolve soon after a resolve deletes the resolve notice and sends
+none of its own. See *The topic status mark*.
+
+### The topic status mark (`topic_status`)
+
+On by default. A channel topic WITHOUT Zulip's `✔ ` prefix has live agent
+work; a topic WITH it is idle. The relay resolves a topic when no turn runs in
+it and no schedule is pending there, and unresolves it when a turn starts
+(before anything is posted) or when a schedule is armed outside a turn. A
+human's manual resolve is followed by the journal and overridden at the next
+state change. The code is `internal/handler/topicstatus.go`.
+
+Rules that keep it safe:
+
+- **Identity ignores the prefix.** `journal.Key.index()` — and so the
+  conversation token — uses `journal.BaseTopic`. "foo" and "✔ foo" are one
+  conversation, one session and one schedule set. `Key.Topic` still holds the
+  topic as it is now, because that is where a message must be posted. A key
+  parsed back from a token goes through `Journal.Current` before it posts.
+- **Never under a running turn.** The settle step does nothing while a turn
+  runs, for the reason `rename_topic` is deferred (see rename.go). The turn's
+  end settles the topic.
+- **A lock per topic.** Resolve and unresolve both hold the topic's lock across
+  the decision and the move, so a turn that starts during a resolve undoes it
+  after it. Per topic, because it is held across Zulip requests.
+- **The server is truth.** At turn start the triggering message is read back,
+  and its topic is the topic's current name. That covers a missed resolve event
+  and a message sent just before the relay's own move.
+- **Old journals.** A journal from before this change can hold "foo" and
+  "✔ foo" as two live conversations. On load the one answered in last keeps the
+  key and the other is retired.
+- **The anchor must be in the topic.** A move needs a message in the topic. The
+  triggering message is checked first (a `!branch` trigger is in the ORIGIN
+  topic), then the relay's own last message.
+- **The cost.** Each resolve makes Notification Bot post a notice, and no API
+  flag stops it. Users can set such notices to be marked read automatically.
+  The bot needs the realm's "who can resolve topics" permission; a refused move
+  is logged and the turn goes on.
+
 ## Restart semantics
 
 A relay restart kills the child agent, so any in-flight turn is dead regardless.

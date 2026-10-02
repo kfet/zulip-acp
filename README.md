@@ -344,6 +344,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
+| `topic_status` | `true` | mark an idle channel topic resolved (✔) and unresolve it while a turn runs or a schedule is pending, so the topic list shows where agent work is live. The bot needs the realm's "resolve topics" permission. Zulip posts a "marked as resolved" notice for each resolve; no API flag suppresses it |
 | `stream_edits` | `true` | publish the answer as it arrives. `false` = **quiet mode**: no intra-turn edits, no `Thinking…` placeholder, one message and one push carrying the answer; liveness is the typing indicator. See below |
 | `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it. Streaming mode only |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |

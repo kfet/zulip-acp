@@ -286,6 +286,11 @@ anything from a failing live run.
 - **Event queues die on server restart.** `queue_id` and `last_event_id` are
   in-memory only; persisting them is false comfort. `BAD_EVENT_QUEUE_ID` is
   routine — re-register and log at info, not error.
+- **A resolve ALWAYS posts a Notification Bot notice.** The
+  `send_notification_to_*_thread=false` flags do not stop it (measured, Zulip
+  12.2). The journal index ignores the `✔ ` prefix, so a resolve never changes
+  the conversation — but anything that POSTS with a key parsed from a token
+  must go through `Journal.Current` first. See `internal/handler/topicstatus.go`.
 - **Never echo the bot's own messages back into the agent.** Filter on sender
   id, before any allowlist.
 - **The topic is truth; the journal is a cache.** On conflict, the topic wins.

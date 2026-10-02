@@ -443,7 +443,11 @@ func (z *fakeZulip) GetMessage(_ context.Context, id int64) (zulipproto.Message,
 	if !ok {
 		return zulipproto.Message{}, fmt.Errorf("no such message %d", id)
 	}
-	return zulipproto.Message{ID: id, Content: body, SenderID: botID}, nil
+	m := zulipproto.Message{ID: id, Content: body, SenderID: botID}
+	if topic, ok := z.topics[id]; ok {
+		m.StreamID, m.Topic = 4, topic
+	}
+	return m, nil
 }
 
 // UserByID plays GET /users/{id}. users holds the realm; anyone absent

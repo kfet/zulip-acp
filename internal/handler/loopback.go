@@ -169,6 +169,8 @@ func (h *Handler) PostTo(token, text string) error {
 	if err != nil {
 		return err
 	}
+	// The token holds the base topic; post where the topic is now.
+	key = h.cfg.Journal.Current(key)
 	post := &convPoster{client: h.cfg.Client, key: key}
 	split, err := rollover.New(rollover.Config{
 		Poster:     post,
@@ -260,6 +262,9 @@ func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration
 	it, err := h.cfg.Schedules.Add(token, text, at, every)
 	if err == nil {
 		h.noteArmed(it)
+		// Outside a turn (`!schedule`-style callers) this unresolves
+		// the topic now; inside one it waits for endTurn.
+		h.settleStatusKey(token, 0)
 	}
 	return it, err
 }
@@ -284,6 +289,7 @@ func (h *Handler) Unschedule(token, id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
 	defer cancel()
 	h.unmarkAlarm(ctx, id)
+	h.settleStatusKey(token, 0)
 	return nil
 }
 
@@ -326,6 +332,9 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 			defer cancel()
 			h.unmarkAlarm(rctx, it.ID)
 		}
+		// The schedule may be gone now; a turn that ran has settled
+		// the mark already, and this is then a no-op.
+		h.settleStatusKey(it.Conv, 0)
 	}()
 	key, err := journal.ParseToken(it.Conv)
 	if err != nil {
@@ -400,13 +409,25 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // `!new` does what they wanted anyway; carrying a rename through would
 // mean tracking identity across a turn for one vanishingly rare case.
 func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
+	// The topic may have moved since the turn started — markBusy
+	// unresolves it — so act on the topic as it is now.
+	if cur, ok := h.cfg.Journal.LookupID(conv.ID); ok {
+		conv = cur
+	}
 	// Before the deferred loopback actions and before OnTurnEnd: the
 	// rename is the last thing the turn does to the topic it has been
 	// posting into, and nothing after it may assume the old name.
 	h.applyRename(conv, entry)
+	// Read before the loopback drain: `new_session` ends this
+	// conversation and forgets its messages, and the fresh one has
+	// none of its own yet to move the topic by.
+	anchor := h.cachedOwn(conv.ID)
 	if h.cfg.Loopback != nil {
 		h.cfg.Loopback.EndTurn(conv.Key.Token())
 	}
+	// After the rename and the loopback drain, so the mark is set on
+	// the final topic and sees any schedule the turn left armed.
+	h.settleStatusKey(conv.Key.Token(), anchor)
 	if h.cfg.OnTurnEnd != nil {
 		h.cfg.OnTurnEnd(conv.ID)
 	}

@@ -254,6 +254,9 @@ type Config struct {
 	// notification the user gets carries the real answer. Liveness
 	// comes from the typing indicator instead — see typing.go.
 	BatchEdits bool
+	// TopicStatus marks a channel topic resolved (✔) while it is idle
+	// and unresolved while agent work is live. See topicstatus.go.
+	TopicStatus bool
 	// SpinnerInterval animates the "Thinking…" placeholder. nil is the
 	// default: 900ms while streaming, off in batch mode. A non-nil 0
 	// disables the animation — the placeholder is posted once and no
@@ -502,6 +505,10 @@ type Handler struct {
 
 	// renameMu guards the pendingRename of every in-flight turn.
 	renameMu sync.Mutex
+
+	// statusMu holds one *sync.Mutex per topic token, which serialises
+	// the resolves and unresolves of that topic. See topicstatus.go.
+	statusMu sync.Map
 
 	// dmNames remembers the display names of a DM's participants,
 	// learned from the messages arriving in it. The key holds user
@@ -1040,6 +1047,18 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		h.badMsgs.dropValue(key.Label())
 	}
 
+	// The message says where the topic IS. The journal can only differ
+	// by the resolved prefix (one index), and only when the event of a
+	// human's resolve was missed — e.g. across an event-queue reset.
+	// With the status mark on, markBusy does this from the server under
+	// the topic's lock instead: the relay's own moves make the message's
+	// topic stale there.
+	if !h.cfg.TopicStatus && !conv.IsDM() && conv.Topic != key.Topic {
+		if c, moved, err := h.cfg.Journal.Rename(key.StreamID, conv.Topic, key.Topic); err == nil && moved {
+			conv = c
+		}
+	}
+
 	if passthrough {
 		// Always addressed: a command the user typed wants its
 		// answer, so it never runs on the abstain path.
@@ -1162,6 +1181,9 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 // for channels as well as DMs, verified on Zulip 12.2.
 func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, fired bool) error {
 	defer h.ack(ctx, msgID)()
+	// Before anything is posted: every message of this turn goes to
+	// the topic as markBusy leaves it.
+	conv = h.markBusy(ctx, conv, msgID)
 	token := conv.Key.Token()
 	st := h.beginSchedTurn(token, fired)
 	defer h.endSchedTurn(token, st)

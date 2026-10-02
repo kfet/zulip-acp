@@ -227,6 +227,18 @@ type Config struct {
 	// compromise, so the two settings are resolved together.
 	StreamEdits *bool `json:"stream_edits,omitempty"`
 
+	// TopicStatus shows in the topic list whether agent work is live in
+	// a topic, through Zulip's own "resolve topic" mark: the relay
+	// resolves a topic (✔) when no turn runs in it and nothing is
+	// scheduled there, and unresolves it when a turn starts or a
+	// schedule is armed. Unset = true.
+	//
+	// Zulip's Notification Bot posts a "marked as resolved" notice for
+	// every resolve, and no API flag suppresses it (measured, Zulip
+	// 12.2). Set it to false when that noise costs more than the mark
+	// is worth.
+	TopicStatus *bool `json:"topic_status,omitempty"`
+
 	// SpinnerIntervalMs animates the "Thinking…" placeholder until the
 	// first chunk of the answer replaces it.
 	//
@@ -543,6 +555,12 @@ func (c *Config) EditInterval() time.Duration {
 // Unset means true.
 func (c *Config) GetStreamEdits() bool {
 	return c.StreamEdits == nil || *c.StreamEdits
+}
+
+// GetTopicStatus reports whether the relay marks idle topics resolved.
+// Unset means true.
+func (c *Config) GetTopicStatus() bool {
+	return c.TopicStatus == nil || *c.TopicStatus
 }
 
 // SpinnerInterval returns the placeholder animation period, or 0 for

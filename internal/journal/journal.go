@@ -60,7 +60,7 @@ type Key struct {
 	StreamID int64 `json:"stream_id,omitempty"`
 	// Topic is the current topic string, exactly as Zulip delivers it
 	// — never normalised, never case-folded (channel conversations
-	// only).
+	// only). It may carry ResolvedPrefix; the index ignores it.
 	Topic string `json:"topic,omitempty"`
 	// UserIDs is the DM recipient set: sorted, deduped, bot included.
 	UserIDs []int64 `json:"user_ids,omitempty"`
@@ -98,8 +98,28 @@ func (k Key) index() string {
 	if k.IsDM() {
 		return "d\x00" + k.userList()
 	}
-	return "c\x00" + strconv.FormatInt(k.StreamID, 10) + "\x00" + k.Topic
+	return "c\x00" + strconv.FormatInt(k.StreamID, 10) + "\x00" + BaseTopic(k.Topic)
 }
+
+// ResolvedPrefix is what Zulip puts in front of a topic name to mark the
+// topic resolved (RESOLVED_TOPIC_PREFIX on the server). The relay
+// toggles it to show whether agent work is live in the topic.
+const ResolvedPrefix = "✔ "
+
+// BaseTopic returns topic without the resolved prefix. Zulip strips
+// every leading prefix when a topic is unresolved, so this does too.
+//
+// The index is built on the BASE topic, so "foo" and "✔ foo" are one
+// conversation: resolving a topic must never cost it its session.
+func BaseTopic(topic string) string {
+	for strings.HasPrefix(topic, ResolvedPrefix) {
+		topic = topic[len(ResolvedPrefix):]
+	}
+	return topic
+}
+
+// IsResolved reports whether topic carries the resolved prefix.
+func IsResolved(topic string) bool { return strings.HasPrefix(topic, ResolvedPrefix) }
 
 // userList renders the DM participant set as "4,9".
 func (k Key) userList() string {
@@ -352,12 +372,34 @@ func Open(path string) (*Journal, error) {
 		} else {
 			c.Parent = nil
 		}
+		j.dedupe(&c)
 		j.index(&c)
 	}
 	for id, msg := range f.Alarms {
 		j.alarms[id] = msg
 	}
 	return j, nil
+}
+
+// dedupe resolves a key clash at load time. A journal written before
+// the index ignored the resolved prefix can hold "foo" and "✔ foo" as
+// two live conversations, which now share one key. The one the relay
+// answered in last (the higher LastOwnID — message ids only grow) keeps
+// the key; the other is retired, exactly as `!new` retires one, so its
+// files stay on disk and its id still resolves.
+func (j *Journal) dedupe(c *Conv) {
+	if c.Retired {
+		return
+	}
+	prev, clash := j.byKey[c.Key.index()]
+	if !clash {
+		return
+	}
+	if c.LastOwnID > prev.LastOwnID {
+		prev.Retired = true
+		return
+	}
+	c.Retired = true
 }
 
 // index installs c in both maps. Caller holds mu (or is Open, which
@@ -379,6 +421,20 @@ func (j *Journal) Lookup(k Key) (Conv, bool) {
 		return Conv{}, false
 	}
 	return *c, true
+}
+
+// Current returns k with the topic string the journal holds for it,
+// or k itself when the journal does not know it.
+//
+// A key parsed back from a token carries the BASE topic (see
+// BaseTopic). Anything that POSTS with such a key must post to the
+// topic as it is now — "✔ foo" when the topic is resolved — or Zulip
+// starts a second topic named "foo".
+func (j *Journal) Current(k Key) Key {
+	if c, ok := j.Lookup(k); ok {
+		return c.Key
+	}
+	return k
 }
 
 // LookupID returns the conversation with the given conv-id, if known.
@@ -462,10 +518,18 @@ func (j *Journal) Move(oldStreamID int64, oldTopic string, newStreamID int64, ne
 	defer j.mu.Unlock()
 	oldK, newK := Channel(oldStreamID, oldTopic), Channel(newStreamID, newTopic)
 	oldKey, newKey := oldK.index(), newK.index()
-	if oldKey == newKey {
-		return Conv{}, false, nil
-	}
 	c, ok := j.byKey[oldKey]
+	if oldKey == newKey {
+		// Same conversation, and at most a resolve or an unresolve:
+		// the key stays, only the topic string it is posted to moves.
+		if !ok || c.Topic == newTopic {
+			return Conv{}, false, nil
+		}
+		prev := c.Topic
+		c.Topic = newTopic
+		out := *c
+		return out, true, j.commit(func() { c.Topic = prev })
+	}
 	if !ok {
 		return Conv{}, false, nil
 	}

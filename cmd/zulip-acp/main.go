@@ -548,6 +548,7 @@ func main() {
 		ZulipCallTimeout:   config.DefaultZulipCallTimeout,
 		EditInterval:       cfg.EditInterval(),
 		BatchEdits:         !cfg.GetStreamEdits(),
+		TopicStatus:        cfg.GetTopicStatus(),
 		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
 		TypingInterval:     typingInterval,
 		Budget:             cfg.Budget(),

@@ -495,7 +495,7 @@ func (h *Handler) newConvo() (*convo.Manager, error) {
 			Reset:        func(_ context.Context, token string) error { return h.resetSession(token) },
 			Status:       h.decorateStatus,
 			RelayInfo:    h.decorateRelayInfo,
-			ModelChanged: func(token, _, _ string) { h.refreshPanel(context.Background(), mustKey(token)) },
+			ModelChanged: func(token, _, _ string) { h.refreshPanel(context.Background(), h.cfg.Journal.Current(mustKey(token))) },
 			Decorate:     h.decorate,
 		},
 	})
@@ -546,6 +546,10 @@ func (h *Handler) convFor(token string) (journal.Key, journal.Conv, bool) {
 		return journal.Key{}, journal.Conv{}, false
 	}
 	c, ok := h.cfg.Journal.Lookup(key)
+	if ok {
+		// The topic as it is now, resolved prefix included.
+		key = c.Key
+	}
 	return key, c, ok
 }
 
@@ -557,6 +561,7 @@ func (h *Handler) StatusFor(token string) command.SessionStatus { return h.ctl()
 // topic is engaged (the ACP session behind it may have been reaped).
 func (h *Handler) decorateStatus(token, convID string, engaged bool, st command.SessionStatus) command.SessionStatus {
 	key, _ := journal.ParseToken(token)
+	key = h.cfg.Journal.Current(key)
 	st.Where = h.whereFor(key)
 	st.HasSession = engaged
 	if engaged {
