@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-03
+
 ### Added
 - Topic status mark (`topic_status`, default on): the relay resolves a channel topic (✔) when no turn runs and nothing is scheduled in it, and unresolves it when a turn starts or a schedule is armed. The journal index and conversation tokens ignore the `✔ ` prefix, so toggling keeps the same session, history and schedules. Zulip's "marked as resolved" notice cannot be suppressed through the API.
 
