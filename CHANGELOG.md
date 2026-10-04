@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-04
+
 ### Added
 - Offline catch-up (`catchup_max_age_seconds`, default 24h): after a cold start the relay reads the messages posted while it was down and answers each topic in one collapsed `[catch-up]` turn. Commands, widgets and bot messages are skipped; messages older than the limit get a one-line notice per topic.
 
