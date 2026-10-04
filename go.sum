@@ -1,10 +1,10 @@
 github.com/coder/acp-go-sdk v0.13.5 h1:LI9jq5xon7xslaYlnoktvTVyDlE37yIk2daT7N9ASYk=
 github.com/coder/acp-go-sdk v0.13.5/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
-github.com/kfet/acp-kit v0.30.0 h1:An9FcCS47pSXo4qyswvUvnc2dn8eW74rcXHAwY3UOIw=
-github.com/kfet/acp-kit v0.30.0/go.mod h1:3o2kYL9t3coGVqP3FLQ0l8CKCtQHR7VIoy33LQwVwgM=
+github.com/kfet/acp-kit v0.31.0 h1:0mjb/+4NTwJwDvxQX40nN+Z1gnlctk5jgvrGwXIgrC4=
+github.com/kfet/acp-kit v0.31.0/go.mod h1:I+hQu+Y+4/lXxc3k7hrMsyVFn1SCCcIvmTgTESEFwzw=
 github.com/kfet/covgate v0.1.2 h1:29q7vN+GJ8cJeXdDwohaqAT02cCZA4HlEkzjVq0MuAA=
 github.com/kfet/covgate v0.1.2/go.mod h1:M1BHQum2HvbavZoKfnIm8qBUjPDsOb0QLFtkF0OLzlM=
-github.com/kfet/distkit v0.1.8 h1:dN1QdISloBwPsUQT/EBUaSSuS82ZwlR0bKctp0Dn1Cc=
-github.com/kfet/distkit v0.1.8/go.mod h1:If052OZSCfi8X0bwThHutUPM5hBbN/WuD8e+zZPXsw8=
+github.com/kfet/distkit v0.1.10 h1:OYMWKJlmW8bxkE8OonSsMFLWBm15MMD35TAcsloPpkY=
+github.com/kfet/distkit v0.1.10/go.mod h1:If052OZSCfi8X0bwThHutUPM5hBbN/WuD8e+zZPXsw8=
 golang.org/x/image v0.31.0 h1:mLChjE2MV6g1S7oqbXC0/UcKijjm5fnJLUYKIYrLESA=
 golang.org/x/image v0.31.0/go.mod h1:R9ec5Lcp96v9FTF+ajwaH3uGxPH4fKfHHAVbUILxghA=

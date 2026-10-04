@@ -176,6 +176,13 @@ func (x *msgIndex) dropValue(v string) {
 // The gate order is deliberate and must not be reordered: everything
 // free happens before anything that costs an API call.
 func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
+	// An update offer's reactions are relay controls, decided by the
+	// update owners alone (the callee checks ids and the message), and
+	// they work with ambient reactions off.
+	if h.cfg.UpdateDecide != nil && ev.Op == zulipproto.ReactionAdd && ev.UserID != h.cfg.BotUserID &&
+		h.cfg.UpdateDecide(ctx, ev.MessageID, ev.UserID, ev.EmojiName) {
+		return
+	}
 	if !h.cfg.Reactions {
 		return
 	}

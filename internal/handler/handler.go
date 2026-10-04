@@ -399,6 +399,13 @@ type Config struct {
 	// Nil leaves `!update` unrecognised.
 	Updater *update.Updater
 
+	// UpdateDecide receives every reaction ADD before any other gate
+	// (acp-kit/autoupdate: the owners' answer to an update offer). It
+	// returns true when the reaction was an update decision. Nil = none.
+	UpdateDecide func(ctx context.Context, msgID, userID int64, emoji string) bool
+	// UpdateStatus is appended to `!update --check`. Nil = nothing.
+	UpdateStatus func() string
+
 	// Schedules is the durable store behind scheduled prompts. Nil
 	// disables scheduling: the Handler still satisfies
 	// command.Scheduler, but every call reports that the relay cannot
@@ -1992,6 +1999,9 @@ func (h *Handler) CancelAll() []string {
 func (h *Handler) WaitCancelled(ctx context.Context) error {
 	return h.convo.Active().WaitCancelled(ctx)
 }
+
+// Idle reports that no turn is in flight.
+func (h *Handler) Idle() bool { return h.convo.Active().Len() == 0 }
 
 // isInflight reports whether a turn is running for convID.
 func (h *Handler) isInflight(convID string) bool { return h.convo.Active().Running(convID) }

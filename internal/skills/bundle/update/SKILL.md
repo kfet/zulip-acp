@@ -30,6 +30,23 @@ upgrade/recycle mechanics.
 > with the version table. A fleet host with no converge command refuses, and
 > `--rollback` is refused there (pin the version in `dist.lock` instead).
 
+> **Auto-update (`auto_update`, acp-kit/autoupdate).** With `update_owner_ids`
+> set, the relay checks for a release every ~6h. Modes: `off`, `notify`,
+> `stage` (default: download + sha-verify first), `auto` (no prompt; refused on
+> a fleet host). The owners get ONE DM, edited in place: `:package: zulip-acp vX
+> staged, sha verified (running vY)` + up to 3 changelog lines (breaking first),
+> with reactions :check: apply when idle · :clock: tomorrow · :no_entry: skip
+> version. Only `update_owner_ids` reactions count. The apply waits for idle and
+> `auto_update_quiet_hours` (`"HH:MM-HH:MM"`), keeps `zulip-acp.prev`, then does
+> the graceful reload. The new image must resume its queue and complete a Zulip +
+> agent round-trip within 2 min, or it restores `.prev`, blocks that version,
+> reloads, and the DM says "rolled back: <reason>"; automatic applies then stop
+> until an owner approves one. Max one automatic apply per 24h; one reminder after
+> 72h, then silence. A release whose notes say `requires fir >= X` updates fir in
+> the same reload. On a fleet host the offer is `dist.lock` drift ("lock wants vX,
+> running vY") and :check: runs `update_converge_cmd`. `!update --check` shows the
+> pending offer. State: `<state_dir>/autoupdate.json`.
+
 ## reload vs restart — pick the right verb
 
 > **`systemctl --user reload zulip-acp` is the default verb.** SIGHUP makes the

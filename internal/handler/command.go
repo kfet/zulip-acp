@@ -190,6 +190,11 @@ func (h *Handler) beforeFilters() []convo.Filter {
 				Who: senderName(md.m), Text: in.Text,
 				Post: func(s string) error { return h.PostTo(token, s) },
 			})
+			// Owner-gated by Handle: a refused --check starts with ⛔.
+			if op, err := update.Parse(in.Text); err == nil && op.Check && h.cfg.UpdateStatus != nil &&
+				!strings.HasPrefix(res.Text, "⛔") {
+				res.Text += "\n\n" + h.cfg.UpdateStatus()
+			}
 			h.reply(ctx, md.key, res.Text)
 			if res.After != nil {
 				if err := res.After(); err != nil {

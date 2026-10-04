@@ -104,9 +104,16 @@ ARCH="${ARCH:-$(detect_arch)}"
 # or whitespace would fetch from a path nobody meant, and the checksum
 # manifest would come from that same wrong place and agree with itself. A
 # typo'd tag also gets a straight answer here instead of a puzzling 404 later.
+#
+# The first character must be alphanumeric, which is what the Go side's tagRe
+# requires too. That is what rejects "..": a lone dot-dot carries no slash and
+# so passes a slash-only check, but it still means "up one" to every URL
+# normaliser — enough to turn /releases/tags/<tag> into the releases LIST
+# endpoint and resolve a release nobody asked for. A tag is a literal path
+# segment; it should not be able to mean anything else.
 case "$VERSION" in
 	latest) ;;
-	''|-*|*[!A-Za-z0-9._+-]*) die "bad VERSION '$VERSION': want a release tag, e.g. v0.21.0" ;;
+	''|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) die "bad VERSION '$VERSION': want a release tag, e.g. v0.21.0" ;;
 esac
 
 tmpdir="$(mktemp -d)"

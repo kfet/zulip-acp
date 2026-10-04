@@ -80,6 +80,7 @@ func TestValidate(t *testing.T) {
 		name string
 		cfg  Config
 	}{
+		{"auto_update", Config{AutoUpdate: "always"}},
 		{"idle", Config{SessionIdleTimeoutSeconds: -1}},
 		{"prompt", Config{PromptTimeoutSeconds: -1}},
 		{"no progress", Config{NoProgressTimeoutSeconds: -1}},

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kfet/acp-kit/autoupdate"
 	"io"
 	"os"
 	"path/filepath"
@@ -147,6 +148,15 @@ type Config struct {
 	// dist.lock, shown by `!update --check` and diffed in the report.
 	// Setting either FleetLockFile or UpdateConvergeCmd implies
 	// FleetManaged.
+	// AutoUpdate is acp-kit/autoupdate's mode: "off", "notify",
+	// "stage" (default) or "auto". It needs UpdateOwnerIDs: offers are
+	// a DM to the owners, and only their reactions decide. "auto" is
+	// refused (downgraded to stage) on a fleet-managed host, where an
+	// offer is dist.lock drift and approval runs UpdateConvergeCmd.
+	// AutoUpdateQuietHours ("HH:MM-HH:MM", local) holds applies.
+	AutoUpdate           string `json:"auto_update,omitempty"`
+	AutoUpdateQuietHours string `json:"auto_update_quiet_hours,omitempty"`
+
 	FleetManaged      bool   `json:"fleet_managed,omitempty"`
 	FleetLockFile     string `json:"fleet_lock_file,omitempty"`
 	UpdateConvergeCmd string `json:"update_converge_cmd,omitempty"`
@@ -411,6 +421,9 @@ func Load(path string) (*Config, error) {
 // Credentials may arrive from the environment instead, so they are
 // checked separately by ValidateCredentials.
 func (c *Config) Validate() error {
+	if _, err := autoupdate.ParseMode(c.AutoUpdate); err != nil {
+		return err
+	}
 	if c.SessionIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
 	}

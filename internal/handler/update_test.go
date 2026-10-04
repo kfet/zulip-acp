@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kfet/acp-kit/update"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 func testUpdater(t *testing.T, h **Handler, reloadErr error, reloads *int) *update.Updater {
@@ -140,5 +141,50 @@ func TestRestartAndUpgradeRouted(t *testing.T) {
 		if got := strings.Join(hh.z.stored(), "\n"); !strings.Contains(got, tc.want) || reloads != 1 {
 			t.Fatalf("%s: reloads=%d reply=%q", tc.text, reloads, got)
 		}
+	}
+}
+
+func TestUpdateCheckAppendsAutoUpdateStatus(t *testing.T) {
+	var h *Handler
+	reloads := 0
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.Updater = testUpdater(t, &h, nil, &reloads)
+		c.UpdateStatus = func() string { return "Auto-update: stage." }
+	})
+	h = hh.h
+	hh.deliverDM(t, humanID, "!update --check", humanID, botID)
+	if !strings.Contains(hh.only(t), "Auto-update: stage.") {
+		t.Fatal(hh.only(t))
+	}
+	u := update.New(update.Config{Owners: []string{"1"}, StateDir: t.TempDir()})
+	hh2 := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.Updater = u
+		c.UpdateStatus = func() string { return "Auto-update: stage." }
+	})
+	hh2.deliverDM(t, humanID, "!update --check", humanID, botID)
+	if strings.Contains(hh2.only(t), "Auto-update") {
+		t.Fatal("status shown to a non-owner")
+	}
+}
+
+func TestUpdateDecideSeesReactionsFirst(t *testing.T) {
+	var got []string
+	hh := cmdHarness(t, newAgent("x"), func(c *Config) {
+		c.Reactions = false
+		c.UpdateDecide = func(_ context.Context, msgID, userID int64, emoji string) bool {
+			got = append(got, emoji)
+			return emoji == "check"
+		}
+	})
+	if !hh.h.Idle() {
+		t.Fatal("idle")
+	}
+	ctx := context.Background()
+	hh.h.Handle(ctx, reactionEvent(humanID, 9, "check", zulipproto.ReactionAdd))
+	hh.h.Handle(ctx, reactionEvent(humanID, 9, "tada", zulipproto.ReactionAdd))
+	hh.h.Handle(ctx, reactionEvent(humanID, 9, "check", zulipproto.ReactionRemove))
+	hh.h.Handle(ctx, reactionEvent(botID, 9, "check", zulipproto.ReactionAdd))
+	if strings.Join(got, ",") != "check,tada" {
+		t.Fatal(got)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -311,6 +312,15 @@ func main() {
 		eventTypes = append(eventTypes, zulipproto.EventReaction)
 		log.Printf("zulip-acp: emoji reactions are delivered to the agent as ambient turns (set \"reactions\": false to disable)")
 	}
+	// The auto-updater's offers are answered by reaction, so it needs
+	// reaction events even with ambient reactions off; the handler
+	// gates those down to the offer before anything else sees them.
+	if !cfg.GetReactions() && autoUpdateWanted(cfg) {
+		eventTypes = append(eventTypes, zulipproto.EventReaction)
+	}
+	// queueUp is the auto-update health gate's "inherited queue
+	// resumed": OnRegister fires once for a resumed queue too.
+	var queueUp atomic.Bool
 	var onRegister func(context.Context)
 	if follow {
 		// Subscription changes are what move the served set, and
@@ -326,6 +336,13 @@ func main() {
 				return
 			}
 			served.Sync(subs)
+		}
+	}
+	resync := onRegister
+	onRegister = func(ctx context.Context) {
+		queueUp.Store(true)
+		if resync != nil {
+			resync(ctx)
 		}
 	}
 
@@ -536,8 +553,41 @@ func main() {
 		func() []string { return h.CancelAll() },
 		func(ctx context.Context) error { return h.WaitCancelled(ctx) })
 
+	selfBin, _ := os.Executable()
+	au, err := newAutoUpdater(cfg, autoUpdateDeps{
+		zc: zc, botID: me.UserID, version: version,
+		relayBin: strings.TrimSuffix(selfBin, " (deleted)"), agentBin: agentBin,
+		agentVersion: func() string { return agent.AgentInfo().Version },
+		upd:          upd,
+		idle:         func() bool { return h.Idle() },
+		health: func(ctx context.Context) error {
+			if !queueUp.Load() {
+				return errors.New("event queue not resumed yet")
+			}
+			if _, err := zc.Me(ctx); err != nil {
+				return fmt.Errorf("zulip round-trip: %w", err)
+			}
+			if agent.AgentInfo().Version == "" {
+				return errors.New("agent not initialised")
+			}
+			return nil
+		},
+		reload: func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
+		logf:   log.Printf,
+	})
+	if err != nil {
+		log.Fatalf("auto_update: %v", err)
+	}
+	var updateDecide func(context.Context, int64, int64, string) bool
+	var updateStatus func() string
+	if au != nil {
+		updateDecide, updateStatus = updateDecider(au), au.Status
+	}
+
 	h, err = handler.New(handler.Config{
 		Client:             zc,
+		UpdateDecide:       updateDecide,
+		UpdateStatus:       updateStatus,
 		Mark:               markOrNil(mark),
 		Updater:            upd,
 		Agent:              agent,
@@ -608,6 +658,13 @@ func main() {
 		if err := upd.Resume(ctx, h.PostTo); err != nil {
 			log.Printf("zulip-acp: WARN !update report: %v", err)
 		}
+	}
+	if au != nil {
+		// Health gate for an auto-applied update, then the poll loop.
+		// Intake's context: a reload stops polling, and an interrupted
+		// gate is re-run by the next image.
+		go au.Run(intakeCtx)
+		log.Printf("zulip-acp: auto_update=%s", au.Mode())
 	}
 
 	// Tools are registered only once the Handler exists: handler.New is
