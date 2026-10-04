@@ -801,6 +801,37 @@ func (c *Client) OldestMessage(ctx context.Context, narrow []NarrowTerm) (Messag
 	return resp.Messages[0], true, nil
 }
 
+// MessagesAfter returns up to limit messages with an id ABOVE afterID,
+// oldest first, as raw markdown, and whether the page reaches the
+// newest message the server has. A nil narrow reads every message the
+// user can see: its subscribed channels and its direct messages.
+//
+// It is the forward pager of the offline catch-up: feed back the
+// newest id of one page until foundNewest is true. The content is the
+// CURRENT content, so a message edited while the relay was down is
+// read in its final form.
+func (c *Client) MessagesAfter(ctx context.Context, narrow []NarrowTerm, afterID int64, limit int) (msgs []Message, foundNewest bool, err error) {
+	if narrow == nil {
+		narrow = []NarrowTerm{}
+	}
+	q := url.Values{
+		"anchor":         {strconv.FormatInt(afterID, 10)},
+		"include_anchor": {"false"},
+		"num_before":     {"0"},
+		"num_after":      {strconv.Itoa(limit)},
+		"narrow":         {mustJSON(narrow)},
+		"apply_markdown": {"false"},
+	}
+	var resp struct {
+		Messages    []Message `json:"messages"`
+		FoundNewest bool      `json:"found_newest"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/messages", q, nil, &resp); err != nil {
+		return nil, false, err
+	}
+	return resp.Messages, resp.FoundNewest, nil
+}
+
 // Upload uploads a file in a single multipart round-trip and returns
 // the relative URL to interpolate into message markdown.
 //

@@ -58,6 +58,13 @@ type RunnerConfig struct {
 	// silently. Called from the runner's goroutine, before the first
 	// poll of the new queue.
 	OnRegister func(ctx context.Context)
+	// OnFreshRegister, if set, is called after OnRegister for a
+	// registration that starts with a GAP: the cold start and every
+	// re-registration after a dead queue. It is NOT called for a
+	// resumed queue, nor for the replacement a swap registers while it
+	// drains the inherited one — both of those lose nothing. res
+	// carries the server's max_message_id at registration.
+	OnFreshRegister func(ctx context.Context, res RegisterResult)
 	// Logf receives operational messages. Optional.
 	Logf func(format string, args ...any)
 	// MaxBackoff caps the exponential reconnect backoff. 0 uses
@@ -160,6 +167,8 @@ type Runner struct {
 	// the window where two queues overlap is delivered exactly once.
 	// It is nil except during a swap — see swapQueue and dedup.go.
 	seen *seenSet
+	// registered is the result of the last successful /register.
+	registered RegisterResult
 }
 
 // ErrHandoff is returned by Run when the loop stopped because its
@@ -282,6 +291,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			if !r.register(pollCtx, ctx) {
 				continue
 			}
+			if r.cfg.OnFreshRegister != nil {
+				r.cfg.OnFreshRegister(ctx, r.registered)
+			}
 		}
 		r.poll(pollCtx, ctx)
 	}
@@ -316,6 +328,7 @@ func (r *Runner) register(pollCtx, dispatch context.Context) bool {
 		r.wait(pollCtx)
 		return false
 	}
+	r.registered = res
 	r.queueID = res.QueueID
 	r.lastEventID = res.LastEventID
 	r.queueRegistration = r.registration

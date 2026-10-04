@@ -24,6 +24,9 @@ import (
 // Defaults for the tunables an operator rarely needs to touch.
 const (
 	DefaultIdleTimeout = 30 * time.Minute
+	// DefaultCatchupMaxAge is how far back the offline catch-up reads
+	// when the config does not say.
+	DefaultCatchupMaxAge = 24 * time.Hour
 	// DefaultNoProgressTimeout bounds a WEDGED turn: two minutes with
 	// no agent output and no tool activity at all. It is not a working
 	// bound — see Config.NoProgressTimeout.
@@ -286,6 +289,16 @@ type Config struct {
 	// at all.
 	Reactions *bool `json:"reactions,omitempty"`
 
+	// CatchupMaxAgeSeconds bounds the offline catch-up. On a cold
+	// start the relay reads the messages that arrived while it was
+	// down and gives each topic ONE collapsed turn for them; messages
+	// older than this are skipped with a one-line notice in the topic.
+	//
+	// Unset = DefaultCatchupMaxAge (24h); an explicit 0 turns the
+	// catch-up off. It is a pointer so those two cases stay
+	// distinguishable.
+	CatchupMaxAgeSeconds *int `json:"catchup_max_age_seconds,omitempty"`
+
 	// ArchiveChannel names the channel a topic is MOVED to when
 	// somebody archives it — by reacting :wastebasket: to the relay's
 	// last message, or by typing `!archive`.
@@ -400,6 +413,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	if c.SessionIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
+	}
+	if c.CatchupMaxAgeSeconds != nil && *c.CatchupMaxAgeSeconds < 0 {
+		return fmt.Errorf("catchup_max_age_seconds must be >= 0")
 	}
 	if c.PromptTimeoutSeconds < 0 {
 		return fmt.Errorf("prompt_timeout_seconds must be >= 0")
@@ -614,6 +630,15 @@ func (c *Config) GetRepostOnClose() bool {
 // agent. Unset means true.
 func (c *Config) GetReactions() bool {
 	return c.Reactions == nil || *c.Reactions
+}
+
+// CatchupMaxAge returns how far back the offline catch-up reaches. 0
+// means the catch-up is off.
+func (c *Config) CatchupMaxAge() time.Duration {
+	if c.CatchupMaxAgeSeconds == nil {
+		return DefaultCatchupMaxAge
+	}
+	return time.Duration(*c.CatchupMaxAgeSeconds) * time.Second
 }
 
 // GetArchiveChannel returns the archive destination channel name: the

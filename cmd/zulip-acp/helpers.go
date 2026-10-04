@@ -14,6 +14,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/updater"
 
 	kit "github.com/kfet/acp-kit/sysprompt"
+	"github.com/kfet/zulip-acp/internal/catchup"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/skills"
@@ -292,4 +293,13 @@ func resolveBin(name string) string {
 		p = a
 	}
 	return p
+}
+
+// markOrNil keeps a nil *catchup.Store from becoming a non-nil
+// handler.Mark interface.
+func markOrNil(s *catchup.Store) handler.Mark {
+	if s == nil {
+		return nil
+	}
+	return s
 }

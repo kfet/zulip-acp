@@ -754,3 +754,37 @@ func TestUpdateOwnersAndFleet(t *testing.T) {
 		t.Fatal("converge command implies fleet")
 	}
 }
+
+// TestCatchupMaxAge covers the states of `catchup_max_age_seconds`:
+// unset is the default, 0 turns the catch-up off, and a negative value
+// is refused.
+func TestCatchupMaxAge(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want time.Duration
+	}{
+		{"unset defaults to 24h", `{}`, DefaultCatchupMaxAge},
+		{"explicit zero is off", `{"catchup_max_age_seconds":0}`, 0},
+		{"explicit value", `{"catchup_max_age_seconds":60}`, time.Minute},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.CatchupMaxAge(); got != c.want {
+				t.Fatalf("CatchupMaxAge() = %v, want %v", got, c.want)
+			}
+		})
+	}
+	neg := -1
+	if err := (&Config{CatchupMaxAgeSeconds: &neg}).Validate(); err == nil || !strings.Contains(err.Error(), "catchup_max_age_seconds") {
+		t.Fatalf("Validate() = %v, want catchup_max_age_seconds error", err)
+	}
+}

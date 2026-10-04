@@ -602,13 +602,17 @@ func TestOnRegisterFiresOnEveryRegistration(t *testing.T) {
 		func(*http.Request) (int, string) {
 			return 400, `{"result":"error","msg":"Bad event queue ID: q1","code":"BAD_EVENT_QUEUE_ID"}`
 		},
+		// The dead queue is deleted, best-effort, before re-registering.
+		func(*http.Request) (int, string) { return 200, `{"result":"success","msg":""}` },
 		registerOK("q2", 0),
 		eventsOK(`{"id":1,"type":"message","message":{"content":"after"}}`),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var registrations int
+	var fresh []RegisterResult
 	h := newHarness(t, ss, func(context.Context, Event) { cancel() }, func(cfg *RunnerConfig) {
+		cfg.OnFreshRegister = func(_ context.Context, res RegisterResult) { fresh = append(fresh, res) }
 		cfg.OnRegister = func(ctx context.Context) {
 			if ctx == nil {
 				t.Error("OnRegister must receive the runner's context")
@@ -619,5 +623,10 @@ func TestOnRegisterFiresOnEveryRegistration(t *testing.T) {
 	_ = h.r.Run(ctx)
 	if registrations != 2 {
 		t.Fatalf("OnRegister called %d times, want 2", registrations)
+	}
+	// Both registrations start with a gap: the cold start, and the one
+	// after the dead queue.
+	if len(fresh) != 2 || fresh[0].QueueID != "q1" || fresh[1].QueueID != "q2" {
+		t.Fatalf("OnFreshRegister = %+v, want q1 then q2", fresh)
 	}
 }

@@ -349,6 +349,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it. Streaming mode only |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
+| `catchup_max_age_seconds` | `86400` | after a cold start, answer messages posted while the relay was down, one collapsed turn per topic; older ones get a one-line notice. `0` = off |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
 | `repost_on_close` | `true` | at the end of a **streamed** turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. A no-op in quiet mode. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |

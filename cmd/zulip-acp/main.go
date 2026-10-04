@@ -29,6 +29,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/kfet/zulip-acp/internal/catchup"
 	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/handler"
@@ -333,6 +334,18 @@ func main() {
 		log.Fatalf("journal: %v", err)
 	}
 
+	// The offline catch-up. A fresh /register starts at the server's
+	// CURRENT event id, so whatever was posted while the relay was down
+	// is never delivered as an event; the mark is how it is read back.
+	var mark *catchup.Store
+	if maxAge := cfg.CatchupMaxAge(); maxAge > 0 {
+		mark, err = catchup.Open(filepath.Join(cfg.StateDir, "catchup.mark"))
+		if err != nil {
+			log.Fatalf("catchup: %v", err)
+		}
+		log.Printf("zulip-acp: offline catch-up on (messages up to %s old are answered after a cold start)", maxAge)
+	}
+
 	// The archive control is resolved HERE, at startup, and left off
 	// unless every precondition holds: the channel exists, the relay
 	// does not serve it, and realm policy lets this bot move messages
@@ -525,6 +538,7 @@ func main() {
 
 	h, err = handler.New(handler.Config{
 		Client:             zc,
+		Mark:               markOrNil(mark),
 		Updater:            upd,
 		Agent:              agent,
 		Commands:           broker,
@@ -652,11 +666,31 @@ func main() {
 		log.Printf("zulip-acp: relay MCP loopback on %s — the agent can post, schedule, read history and rename the topic in its own conversation", mcpHost.SocketPath())
 	}
 
+	// The catch-up runs only after a registration that starts with a
+	// gap: a resumed or swapped queue still holds everything.
+	var onFresh func(context.Context, zulipproto.RegisterResult)
+	if mark != nil {
+		onFresh = func(ctx context.Context, res zulipproto.RegisterResult) {
+			if err := catchup.Run(ctx, catchup.Config{
+				Source: zc,
+				Store:  mark,
+				Newest: res.MaxMessageID,
+				Deliver: func(ctx context.Context, msgs []zulipproto.Message) {
+					h.CatchUp(ctx, msgs, cfg.CatchupMaxAge())
+				},
+				Logf: log.Printf,
+			}); err != nil {
+				log.Printf("zulip-acp: WARN %v (messages posted while the relay was down are not answered)", err)
+			}
+		}
+	}
+
 	runner, err := zulipproto.NewRunner(zulipproto.RunnerConfig{
 		Client:             zc,
 		EventTypes:         eventTypes,
 		Narrow:             narrow,
 		OnRegister:         onRegister,
+		OnFreshRegister:    onFresh,
 		Handoff:            handoff,
 		ResumeQueueID:      cursor.QueueID,
 		ResumeLastEventID:  cursor.LastEventID,

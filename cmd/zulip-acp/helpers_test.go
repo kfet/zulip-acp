@@ -11,6 +11,7 @@ import (
 
 	kit "github.com/kfet/acp-kit/sysprompt"
 	"github.com/kfet/acp-kit/update"
+	"github.com/kfet/zulip-acp/internal/catchup"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/skills"
 	"github.com/kfet/zulip-acp/internal/sysprompt"
@@ -367,4 +368,17 @@ func TestAgentBinFor(t *testing.T) {
 		t.Fatal("non-fir must be empty")
 	}
 	agentBinFor([]string{"fir", "--mode", "acp"}) // resolves if installed; must not panic
+}
+
+func TestMarkOrNil(t *testing.T) {
+	if markOrNil(nil) != nil {
+		t.Fatal("nil store must give a nil Mark")
+	}
+	s, err := catchup.Open(filepath.Join(t.TempDir(), "m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if markOrNil(s) == nil {
+		t.Fatal("store lost")
+	}
 }

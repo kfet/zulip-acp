@@ -977,3 +977,25 @@ func TestOldestMessageEmptyAndFailure(t *testing.T) {
 		t.Fatalf("ok = %v, err = %v", ok, err)
 	}
 }
+
+// TestMessagesAfter: the forward pager anchors at the mark EXCLUSIVE
+// and reports found_newest, so the catch-up knows when to stop.
+func TestMessagesAfter(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) {
+		return 200, okJSON(`"found_newest":true,"messages":[{"id":8},{"id":9}]`)
+	})
+	got, newest, err := newClient(t, ts).MessagesAfter(context.Background(), nil, 7, 50)
+	if err != nil || !newest || len(got) != 2 || got[0].ID != 8 {
+		t.Fatalf("got = %+v, newest = %v, err = %v", got, newest, err)
+	}
+	q := ts.requests()[0].query
+	if q.Get("anchor") != "7" || q.Get("include_anchor") != "false" || q.Get("num_after") != "50" || q.Get("narrow") != "[]" {
+		t.Fatalf("query = %v", q)
+	}
+	bad := newServer(t, func(recordedReq) (int, string) {
+		return 400, `{"result":"error","msg":"nope"}`
+	})
+	if _, _, err := newClient(t, bad).MessagesAfter(context.Background(), TopicNarrow(1, "x"), 7, 50); err == nil {
+		t.Fatal("want error")
+	}
+}

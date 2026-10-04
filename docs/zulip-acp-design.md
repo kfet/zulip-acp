@@ -883,6 +883,38 @@ conjunction), so a relay serving more than one channel registers an
 **unnarrowed** queue and filters with the channel allowlist it must enforce
 anyway. Over-delivery is cheap; under-delivery is silent.
 
+### Offline catch-up (`catchup_max_age_seconds`)
+
+A fresh `/register` starts at the server's CURRENT event id, so a message
+posted while the relay was down is never delivered as an event. A graceful
+reload avoids the gap by inheriting the queue; a cold start cannot.
+
+- The relay persists the id of the last message it processed in
+  `<state_dir>/catchup.mark`. Message ids are realm-global and increase, so
+  one number covers every conversation. It moves only after the message was
+  dispatched, and a live message at or below it is dropped as a duplicate:
+  the catch-up reads up to the newest message, which can overlap the first
+  events of the new queue.
+- After every registration that starts with a gap — the cold start, and a
+  re-registration after a dead queue, but not a resumed or swapped queue — it
+  reads forward from the mark with `GET /messages`, unnarrowed for the same
+  reason as the queue, until `found_newest`. The read is capped at 5000
+  messages and a failed read is retried with backoff.
+- The first run with no mark stores the registration's `max_message_id` and
+  replays nothing. That id is taken at `/register`, so nothing posted after it
+  is dropped by the mark.
+- Each message goes through the live gates (own and bot messages, allowlists,
+  engagement). Relay `!` commands and `/` messages (widgets, agent slash
+  commands) are skipped; `!!` is still prose. The content
+  is the current content, so an edit made during the outage is read.
+- The missed messages of one conversation become ONE turn, headed
+  `[catch-up] N messages arrived while the relay was offline (first at T)`,
+  holding at most the newest 50. Turns start through the normal path, at most
+  four at a time, off the event loop. `WaitIdle` counts a turn still waiting
+  for a slot, so a graceful reload does not lose it.
+- A message older than the limit (default 24h; 0 turns the catch-up off) is
+  not answered and creates nothing; its topic gets one notice line.
+
 ## The served channel set
 
 `internal/channels.Set` holds two halves behind one `ChannelSet`:

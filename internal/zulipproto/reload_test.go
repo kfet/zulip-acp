@@ -103,6 +103,7 @@ func TestRunResumesInheritedQueue(t *testing.T) {
 		cfg.ResumeLastEventID = 41
 		cfg.ResumeRegistration = RegistrationFingerprint(cfg.EventTypes, cfg.Narrow)
 		cfg.OnRegister = func(context.Context) { resynced++ }
+		cfg.OnFreshRegister = func(context.Context, RegisterResult) { t.Error("a resumed queue has no gap") }
 	})
 
 	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {
@@ -352,6 +353,7 @@ func TestRunSwapsAnUnresumableQueueLosslessly(t *testing.T) {
 		func(cfg *RunnerConfig) {
 			swapTune(cfg)
 			cfg.OnRegister = func(context.Context) { registered++ }
+			cfg.OnFreshRegister = func(context.Context, RegisterResult) { t.Error("a swap drains the inherited queue; it has no gap") }
 		})
 
 	if err := h.r.Run(ctx); !errors.Is(err, context.Canceled) {

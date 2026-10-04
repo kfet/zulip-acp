@@ -185,10 +185,17 @@ type Poster interface {
 
 // Config configures a Handler.
 type Config struct {
-	Client   Poster
-	Agent    Agent
-	Sessions Sessions
-	Journal  *journal.Journal
+	Client Poster
+	// Mark, when set, is the offline catch-up's persisted mark: every
+	// processed message advances it, and a message at or below it is
+	// dropped as already handled. Nil turns both off.
+	Mark Mark
+	// CatchupTurns bounds how many catch-up turns run at once. 0 uses
+	// DefaultCatchupTurns.
+	CatchupTurns int
+	Agent        Agent
+	Sessions     Sessions
+	Journal      *journal.Journal
 
 	// ProbeStatus reports how far the startup model probe has got, so
 	// an empty model list can be worded honestly: "the agent has not
@@ -485,6 +492,13 @@ type inflightEntry struct {
 // Handler implements the event side of the relay.
 type Handler struct {
 	cfg Config
+
+	// catchups tracks the goroutine that starts catch-up turns.
+	catchups sync.WaitGroup
+	// liveTurns maps a conv-id to the id of the last live message that
+	// started a turn in it. A catch-up turn still waiting for a slot
+	// must not supersede a newer live turn.
+	liveTurns sync.Map
 
 	// sawModels records that the agent has reported a non-empty model
 	// list at least once in this process. It is the difference between
@@ -893,29 +907,64 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	if m == nil {
 		return
 	}
+	if h.cfg.Mark != nil {
+		// The offline catch-up may already have dispatched this
+		// message: it reads up to the newest message AFTER the queue
+		// was registered, so the queue's first events can repeat what
+		// it read. Message ids are realm-global and increase, so the
+		// mark is the dedup.
+		if m.ID <= h.cfg.Mark.Get() {
+			return
+		}
+		defer h.advanceMark(m.ID)
+	}
+	if r, ok := h.route(ctx, m, nil); ok {
+		h.liveTurns.Store(r.conv.ID, m.ID)
+		h.startTurn(ctx, r.conv, r.prompt, r.addressed, m.ID)
+	}
+}
+
+// routed is one message resolved to the turn it would start.
+type routed struct {
+	conv      journal.Conv
+	prompt    string
+	addressed bool
+}
+
+// route applies every gate to m and resolves it to a conversation and
+// a prompt. It reports false when the message starts no turn.
+//
+// cu is nil for a live message. For a message read by the offline
+// catch-up it is non-nil, and route then differs in three ways: a
+// relay command is skipped, never run (it was typed for a relay that
+// was not there, and replaying `!new` or `!model` minutes later would
+// surprise everyone); a message older than the age limit is counted on
+// cu instead of routed, with no side effect at all; and the caller,
+// not route, starts the turn.
+func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupRun) (routed, bool) {
 	// The relay must never act on its own message. This is the first
 	// guard, before any allowlist, so a widened allowlist can never
 	// reorder it.
 	if m.SenderID == h.cfg.BotUserID {
-		return
+		return routed{}, false
 	}
 	// Nor on any other bot's. Zulip posts topic moves, stream
 	// creations and welcome messages as cross-realm system bots, which
 	// land in a topic the relay is engaged in and would otherwise burn
 	// a full agent turn on "This topic was moved here from …".
 	if m.SenderRealm == zulipproto.SystemBotRealm {
-		return
+		return routed{}, false
 	}
 	if _, isBot := h.cfg.BotSenderIDs[m.SenderID]; isBot {
-		return
+		return routed{}, false
 	}
 	if m.Type != zulipproto.MessageTypeStream && !m.IsDM() {
 		h.cfg.Logf("handler: ignoring message %d of unknown type %q", m.ID, m.Type)
-		return
+		return routed{}, false
 	}
 	text := strings.TrimSpace(m.Content)
 	if text == "" {
-		return
+		return routed{}, false
 	}
 
 	// Routing and gating in one step, because the two conversation
@@ -936,7 +985,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	if m.IsDM() {
 		if !h.cfg.DMs {
 			h.cfg.Logf("handler: ignoring direct message %d (dms not enabled)", m.ID)
-			return
+			return routed{}, false
 		}
 		ids := m.Recipients()
 		if len(ids) == 0 {
@@ -944,7 +993,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 			// way it can come back useless. Without the participant
 			// set there is no conv key and nobody to reply to.
 			h.cfg.Logf("handler: direct message %d has no usable recipient list", m.ID)
-			return
+			return routed{}, false
 		}
 		key, addressed = journal.DM(ids), true
 		h.rememberDMNames(key, m.RecipientNames())
@@ -953,7 +1002,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		// in no channel, so there is nothing here to measure it
 		// against; AllowedUsers below is what gates it.
 		if _, ok := h.cfg.Channels.Name(m.StreamID); !ok {
-			return
+			return routed{}, false
 		}
 		// An ambient channel engages like a DM: every message is
 		// addressed, so the opening message of a fresh topic summons
@@ -966,7 +1015,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	if h.cfg.AllowedUsers != nil {
 		if _, ok := h.cfg.AllowedUsers[m.SenderID]; !ok {
 			h.cfg.Logf("handler: dropping message %d from user %d (not allowed)", m.ID, m.SenderID)
-			return
+			return routed{}, false
 		}
 	}
 
@@ -996,7 +1045,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		// A lobby message is gated on being addressed alone: in a
 		// non-ambient channel the mention still summons the relay, and
 		// an unaddressed one is not moved.
-		return
+		return routed{}, false
 	}
 
 	// Commands are parsed AFTER every guard above and BEFORE any
@@ -1005,9 +1054,23 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	// state behind and retopics nothing. A command consumes the
 	// message; nothing here reaches the agent.
 	in := h.promptText(text)
-	prompt, handled := h.dispatch(ctx, m, key, in)
+	var (
+		prompt  string
+		handled bool
+	)
+	if cu != nil {
+		prompt, handled = catchupText(in)
+		if !handled && m.Timestamp < cu.cutoff {
+			// Too old to answer. Counted for the one-line notice, and
+			// nothing else: no conversation, no topic move.
+			cu.skip(key)
+			handled = true
+		}
+	} else {
+		prompt, handled = h.dispatch(ctx, m, key, in)
+	}
 	if handled {
-		return
+		return routed{}, false
 	}
 	// A passthrough command (`!reload` → `/reload`) must reach the
 	// agent byte-exact: fir runs a slash command only when the prompt
@@ -1037,7 +1100,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		conv, err = h.cfg.Journal.Ensure(key)
 		if err != nil {
 			h.cfg.Logf("handler: allocate conversation for %s: %v", key.Label(), err)
-			return
+			return routed{}, false
 		}
 		h.cfg.Logf("handler: new conversation %s in %s", conv.ID, h.describe(key))
 		// A reaction on a message in this conversation may already
@@ -1074,7 +1137,7 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		}
 	}
 
-	h.startTurn(ctx, conv, prompt, addressed, m.ID)
+	return routed{conv: conv, prompt: prompt, addressed: addressed}, true
 }
 
 // renameHint is the one-off instruction appended to the turn that
@@ -1115,6 +1178,12 @@ func (h *Handler) startTurn(ctx context.Context, conv journal.Conv, prompt strin
 // branched topic would keep its auto-generated placeholder name for
 // good.
 func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID, anchorID int64) {
+	h.startTurnThen(ctx, conv, prompt, addressed, ackMsgID, anchorID, nil)
+}
+
+// startTurnThen is startTurnAnchored with done, if non-nil, called once
+// the turn has fully unwound — superseded or not.
+func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt string, addressed bool, ackMsgID, anchorID int64, done func()) {
 	// A follow-up supersedes whatever is still running in this topic:
 	// the convo Manager runs in Supersede mode. The turn's context is
 	// cancellable only; its real bound is the progress-resetting
@@ -1129,7 +1198,12 @@ func (h *Handler) startTurnAnchored(ctx context.Context, conv journal.Conv, prom
 		Run: func(pctx context.Context, _ *convo.Turn) error {
 			return h.run(pctx, conv, prompt, addressed, ackMsgID, false)
 		},
-		After: func(*convo.Turn) { h.endTurn(conv, entry) },
+		After: func(*convo.Turn) {
+			h.endTurn(conv, entry)
+			if done != nil {
+				done()
+			}
+		},
 	})
 }
 
@@ -1941,7 +2015,23 @@ func (h *Handler) clearInflight(_ string, e *inflightEntry) {
 
 // WaitIdle blocks until no turn is in flight or ctx is done. Used for
 // graceful shutdown and to synchronise tests without polling.
-func (h *Handler) WaitIdle(ctx context.Context) error { return h.convo.Active().WaitIdle(ctx) }
+//
+// Catch-up turns still waiting for a slot count as in flight: the mark
+// has already moved past their messages, so a reload that did not wait
+// for them would lose them.
+func (h *Handler) WaitIdle(ctx context.Context) error {
+	started := make(chan struct{})
+	go func() {
+		h.catchups.Wait()
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return h.convo.Active().WaitIdle(ctx)
+}
 
 // --- background loops ----------------------------------------------------
 
