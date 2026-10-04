@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-04
+
 ### Added
 - Auto-update (`auto_update`: `off | notify | stage | auto`, default `stage`; needs `update_owner_ids`). About every 6h the relay checks for a new release, downloads it and verifies the sha256, then DMs the owners ONE message that it edits in place. The message has the version, up to 3 changelog lines and the reactions :check: apply when idle, :clock: tomorrow and :no_entry: skip. Only owner reactions count.
 - The update is applied at idle, outside `auto_update_quiet_hours`, using the graceful reload. The old binary is kept as `.prev`. If the new image does not resume its queue and complete a round-trip within 2 minutes, it rolls back, the version is blocked, and automatic updates stop until an owner acts. There is one reminder after 72h, and `!update --check` shows the pending offer.
