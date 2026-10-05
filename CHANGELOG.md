@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `!branch`, `:fork_and_knife:` and the `branch` tool now fork the origin topic's agent session (ACP `session/fork`, acp-kit v0.32.0) into the new topic, so the branch starts with the origin's context. If the agent cannot fork, the relay logs it and opens a fresh session as before.
+
 ## [0.47.0] - 2026-10-04
 
 ### Added

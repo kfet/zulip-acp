@@ -678,6 +678,43 @@ type fakeAgent struct {
 	stats map[acp.SessionId]client.SessionStats
 	// perModel backs CurrentModel; SetModel writes it, as acp-kit does.
 	perModel map[acp.SessionId]string
+	// forks records every ForkSession call; forkErr fails them.
+	forks   []forkCall
+	forkErr error
+	// noResume hides the list/resume caps a fork depends on; listed
+	// and listErr back ListSessions.
+	noResume bool
+	listed   []client.SessionInfo
+	listErr  error
+}
+
+func (a *fakeAgent) ListSessions(context.Context, string) ([]client.SessionInfo, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listed, a.listErr
+}
+
+// forkCall is one recorded ForkSession call.
+type forkCall struct {
+	Cwd    string
+	Parent acp.SessionId
+	At     string
+}
+
+func (a *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, at string, _ client.SessionUpdateSink) (acp.SessionId, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.forks = append(a.forks, forkCall{Cwd: cwd, Parent: parent, At: at})
+	if a.forkErr != nil {
+		return "", a.forkErr
+	}
+	return "fork-of-" + parent, nil
+}
+
+func (a *fakeAgent) forked() []forkCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]forkCall(nil), a.forks...)
 }
 
 func newAgent(chunks ...string) *fakeAgent {
@@ -740,7 +777,7 @@ func (a *fakeAgent) AvailableCommands() []client.CommandInfo {
 func (a *fakeAgent) Caps() client.Caps {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return client.Caps{Image: a.imageCap}
+	return client.Caps{Image: a.imageCap, ListSessions: !a.noResume, ResumeSession: !a.noResume}
 }
 
 // AgentInfo and SessionStats play what the agent reported over ACP.

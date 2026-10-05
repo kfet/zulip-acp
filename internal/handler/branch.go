@@ -351,6 +351,7 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 		return journal.Conv{}, "", fmt.Errorf("I opened %s but could not start a conversation there (%v). Send a message in it to try again.", link, err)
 	}
 	h.rememberOwn(conv.ID, seed)
+	forked := h.forkBranch(bctx, p.Origin, conv)
 
 	// The pointer line in the ORIGIN topic. Posted after the branch is
 	// real, so it never points at a topic that was not created; a
@@ -384,7 +385,7 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 	if ack == 0 {
 		ack = seed
 	}
-	h.startTurnAnchored(ctx, conv, h.branchPrompt(p, title), true, ack, seed)
+	h.startTurnAnchored(ctx, conv, h.branchPrompt(p, title, forked), true, ack, seed)
 	return conv, link, nil
 }
 
@@ -696,7 +697,7 @@ func mentionOf(m *zulipproto.Message) string {
 // agent is told in plain words that it may read that topic and how.
 // The pointer the tool actually uses is the journal's, not this
 // string; this is documentation, and the journal is truth.
-func (h *Handler) branchPrompt(p branchPlan, title string) string {
+func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 	m, parent, text := p.Actor, p.Parent, p.Text
 	var origin string
 	if parent.Key.IsDM() {
@@ -710,11 +711,18 @@ func (h *Handler) branchPrompt(p branchPlan, title string) string {
 	}
 	prompt := fmt.Sprintf("[%s] [branched from %s]%s\n%s", senderName(m), origin, h.branchAttribution(p), text)
 	if h.cfg.Loopback != nil {
-		prompt += "\n\n[relay] This topic was branched out of another conversation, which you have NOT seen. " +
-			"Call the relay `" + zulipmcp.ToolHistory + "` tool with origin=true to read it — that reads the origin " +
-			"conversation up to the moment of the branch, and it is the only other conversation you can read. Do it " +
-			"when the message above leans on context you do not have, not reflexively." +
-			renameHint(title)
+		if forked {
+			prompt += "\n\n[relay] This topic was branched out of another conversation, and this session is a fork of " +
+				"that conversation's session: you already carry its context, up to its latest turn. Call the relay `" +
+				zulipmcp.ToolHistory + "` tool with origin=true only to read what the humans wrote there that your session " +
+				"did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read."
+		} else {
+			prompt += "\n\n[relay] This topic was branched out of another conversation, which you have NOT seen. " +
+				"Call the relay `" + zulipmcp.ToolHistory + "` tool with origin=true to read it — that reads the origin " +
+				"conversation up to the moment of the branch, and it is the only other conversation you can read. Do it " +
+				"when the message above leans on context you do not have, not reflexively."
+		}
+		prompt += renameHint(title)
 	}
 	return prompt
 }

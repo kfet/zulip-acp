@@ -394,6 +394,23 @@ only in how the plan is filled, and every difference is forced:
 - **No confirmation cycle**, unlike `:wastebasket:`. Branching destroys
   nothing; the worst case is one extra topic holding one message.
 
+#### The branch forks the origin session
+
+When the origin has an agent session, the branch forks it (ACP
+`session/fork`, acp-kit `AgentProc.ForkSession`) before the first turn, so the
+new topic starts with the origin's context. The fork is filed in the CHILD's
+conversation directory: the session manager resumes the newest session in a
+conversation's directory, so a fork in the parent's directory would come back
+as the parent after a restart. For the same reason the agent must advertise
+session list and resume. An origin that idle GC has reaped is found the way the
+manager would resume it — the newest session in its directory — without
+reopening it. acp-kit resumes the fork after an agent respawn. The first prompt
+tells the agent whether it carries the origin's context.
+`_meta.at` is empty, which forks at the parent's leaf: the agent does not tell
+the relay which session entry a Zulip message became. If the agent cannot
+fork, or the fork fails, the relay logs it and the first turn opens a fresh
+session. The parent pointer and `history(origin: true)` do not change.
+
 #### Context is pulled, never pushed
 
 The relay writes **no summary of the origin**. It records a parent pointer,

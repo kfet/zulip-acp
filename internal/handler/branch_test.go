@@ -530,7 +530,7 @@ func TestBranchPromptNamesAnUnknownOriginChannel(t *testing.T) {
 		Actor:  &zulipproto.Message{SenderName: "Ada"},
 		Parent: journal.Parent{Key: journal.Channel(77, "gone"), MessageID: 3},
 		Text:   "go on",
-	}, "a topic")
+	}, "a topic", false)
 	if !strings.Contains(p, "#**77>gone@3**") {
 		t.Fatalf("prompt = %q", p)
 	}

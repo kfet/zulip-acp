@@ -88,6 +88,13 @@ type Agent interface {
 	// SessionStats is what the agent reported about one session over
 	// ACP: thinking level, context usage, cost. `!status` shows it.
 	SessionStats(sid acp.SessionId) (client.SessionStats, bool)
+	// ForkSession copies the parent session into a new one (ACP
+	// session/fork). A branch uses it so the new topic starts with the
+	// origin's context. See forkBranch.
+	ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error)
+	// ListSessions lists the agent's sessions in one directory, newest
+	// first. A branch uses it to find a reaped origin's session.
+	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
 }
 
 // Sessions is the subset of *state.Manager the handler uses.

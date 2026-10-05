@@ -32,7 +32,6 @@ import (
 	"fmt"
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/convo"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -571,7 +570,7 @@ func (h *Handler) decorateStatus(token, convID string, engaged bool, st command.
 	st.HasSession = engaged
 	if engaged {
 		st.ConvID = convID
-		st.StateDir = filepath.Join(h.cfg.Sessions.StateDir(), convsDir, convID)
+		st.StateDir = h.convDir(convID)
 	}
 	return st
 }
