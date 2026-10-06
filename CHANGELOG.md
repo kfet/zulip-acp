@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-06
+
 ### Changed
 - A branch now forks the origin session at the leaf of the turn that contains the branch message (`_meta.at`), so a `:fork_and_knife:` on an earlier message does not carry the later turns. The journal keeps each turn's leaf id (`_meta.leafId`, acp-kit v0.33.0) under the turn's prompt and reply message ids. With no known turn, the fork is at the session leaf as before.
 - `dist.lock`: fir 1.28.0.
