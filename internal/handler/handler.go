@@ -64,6 +64,10 @@ const defaultSpinnerInterval = 900 * time.Millisecond
 // directly. Session lifecycle lives in Sessions.
 type Agent interface {
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
+	// PromptTurn is Prompt, and it also returns the agent's leaf entry
+	// id for the turn. The journal keeps it, so a branch from this
+	// turn can fork the session at it. See forkPoint.
+	PromptTurn(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (client.TurnResult, error)
 	Models() (models []client.ModelInfo, currentID string)
 	// SetModel selects the model for one session. It backs `!model
 	// <id>`; the relay never calls it unless a user asked for a
@@ -1376,6 +1380,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	}
 
 	var stop acp.StopReason
+	var leaf string
 	if abstaining {
 		res, perr := client.PromptAbstainable(lctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
 		wcancel()
@@ -1385,13 +1390,16 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		}
 		if res.Abstained {
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
+			h.recordTurn(conv.ID, msgID, 0, res.LeafID)
 			h.clearTail(conv.ID)
 			return nil
 		}
-		stop = res.Stop
+		stop, leaf = res.Stop, res.LeafID
 		stopLive()
 	} else {
-		stop, err = h.cfg.Agent.Prompt(lctx, sess.SessionID, blocks)
+		var tr client.TurnResult
+		tr, err = h.cfg.Agent.PromptTurn(lctx, sess.SessionID, blocks)
+		stop, leaf = tr.Stop, tr.LeafID
 		wcancel()
 		if err != nil {
 			sink.flushThought()
@@ -1419,6 +1427,13 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	sink.setSchedMarker(h.schedMarker(st, pending))
 	sink.maybeAppendFooter()
 	cerr := split.Close(fctx, "")
+	// The first reply id is read BEFORE the repost, which replaces the
+	// ids with newer ones: a turn with no prompt message is keyed by
+	// it, and a message posted during the turn must map to this turn.
+	var replyID int64
+	if ids := split.IDs(); len(ids) > 0 {
+		replyID = ids[0]
+	}
 	if cerr != nil {
 		h.rescue(fctx, post, split.Transcript(), cerr)
 	} else {
@@ -1433,8 +1448,20 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		// reaction must sit on the message that stays.
 		h.markArmed(fctx, st, pending, split.TailID())
 	}
+	h.recordTurn(conv.ID, msgID, replyID, leaf)
 	h.clearTail(conv.ID)
 	return cerr
+}
+
+// recordTurn keeps a finished turn's leaf id in the journal, keyed by
+// the turn's prompt and first reply message. A failed write is logged:
+// it costs only the fork point of a later branch, which then falls
+// back to the session's leaf.
+func (h *Handler) recordTurn(convID string, promptID, replyID int64, leaf string) {
+	t := journal.Turn{PromptID: promptID, ReplyID: replyID, Leaf: leaf}
+	if err := h.cfg.Journal.RecordTurn(convID, t); err != nil {
+		h.cfg.Logf("handler: recording turn leaf for %s: %v", convID, err)
+	}
 }
 
 // resolveModelInfo pushes the relay-resolved model identity — provider

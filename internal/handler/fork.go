@@ -35,7 +35,7 @@ import (
 //
 // An agent respawn needs nothing here: acp-kit tracks the forked
 // session like any other and resumes it on the new process.
-func (h *Handler) forkBranch(ctx context.Context, origin journal.Key, child journal.Conv) bool {
+func (h *Handler) forkBranch(ctx context.Context, origin journal.Key, msgID int64, child journal.Conv) bool {
 	parent, ok := h.cfg.Journal.Lookup(origin)
 	if !ok {
 		return false
@@ -54,7 +54,16 @@ func (h *Handler) forkBranch(ctx context.Context, origin journal.Key, child jour
 		h.cfg.Logf("handler: branch %s: %v; starting a fresh session", child.ID, err)
 		return false
 	}
-	forked, err := h.cfg.Agent.ForkSession(ctx, cwd, sid, forkPoint(), discardSink{})
+	at := h.forkPoint(parent.ID, msgID)
+	forked, err := h.cfg.Agent.ForkSession(ctx, cwd, sid, at, discardSink{})
+	if err != nil && at != "" && ctx.Err() == nil && !errors.Is(err, client.ErrForkUnsupported) {
+		// The leaf can belong to an earlier session of the origin: a
+		// failed resume opens a fresh session and keeps the
+		// conversation, and so its Turns. Fork at the session leaf
+		// instead of not at all.
+		h.cfg.Logf("handler: branch %s: forking session %s at %s failed (%v); forking at its leaf", child.ID, sid, at, err)
+		forked, err = h.cfg.Agent.ForkSession(ctx, cwd, sid, "", discardSink{})
+	}
 	if err != nil {
 		if errors.Is(err, client.ErrForkUnsupported) {
 			h.cfg.Logf("handler: branch %s: agent cannot fork sessions (%v); starting a fresh session", child.ID, err)
@@ -93,15 +102,20 @@ func (h *Handler) convDir(convID string) string {
 	return filepath.Join(h.cfg.Sessions.StateDir(), convsDir, convID)
 }
 
-// forkPoint is the agent entry id the fork is cut at (`_meta.at`).
+// forkPoint is the agent entry id the fork is cut at (`_meta.at`): the
+// leaf of the origin turn that contains the branch message msgID. A
+// message posted after a turn and before the next one maps to that
+// turn. See journal.TurnLeaf.
 //
-// It is always empty. The relay sees Zulip message ids only; the agent
-// never reports which of its session entries a Zulip message became,
-// so no mapping exists. Empty forks at the parent's leaf — for `!branch`
-// and the tool that is "now", which is the branch point. For a
-// :fork_and_knife: on an older message the fork carries more than the
-// branch point; history(origin: true) is still clamped at it.
-func forkPoint() string { return "" }
+// It is empty when the journal knows no such turn — an agent that does
+// not report leaf ids, a branch message older than the kept turns, or
+// one before the first turn. Empty forks at the parent's leaf, which
+// for `!branch` and the tool is "now", the branch point; for a
+// :fork_and_knife: on an older message the fork then carries more than
+// the branch point, and history(origin: true) is still clamped at it.
+func (h *Handler) forkPoint(convID string, msgID int64) string {
+	return h.cfg.Journal.TurnLeaf(convID, msgID)
+}
 
 // discardSink drops updates. A forked session runs no turn until the
 // child's first prompt, and that turn binds its own sink.

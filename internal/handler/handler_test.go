@@ -681,11 +681,22 @@ type fakeAgent struct {
 	// forks records every ForkSession call; forkErr fails them.
 	forks   []forkCall
 	forkErr error
+	// forkAtErr fails only the forks with a non-empty at.
+	forkAtErr error
 	// noResume hides the list/resume caps a fork depends on; listed
 	// and listErr back ListSessions.
 	noResume bool
 	listed   []client.SessionInfo
 	listErr  error
+	// leaf is the leaf id PromptTurn reports.
+	leaf string
+}
+
+func (a *fakeAgent) PromptTurn(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (client.TurnResult, error) {
+	stop, err := a.Prompt(ctx, sid, blocks)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return client.TurnResult{Stop: stop, LeafID: a.leaf}, err
 }
 
 func (a *fakeAgent) ListSessions(context.Context, string) ([]client.SessionInfo, error) {
@@ -705,6 +716,9 @@ func (a *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.Sessio
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.forks = append(a.forks, forkCall{Cwd: cwd, Parent: parent, At: at})
+	if a.forkAtErr != nil && at != "" {
+		return "", a.forkAtErr
+	}
 	if a.forkErr != nil {
 		return "", a.forkErr
 	}

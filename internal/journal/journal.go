@@ -303,6 +303,21 @@ type Conv struct {
 	// carries the `!opts` panel. Absent in a pre-branch journal, so no
 	// version bump is needed.
 	Parent *Parent `json:"parent,omitempty"`
+	// Turns maps the conversation's recent turns to the agent's leaf
+	// entry at the end of each, oldest first, at most MaxTurns. A
+	// branch from a message forks the origin session at the leaf of
+	// the turn that contains the message (see TurnLeaf).
+	//
+	// An abstained turn counts against MaxTurns too: its prompt is in
+	// the session.
+	//
+	// It belongs to the SESSION, not to the place: a leaf id names an
+	// entry in one agent session, so `!new` does not carry it to the
+	// fresh conversation. A failed resume replaces the session but
+	// keeps the conversation; forkBranch then retries at the session
+	// leaf. Absent in an older journal, so no version
+	// bump is needed.
+	Turns []Turn `json:"turns,omitempty"`
 	// Retired marks a conversation the user replaced with `!new`. It
 	// keeps its id — and therefore its state/convs/<id>/ directory,
 	// which is never deleted — but it no longer answers to its key,
@@ -315,6 +330,34 @@ type Conv struct {
 	// in a pre-!new journal, so no version bump is needed.
 	Retired bool `json:"retired,omitempty"`
 }
+
+// Turn is one finished turn: the Zulip messages that bound it and the
+// agent's leaf entry id at its end.
+type Turn struct {
+	// PromptID is the message that started the turn. It is 0 for a
+	// turn that no single message started (a batched reaction, a fired
+	// schedule).
+	PromptID int64 `json:"prompt_id,omitempty"`
+	// ReplyID is the first message of the turn's answer, or 0 when the
+	// turn posted nothing (the agent abstained).
+	ReplyID int64 `json:"reply_id,omitempty"`
+	// Leaf is the agent's id for the last entry of the turn, valid as
+	// the session/fork `_meta.at`.
+	Leaf string `json:"leaf"`
+}
+
+// start is the first message of the turn.
+func (t Turn) start() int64 {
+	if t.PromptID != 0 {
+		return t.PromptID
+	}
+	return t.ReplyID
+}
+
+// MaxTurns bounds Conv.Turns, because the journal is rewritten whole
+// on every commit. A branch from a message older than the oldest kept
+// turn forks at the session's leaf instead.
+const MaxTurns = 64
 
 // file is the on-disk shape. Stored as a list so the file stays
 // readable and diffable by an operator.
@@ -694,6 +737,53 @@ func (j *Journal) SetLastOwn(convID string, msgID int64) error {
 	prev := c.LastOwnID
 	c.LastOwnID = msgID
 	return j.commit(func() { c.LastOwnID = prev })
+}
+
+// MaxLeafBytes bounds Turn.Leaf. The id comes from the agent, and the
+// journal is rewritten whole on every commit.
+const MaxLeafBytes = 256
+
+// RecordTurn appends a finished turn to a conversation's Turns. A turn
+// with no leaf, with no message id, or with a leaf longer than
+// MaxLeafBytes is ignored: nothing could look it up, or it is not an id.
+func (j *Journal) RecordTurn(convID string, t Turn) error {
+	if t.Leaf == "" || len(t.Leaf) > MaxLeafBytes || t.start() == 0 {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok {
+		return fmt.Errorf("journal: unknown conversation %q", convID)
+	}
+	prev := c.Turns
+	next := append(slices.Clone(prev), t)
+	if len(next) > MaxTurns {
+		next = next[len(next)-MaxTurns:]
+	}
+	c.Turns = next
+	return j.commit(func() { c.Turns = prev })
+}
+
+// TurnLeaf returns the leaf of the turn in conversation convID that
+// contains message msgID: the newest turn that started at or before
+// msgID. So a message posted after a turn and before the next one maps
+// to that turn. It returns "" when no kept turn started at or before
+// msgID.
+func (j *Journal) TurnLeaf(convID string, msgID int64) string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok {
+		return ""
+	}
+	leaf, best := "", int64(0)
+	for _, t := range c.Turns {
+		if s := t.start(); s <= msgID && s > best {
+			leaf, best = t.Leaf, s
+		}
+	}
+	return leaf
 }
 
 // SetAlarm records that msgID carries the :alarm_clock: reaction for

@@ -406,8 +406,12 @@ session list and resume. An origin that idle GC has reaped is found the way the
 manager would resume it — the newest session in its directory — without
 reopening it. acp-kit resumes the fork after an agent respawn. The first prompt
 tells the agent whether it carries the origin's context.
-`_meta.at` is empty, which forks at the parent's leaf: the agent does not tell
-the relay which session entry a Zulip message became. If the agent cannot
+`_meta.at` is the leaf of the origin turn that contains the branch message.
+The agent reports each turn's leaf in the prompt response (`_meta.leafId`, fir
+1.28.0+), and the journal keeps the last 64 per conversation, keyed by the
+turn's prompt message and first reply. A message posted after a turn and before
+the next one maps to that turn. When no kept turn matches, `_meta.at` is empty,
+which forks at the parent's leaf. If the agent cannot
 fork, or the fork fails, the relay logs it and the first turn opens a fresh
 session. The parent pointer and `history(origin: true)` do not change.
 
