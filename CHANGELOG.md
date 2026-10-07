@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-07
+
 ### Added
 - A scheduled turn that has nothing to say keeps one heartbeat message per schedule ("checked HH:MM ×N · <schedule>"). The relay edits it while it is the newest message in the conversation, and posts a new one otherwise or when the edit fails. The journal keeps the heartbeat message id and count, so a restart edits the same message.
 
