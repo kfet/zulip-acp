@@ -179,6 +179,7 @@ func (h *Handler) markArmed(ctx context.Context, st *schedTurn, pending []schedu
 // unmarkAlarm removes the reaction that stood for schedule id, unless
 // another pending schedule still shares the message.
 func (h *Handler) unmarkAlarm(ctx context.Context, id string) {
+	h.cfg.Journal.DropHeartbeat(id)
 	msgID, shared, ok := h.cfg.Journal.TakeAlarm(id)
 	if !ok || shared {
 		return

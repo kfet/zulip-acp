@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A scheduled turn that has nothing to say keeps one heartbeat message per schedule ("checked HH:MM ×N · <schedule>"). The relay edits it while it is the newest message in the conversation, and posts a new one otherwise or when the edit fails. The journal keeps the heartbeat message id and count, so a restart edits the same message.
+
+### Fixed
+- A scheduled turn can abstain now. Before, it ran as addressed and posted the silence sentinel verbatim, one message per fire.
+- An answer that is only the silence sentinel is never posted, on any turn. The relay deletes what the turn posted (the placeholder) instead.
+- After a tool call, text that repeats the text already streamed in the same answer is dropped. Before, one message could show the same paragraph twice.
+
 ## [0.48.0] - 2026-10-06
 
 ### Changed

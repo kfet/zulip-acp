@@ -375,11 +375,11 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	defer h.clearInflight(conv.ID, entry)
 
 	h.cfg.Logf("handler: firing schedule %s in %s (depth %d)", it.ID, h.describe(key), it.Depth)
-	// Addressed, so the answer streams with a placeholder: there is no
-	// triggering message to react to, and a scheduled turn that decided
-	// to abstain would leave the user with no sign anything happened.
-	// msgID 0 skips the :eyes: acknowledgement for the same reason.
-	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, true)
+	// Addressed, but run lets a scheduled turn abstain all the same:
+	// a check that found nothing new updates the schedule's heartbeat
+	// (heartbeat.go) instead of posting the sentinel. msgID 0 skips the
+	// :eyes: acknowledgement: there is no triggering message.
+	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, &it)
 }
 
 // claimConvIdle blocks until no turn is in flight for convID and then

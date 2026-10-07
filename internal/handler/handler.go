@@ -1214,7 +1214,7 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 		Conv:  conv.ID,
 		Value: entry,
 		Run: func(pctx context.Context, _ *convo.Turn) error {
-			return h.run(pctx, conv, prompt, addressed, ackMsgID, false)
+			return h.run(pctx, conv, prompt, addressed, ackMsgID, nil)
 		},
 		After: func(*convo.Turn) {
 			h.endTurn(conv, entry)
@@ -1236,7 +1236,7 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 		defer h.endTurn(conv, entry)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, addressed, ackMsgID, false); err != nil {
+		if err := h.run(pctx, conv, prompt, addressed, ackMsgID, nil); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -1271,7 +1271,13 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 // typing.go, and note that the comment which used to justify the
 // placeholder here ("Zulip has no typing indicator") is stale: it does,
 // for channels as well as DMs, verified on Zulip 12.2.
-func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, fired bool) error {
+//
+// sched is the schedule that fired this turn, or nil for a human turn.
+// A scheduled turn may abstain even though it is addressed: it has no
+// human waiting on it, and a check that found nothing new must not post
+// a new message each time. It updates a heartbeat instead (heartbeat.go).
+func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, sched *schedule.Item) error {
+	fired := sched != nil
 	defer h.ack(ctx, msgID)()
 	// Before anything is posted: every message of this turn goes to
 	// the topic as markBusy leaves it.
@@ -1290,7 +1296,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	if err != nil {
 		return fmt.Errorf("splitter: %w", err)
 	}
-	abstaining := !addressed && h.cfg.SilentSentinel != ""
+	abstaining := (!addressed || fired) && h.cfg.SilentSentinel != ""
 	// On the abstain path thoughts are ALWAYS hidden: a thought that
 	// reached the splitter before the verdict would post a message the
 	// verdict cannot retract.
@@ -1392,6 +1398,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
 			h.recordTurn(conv.ID, msgID, 0, res.LeafID)
 			h.clearTail(conv.ID)
+			h.heartbeat(context.WithoutCancel(ctx), conv, sched)
 			return nil
 		}
 		stop, leaf = res.Stop, res.LeafID
@@ -1415,6 +1422,18 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 
 	fctx := context.WithoutCancel(ctx)
 	suffix := h.uploadOutbox(fctx, sess.Cwd)
+	// The safety net: an agent that answers with nothing but the
+	// sentinel on a path that could not abstain (an addressed turn)
+	// must not have the sentinel posted verbatim. After the outbox
+	// upload: an attachment is an answer.
+	if suffix == "" && h.cfg.SilentSentinel != "" && strings.TrimSpace(sink.messageText()) == strings.TrimSpace(h.cfg.SilentSentinel) {
+		h.cfg.Logf("handler: agent answered only with the sentinel in %s", conv.ID)
+		h.retract(fctx, conv.ID, split)
+		h.recordTurn(conv.ID, msgID, 0, leaf)
+		h.clearTail(conv.ID)
+		h.heartbeat(fctx, conv, sched)
+		return nil
+	}
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix += fmt.Sprintf("\n\n*(stopped: %s)*", stop)
 	}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -56,6 +57,21 @@ type streamingSink struct {
 	// hideThinking suppresses thought chunks. Read-only after
 	// construction.
 	hideThinking bool
+
+	// msgMu guards the answer-text state below: the full agent text,
+	// and the repeat filter (see appendMessage).
+	msgMu sync.Mutex
+	// said is every message chunk the agent sent this turn, before
+	// the repeat filter. The sentinel safety net reads it.
+	said strings.Builder
+	// shown is the message text that reached the splitter.
+	shown strings.Builder
+	// afterTool is true from a tool call until the next segment of
+	// message text has been judged.
+	afterTool bool
+	// held is the start of a segment after a tool call, held back
+	// while it still repeats text already shown.
+	held strings.Builder
 }
 
 // maxThoughtRunes is the size cap for one coalesced thought line. A
@@ -148,10 +164,100 @@ func (s *streamingSink) OnUpdate(_ context.Context, n acp.SessionNotification) e
 		return nil
 	}
 	s.flushThought()
+	if n.Update.ToolCall != nil || n.Update.ToolCallUpdate != nil {
+		s.msgMu.Lock()
+		s.releaseHeld()
+		s.afterTool = true
+		s.msgMu.Unlock()
+		return nil
+	}
 	if chunk := renderChunk(n); chunk != "" {
-		s.split.Append(chunk)
+		s.appendMessage(chunk)
 	}
 	return nil
+}
+
+// messageText is all the answer text the agent sent this turn.
+func (s *streamingSink) messageText() string {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	return s.said.String()
+}
+
+// appendMessage sends answer text to the splitter, dropping a repeat.
+//
+// Some models, after a tool call, start the next segment by writing
+// out again the text they already streamed before the call. On a
+// streamed message that shows the same paragraph twice. So the start
+// of each segment after a tool call is held back while it is still a
+// repeat of text already shown. If it ends up identical to that text,
+// or to its last paragraph, it is dropped. If it repeats the text
+// and then continues, only the new part goes out. Otherwise it all
+// goes out, unchanged.
+func (s *streamingSink) appendMessage(chunk string) {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	s.said.WriteString(chunk)
+	if !s.afterTool {
+		s.show(chunk)
+		return
+	}
+	s.held.WriteString(chunk)
+	h := strings.TrimLeft(s.held.String(), " \t\r\n")
+	if h == "" {
+		return
+	}
+	for _, p := range s.repeatables() {
+		if strings.HasPrefix(p, h) {
+			return // still a possible repeat: keep holding
+		}
+	}
+	for _, p := range s.repeatables() {
+		if rest, ok := strings.CutPrefix(h, p); ok && strings.HasPrefix(rest, "\n") {
+			s.held.Reset()
+			s.afterTool = false
+			s.show(rest)
+			return
+		}
+	}
+	s.releaseHeld()
+}
+
+// repeatables is the shown text and its last paragraph, trimmed. Only
+// the last paragraph: an earlier one said again later (a second
+// "Done.") can be a real answer. Caller holds msgMu.
+func (s *streamingSink) repeatables() []string {
+	all := strings.TrimSpace(s.shown.String())
+	if all == "" {
+		return nil
+	}
+	out := []string{all}
+	if i := strings.LastIndex(all, "\n\n"); i >= 0 {
+		out = append(out, strings.TrimSpace(all[i+2:]))
+	}
+	return out
+}
+
+// releaseHeld ends the judgement of a held segment. A segment that is
+// complete and equal to text already shown is dropped; anything else
+// goes out unchanged. Caller holds msgMu.
+func (s *streamingSink) releaseHeld() {
+	held := s.held.String()
+	s.held.Reset()
+	s.afterTool = false
+	if t := strings.TrimSpace(held); t != "" && slices.Contains(s.repeatables(), t) {
+		return
+	}
+	s.show(held)
+}
+
+// show appends answer text to the splitter. Caller holds msgMu.
+func (s *streamingSink) show(text string) {
+	if text == "" {
+		return
+	}
+	s.shown.WriteString(text)
+	s.split.Append(text)
 }
 
 // appendThought accumulates a thought delta and emits the complete
@@ -297,6 +403,9 @@ func (s *streamingSink) setSchedMarker(m string) {
 //     repost; appended by the repost, it would be doubled.
 func (s *streamingSink) maybeAppendFooter() {
 	s.flushThought()
+	s.msgMu.Lock()
+	s.releaseHeld()
+	s.msgMu.Unlock()
 	s.statusMu.Lock()
 	if s.footerEmitted {
 		s.statusMu.Unlock()

@@ -368,6 +368,18 @@ type file struct {
 	// :alarm_clock: reaction. See SetAlarm. Absent in a pre-alarm
 	// journal, so no version bump is needed.
 	Alarms map[string]int64 `json:"alarms,omitempty"`
+	// Heartbeats maps a schedule id to its heartbeat message. See
+	// SetHeartbeat. Absent in an older journal; no version bump.
+	Heartbeats map[string]Heartbeat `json:"heartbeats,omitempty"`
+}
+
+// Heartbeat is the small message a scheduled turn that had nothing to
+// say keeps up to date, instead of posting a new message each time.
+type Heartbeat struct {
+	// MsgID is the heartbeat message.
+	MsgID int64 `json:"msg_id"`
+	// Count is how many checks the message reports.
+	Count int `json:"count"`
 }
 
 const currentVersion = 1
@@ -382,13 +394,15 @@ type Journal struct {
 	// alarms is file.Alarms: schedule id → the message id that
 	// carries the schedule's reaction.
 	alarms map[string]int64
+	// heartbeats is file.Heartbeats.
+	heartbeats map[string]Heartbeat
 }
 
 // Open loads the journal at path, creating an empty one if the file
 // does not exist. A corrupt file is an error, not a silent reset: the
 // operator should see it.
 func Open(path string) (*Journal, error) {
-	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}}
+	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}, heartbeats: map[string]Heartbeat{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return j, nil
@@ -420,6 +434,9 @@ func Open(path string) (*Journal, error) {
 	}
 	for id, msg := range f.Alarms {
 		j.alarms[id] = msg
+	}
+	for id, hb := range f.Heartbeats {
+		j.heartbeats[id] = hb
 	}
 	return j, nil
 }
@@ -834,6 +851,44 @@ func (j *Journal) TakeAlarm(schedID string) (msgID int64, shared, ok bool) {
 	return msgID, shared, true
 }
 
+// Heartbeat returns the heartbeat record of the schedule schedID.
+func (j *Journal) Heartbeat(schedID string) (Heartbeat, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	hb, ok := j.heartbeats[schedID]
+	return hb, ok
+}
+
+// SetHeartbeat records the heartbeat message of the schedule schedID.
+// It is persisted so a restart edits the same message and does not post
+// a new one.
+func (j *Journal) SetHeartbeat(schedID string, hb Heartbeat) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	prev, had := j.heartbeats[schedID]
+	j.heartbeats[schedID] = hb
+	return j.commit(func() {
+		if had {
+			j.heartbeats[schedID] = prev
+		} else {
+			delete(j.heartbeats, schedID)
+		}
+	})
+}
+
+// DropHeartbeat forgets the heartbeat record of schedID. A failed write
+// only means the record returns on the next start, where nothing reads
+// it; that is why the error is not surfaced.
+func (j *Journal) DropHeartbeat(schedID string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.heartbeats[schedID]; !ok {
+		return
+	}
+	delete(j.heartbeats, schedID)
+	_ = j.save()
+}
+
 // Branch allocates the conversation for a freshly branched topic,
 // recording where it came from in the SAME atomic write that mints it.
 //
@@ -988,7 +1043,7 @@ func (j *Journal) save() error {
 		convs = append(convs, *c)
 	}
 	sort.Slice(convs, func(a, b int) bool { return convs[a].ID < convs[b].ID })
-	b := append(mustMarshal(file{Version: currentVersion, Convs: convs, Alarms: j.alarms}), '\n')
+	b := append(mustMarshal(file{Version: currentVersion, Convs: convs, Alarms: j.alarms, Heartbeats: j.heartbeats}), '\n')
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
 		return fmt.Errorf("journal: mkdir: %w", err)
 	}

@@ -312,15 +312,18 @@ func TestDescribe(t *testing.T) {
 
 // TestDMIsAlwaysAddressed: a DM never takes the abstain path, even with
 // a sentinel configured — it is addressed to the bot by construction,
-// so the relay streams and always answers.
+// so the relay streams (the placeholder goes up at once). An answer
+// that is only the sentinel is still never posted verbatim: the safety
+// net retracts what the turn posted.
 func TestDMIsAlwaysAddressed(t *testing.T) {
 	hh := dmHarness(t, newAgent("<<SILENT>>"), nil)
 	hh.deliverDM(t, humanID, "you there?", humanID, botID)
-	if hh.z.count() == 0 {
+	if hh.z.nextID() == 0 {
 		t.Fatal("a DM was abstained from; DMs are always addressed")
 	}
-	last := hh.z.order[len(hh.z.order)-1]
-	if !strings.Contains(hh.z.body(last), "<<SILENT>>") {
-		t.Fatalf("body = %q", hh.z.body(last))
+	for _, b := range hh.z.stored() {
+		if strings.Contains(b, "<<SILENT>>") || strings.Contains(b, "Thinking") {
+			t.Fatalf("left behind: %q", b)
+		}
 	}
 }
