@@ -344,6 +344,7 @@ func (h *Handler) decorate(text, out string) string {
 	if h.CanSchedule() {
 		extra += schedHelp
 	}
+	extra += h.quickHelp()
 	// Inserted right after the `!help` bullet rather than appended:
 	// the broker's help ends with an optional "Agent commands:"
 	// section, and a relay command filed under that heading would be a

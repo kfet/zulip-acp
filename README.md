@@ -351,6 +351,9 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `catchup_max_age_seconds` | `86400` | after a cold start, answer messages posted while the relay was down, one collapsed turn per topic; older ones get a one-line notice. `0` = off |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
+| `quick_models` | none | the **emoji model switcher**: up to 5 `{"emoji","model","label"}` entries. See below |
+| `quick_models_menu_emoji` | `gear` | reaction that opens the switcher menu |
+| `quick_models_sweep_emoji` | `www` | reaction on a switch confirmation that applies it to all sessions |
 | `repost_on_close` | `true` | at the end of a **streamed** turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. A no-op in quiet mode. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
@@ -512,6 +515,40 @@ to branch — ride the same path and are consumed *before* the agent is involved
 so they never cost a turn and never reach the model. They do, however, share its
 off switch: `"reactions": false` disables them along with everything else, and
 the typed `!archive` and `!branch` remain.
+
+### Emoji model switcher (`quick_models`)
+
+A shortlist of models, each bound to one emoji, switched with taps and no
+tokens. The relay handles all of it; the agent never sees these reactions.
+
+```json
+"quick_models": [
+  {"emoji": "brain", "model": "anthropic-sub/claude-opus-5-5", "label": "Anthropic sub · Opus 5.5"},
+  {"emoji": "fish",  "model": "sakana/ultra",                  "label": "Sakana · Ultra"}
+]
+```
+
+1. React `:gear:` on any relay message. The relay posts a menu with the
+   current model and one line per entry, and pre-adds every entry's emoji.
+2. Tap an entry's emoji (on the menu or on any relay message). This topic uses
+   that model from its next turn — the same path as `!model`. The relay posts a
+   confirmation and pre-adds `:www:` to it.
+3. Tap `:www:` on that confirmation. Every conversation switches — an idle one
+   on its next turn, a running one when its current turn ends; nothing is
+   cancelled — and the model becomes the default for new topics. The default
+   is kept in `quick_default_model` in the state directory.
+
+Only allowlisted humans count, only on the relay's own messages, and removing a
+reaction does nothing. The switcher works when `"reactions": false` too. At
+load the relay rejects more than 5 entries, a duplicate emoji, an empty model,
+and an emoji that is already a control (`wastebasket`, `fork_and_knife`,
+`gear`, `www`, the `!opts` chips `new`, `octagonal_sign`, `bar_chart`, `check`,
+`alarm_clock`, the menu and sweep emojis, `ack_emoji`). The sweep reaches
+**every** conversation the relay holds, other people's DMs included: any
+allowlisted user can switch all of them with one tap. `:www:` on a relay
+message that is not a confirmation (or one from before a restart) only
+replies; it never reaches the agent. A model the agent does
+not offer is marked in the menu, logged as a warning, and refused on tap.
 
 ### Branching a topic (`!branch`)
 

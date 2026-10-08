@@ -324,6 +324,20 @@ reports whether it consumed the reaction. In production it is wired to
 which is why it belongs there and not in a prompt: a destructive control must
 never depend on the model choosing to call a tool.
 
+### Emoji model switcher (`quick_models`)
+
+A relay control, like `:wastebasket:` and `:fork_and_knife:`, and handled in
+`internal/handler/quickmodel.go`. The menu emoji (`:gear:`) on a relay message
+posts a menu with every entry's emoji pre-added. An entry emoji switches the
+topic through `SetModelOverride` — the `!model` path. The sweep emoji (`:www:`)
+on the switch confirmation sets the override of every conversation and writes
+`quick_default_model` in the state directory; a conversation with no override
+takes that default at the start of its next turn. Overrides apply lazily, so a
+running turn is never cancelled. Only THIS conversation goes through
+`SetModelOverride`: that path re-posts the options panel, and a sweep must not
+re-post a panel into every topic. The switcher is not gated by `reactions`, so
+its own pre-gate admits only its emojis.
+
 ### Branching a topic (`!branch`, `:fork_and_knife:`)
 
 `!branch <text>` (optionally `!branch #**channel** <text>`) spins an idea out

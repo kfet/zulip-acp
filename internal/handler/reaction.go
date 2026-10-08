@@ -183,7 +183,11 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 		h.cfg.UpdateDecide(ctx, ev.MessageID, ev.UserID, ev.EmojiName) {
 		return
 	}
-	if !h.cfg.Reactions {
+	// The model switcher works with ambient reactions off: it is a
+	// relay control, like the update offer above.
+	// Gated on the emoji, so that with ambient reactions off the
+	// realm's other reactions still cost nothing.
+	if !h.cfg.Reactions && !h.isQuickEmoji(ev.EmojiName) {
 		return
 	}
 	// Both ops are delivered. Un-reacting is real signal — an approval
@@ -241,6 +245,14 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 	// panel id — so everything else, a reaction on a retired panel
 	// included, falls straight through to the paths below.
 	if h.optsReaction(ctx, conv, ev) {
+		return
+	}
+	// The emoji model switcher (quickmodel.go): a relay control, so it
+	// is never narrated to the agent either.
+	if h.quickReaction(ctx, conv, ev, msg) {
+		return
+	}
+	if !h.cfg.Reactions {
 		return
 	}
 	if h.reactionTrigger(ctx, conv, ev, msg) {

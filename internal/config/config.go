@@ -69,7 +69,30 @@ const (
 	// and the bot may move messages into it — see
 	// Config.GetArchiveChannel.
 	DefaultArchiveChannel = "archive"
+	// DefaultQuickModelsMenuEmoji opens the emoji model switcher.
+	DefaultQuickModelsMenuEmoji = "gear"
+	// DefaultQuickModelsSweepEmoji applies a switch to all sessions.
+	DefaultQuickModelsSweepEmoji = "www"
+	// MaxQuickModels caps the switcher shortlist. A menu longer than
+	// this is not quick, and each entry costs one reaction on the menu.
+	MaxQuickModels = 5
 )
+
+// QuickModel is one entry of the emoji model switcher.
+type QuickModel struct {
+	// Emoji is the bare Zulip emoji name, e.g. "fish".
+	Emoji string `json:"emoji"`
+	// Model is the agent model id, e.g. "sakana/ultra".
+	Model string `json:"model"`
+	// Label is the human name shown in the menu. Unset = Model.
+	Label string `json:"label,omitempty"`
+}
+
+// reservedQuickEmojis are emojis that already mean something on a relay
+// message. A shortlist entry may not take one.
+// The !opts chips, the !opts tick and the schedule mark are included.
+var reservedQuickEmojis = []string{"wastebasket", "fork_and_knife", "gear", "www",
+	"new", "octagonal_sign", "bar_chart", "check", "alarm_clock"}
 
 // Config is the operator-facing JSON config.
 type Config struct {
@@ -299,6 +322,24 @@ type Config struct {
 	// at all.
 	Reactions *bool `json:"reactions,omitempty"`
 
+	// QuickModels is the emoji model switcher: a short list of
+	// provider/account/model combos, each bound to one emoji. A
+	// reaction with QuickModelsMenuEmoji on any relay message posts a
+	// menu; a shortlist emoji switches that topic; QuickModelsSweepEmoji
+	// on the confirmation applies the choice to every session and to new
+	// topics. The relay handles all of it; the agent never sees these
+	// reactions. Empty = off. At most MaxQuickModels entries.
+	QuickModels []QuickModel `json:"quick_models,omitempty"`
+
+	// QuickModelsMenuEmoji opens the switcher menu. Unset =
+	// DefaultQuickModelsMenuEmoji ("gear").
+	QuickModelsMenuEmoji string `json:"quick_models_menu_emoji,omitempty"`
+
+	// QuickModelsSweepEmoji, tapped on a switch confirmation, applies
+	// that model to all sessions. Unset = DefaultQuickModelsSweepEmoji
+	// ("www").
+	QuickModelsSweepEmoji string `json:"quick_models_sweep_emoji,omitempty"`
+
 	// CatchupMaxAgeSeconds bounds the offline catch-up. On a cold
 	// start the relay reads the messages that arrived while it was
 	// down and gives each topic ONE collapsed turn for them; messages
@@ -494,6 +535,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("autotopic_channels must not contain empty entries")
 		}
 	}
+	if err := c.validateQuickModels(); err != nil {
+		return err
+	}
 	// A splitter built from these markers must still be constructible;
 	// catching it here beats failing at the first long answer.
 	if _, err := rollover.New(rollover.Config{
@@ -630,6 +674,60 @@ func (c *Config) GetAckEmoji() string {
 		return DefaultAckEmoji
 	}
 	return *c.AckEmoji
+}
+
+// GetQuickModelsMenuEmoji returns the emoji that opens the switcher.
+func (c *Config) GetQuickModelsMenuEmoji() string {
+	if c.QuickModelsMenuEmoji == "" {
+		return DefaultQuickModelsMenuEmoji
+	}
+	return c.QuickModelsMenuEmoji
+}
+
+// GetQuickModelsSweepEmoji returns the emoji that applies a switch to
+// all sessions.
+func (c *Config) GetQuickModelsSweepEmoji() string {
+	if c.QuickModelsSweepEmoji == "" {
+		return DefaultQuickModelsSweepEmoji
+	}
+	return c.QuickModelsSweepEmoji
+}
+
+// validateQuickModels rejects a shortlist that would be ambiguous on a
+// phone: a duplicate emoji, an emoji that already is a relay control,
+// or an entry with no model. Whether the agent offers each model is
+// known only at run time; the menu marks an unknown one and a tap on it
+// is refused with the reason.
+func (c *Config) validateQuickModels() error {
+	if len(c.QuickModels) > MaxQuickModels {
+		return fmt.Errorf("quick_models: %d entries, the maximum is %d", len(c.QuickModels), MaxQuickModels)
+	}
+	menu, sweep := c.GetQuickModelsMenuEmoji(), c.GetQuickModelsSweepEmoji()
+	if menu == sweep {
+		return fmt.Errorf("quick_models_menu_emoji and quick_models_sweep_emoji are both %q", menu)
+	}
+	reserved := map[string]bool{menu: true, sweep: true}
+	for _, e := range reservedQuickEmojis {
+		reserved[e] = true
+	}
+	if ack := c.GetAckEmoji(); ack != "" {
+		reserved[ack] = true
+	}
+	seen := map[string]bool{}
+	for i, q := range c.QuickModels {
+		switch {
+		case strings.TrimSpace(q.Emoji) == "" || strings.ContainsAny(q.Emoji, ": \t"):
+			return fmt.Errorf("quick_models[%d]: emoji %q must be a bare Zulip emoji name, e.g. \"fish\"", i, q.Emoji)
+		case strings.TrimSpace(q.Model) == "":
+			return fmt.Errorf("quick_models[%d] (:%s:): model is empty", i, q.Emoji)
+		case reserved[q.Emoji]:
+			return fmt.Errorf("quick_models[%d]: :%s: is reserved for a relay control", i, q.Emoji)
+		case seen[q.Emoji]:
+			return fmt.Errorf("quick_models[%d]: duplicate emoji :%s:", i, q.Emoji)
+		}
+		seen[q.Emoji] = true
+	}
+	return nil
 }
 
 // GetRepostOnClose reports whether a finished streamed turn is

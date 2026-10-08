@@ -643,7 +643,10 @@ func main() {
 		ReactionTrigger: func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
 			return h.ArchiveReaction(ctx, conv, ev, m) || h.BranchReaction(ctx, conv, ev, m)
 		},
-		Logf: log.Printf,
+		QuickModels:     quickModels(cfg.QuickModels),
+		QuickMenuEmoji:  cfg.GetQuickModelsMenuEmoji(),
+		QuickSweepEmoji: cfg.GetQuickModelsSweepEmoji(),
+		Logf:            log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("handler: %v", err)
@@ -842,3 +845,13 @@ func splitList(s string) []string {
 // itself — including the 0 that means "do not animate" — so it must
 // hand the handler an explicit value, never a nil "use your default".
 func ptr[T any](v T) *T { return &v }
+
+// quickModels converts the config shortlist to the handler's type. The
+// handler does not import config.
+func quickModels(in []config.QuickModel) []handler.QuickModel {
+	out := make([]handler.QuickModel, 0, len(in))
+	for _, q := range in {
+		out = append(out, handler.QuickModel{Emoji: q.Emoji, Model: q.Model, Label: q.Label})
+	}
+	return out
+}

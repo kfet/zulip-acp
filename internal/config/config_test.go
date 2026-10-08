@@ -789,3 +789,44 @@ func TestCatchupMaxAge(t *testing.T) {
 		t.Fatalf("Validate() = %v, want catchup_max_age_seconds error", err)
 	}
 }
+
+func TestQuickModelsValidation(t *testing.T) {
+	q := func(e, m string) QuickModel { return QuickModel{Emoji: e, Model: m} }
+	ok := Config{QuickModels: []QuickModel{q("brain", "a/b"), q("fish", "s/u")}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid shortlist rejected: %v", err)
+	}
+	if ok.GetQuickModelsMenuEmoji() != "gear" || ok.GetQuickModelsSweepEmoji() != "www" {
+		t.Fatal("defaults")
+	}
+	custom := Config{QuickModelsMenuEmoji: "tools", QuickModelsSweepEmoji: "globe"}
+	if custom.GetQuickModelsMenuEmoji() != "tools" || custom.GetQuickModelsSweepEmoji() != "globe" {
+		t.Fatal("overrides")
+	}
+	six := make([]QuickModel, 6)
+	for i := range six {
+		six[i] = q(string(rune('a'+i)), "m")
+	}
+	bad := map[string]Config{
+		"too many":      {QuickModels: six},
+		"same emojis":   {QuickModelsMenuEmoji: "x", QuickModelsSweepEmoji: "x"},
+		"empty emoji":   {QuickModels: []QuickModel{q("", "m")}},
+		"colons":        {QuickModels: []QuickModel{q(":fish:", "m")}},
+		"empty model":   {QuickModels: []QuickModel{q("fish", " ")}},
+		"reserved":      {QuickModels: []QuickModel{q("fork_and_knife", "m")}},
+		"menu emoji":    {QuickModelsMenuEmoji: "tools", QuickModels: []QuickModel{q("tools", "m")}},
+		"ack emoji":     {QuickModels: []QuickModel{q("eyes", "m")}},
+		"duplicate":     {QuickModels: []QuickModel{q("fish", "m"), q("fish", "n")}},
+		"reserved gear": {QuickModelsMenuEmoji: "tools", QuickModels: []QuickModel{q("gear", "m")}},
+	}
+	for name, c := range bad {
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+	noAck := ""
+	c := Config{AckEmoji: &noAck, QuickModels: []QuickModel{q("eyes", "m")}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("eyes is free when the ack is off: %v", err)
+	}
+}

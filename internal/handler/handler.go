@@ -357,6 +357,14 @@ type Config struct {
 	// confirmation cycle whose arming message must not be shadowed.
 	ReactionTrigger func(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool
 
+	// QuickModels is the emoji model switcher's shortlist; empty turns
+	// the switcher off. QuickMenuEmoji opens the menu and QuickSweepEmoji
+	// applies a switch to all sessions. Both must be set when
+	// QuickModels is. See quickmodel.go.
+	QuickModels     []QuickModel
+	QuickMenuEmoji  string
+	QuickSweepEmoji string
+
 	// ArchiveStreamID and ArchiveChannel are the destination of the
 	// archive control: the channel a topic is MOVED to when someone
 	// reacts :wastebasket: to the relay's last message or types
@@ -608,6 +616,10 @@ type Handler struct {
 	archiveMu      sync.Mutex
 	archivePending map[string]*pendingArchive
 
+	// quickConfirms maps a switch confirmation the relay posted to the
+	// model it names, so a sweep emoji on it knows what to sweep.
+	quickConfirms *msgIndex
+
 	// lookupMu, lookupStart, lookupCount and lookupWarned are the token
 	// bucket in front of the reaction path's GET /messages/{id}.
 	lookupMu     sync.Mutex
@@ -673,6 +685,7 @@ func New(cfg Config) (*Handler, error) {
 		branchedMsgs:   newMsgIndex(reactionIndexSize),
 		lastOwn:        map[string]int64{},
 		archivePending: map[string]*pendingArchive{},
+		quickConfirms:  newMsgIndex(reactionIndexSize),
 		reactPending:   map[string]*reactionBatch{},
 		lookupStart:    cfg.Now(),
 	}
@@ -1353,6 +1366,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Sessions.Touch(sess)
+	h.applyDefaultModel(conv.ID)
 	h.convo.ApplyModel(ctx, conv.ID, sess.SessionID)
 	h.resolveModelInfo(sink, sess.SessionID)
 
