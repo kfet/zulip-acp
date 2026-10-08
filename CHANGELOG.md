@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-08
+
 ### Added
 
 - Emoji model switcher (`quick_models`): `:gear:` posts a menu, an entry emoji switches the topic, `:www:` on the confirmation applies it to all sessions and new topics. The relay handles it; the agent never sees these reactions.
