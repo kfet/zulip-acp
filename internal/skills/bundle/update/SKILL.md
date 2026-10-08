@@ -160,6 +160,31 @@ wired up in `internal/updater`) precisely so nobody has to reproduce it by
 hand — and a hand-placed binary is invisible to `dist.lock`, so the next
 converge silently disagrees with the host.
 
+## The `quick_models` block (emoji model switcher)
+
+Converge completes `config.json` with a `quick_models` block. It never
+replaces a block that the user owns. It decides in this order:
+
+1. The merged spec's `config.quick_models` is set: converge renders it as it is.
+2. The host's current `config.json` has `quick_models`: converge keeps it,
+   with `quick_models_menu_emoji` and `quick_models_sweep_emoji`.
+3. Neither: converge builds a default block from `quick_models_catalog` in
+   `distro.json` (or the bot spec). It keeps only the entries whose `provider`
+   has a fir login on THAT host — the key names of `~/.config/fir/auth.json`,
+   `provider#account` counts as `provider` — in catalog order, at most 5. No
+   secret crosses the wire, only the key names. No match: no block, and
+   converge says so.
+
+The models are configuration, never code: edit the catalog to change the
+default, and edit the host's block (or set one in the spec) to change one host.
+To regenerate a host's default, delete its block and converge again. Converge
+rejects a catalog entry without a provider, emoji or model, and a duplicate
+emoji. `converge.sh render <bot> config` does not show a host-derived block,
+because it does not read the host.
+
+After you add a login on a host, the default does NOT grow by itself: the
+host already has a block, and converge keeps it. Delete the block first.
+
 ## Inputs
 
 Confirm with the user before acting:

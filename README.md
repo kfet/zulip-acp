@@ -550,6 +550,12 @@ message that is not a confirmation (or one from before a restart) only
 replies; it never reaches the agent. A model the agent does
 not offer is marked in the menu, logged as a warning, and refused on tap.
 
+On a fleet host, `scripts/converge.sh` writes a default `quick_models` block
+when the host has none. It builds the block from `quick_models_catalog` in
+`distro.json`, filtered to the providers the host's fir has a login for. It
+never overwrites a block that is already on the host or in the bot spec. See
+the `update` skill.
+
 ### Branching a topic (`!branch`)
 
 An idea surfaces in the middle of a conversation and deserves a topic of its

@@ -443,6 +443,43 @@ echo '{"x":1}' >"$cfg_path"
 nbaks=$(find "$fake" -name "*.bak-*" | wc -l)
 [ "$nbaks" -eq 1 ] && ok "backup created on overwrite" || bad "expected 1 backup, got $nbaks"
 
+echo "== quick_models: default from the host's fir logins, never over a user block"
+fake4="$tmpd/fakehost4"
+mkdir -p "$fake4/.local/bin" "$fake4/.config/fir" "$(dirname "${env_file/$fake/$fake4}")"
+echo 'ZULIP_API_KEY=stub' >"${env_file/$fake/$fake4}"
+cp "$fake/.local/bin/zulip-acp" "$fake4/.local/bin/"
+cfg4=${cfg_path/$fake/$fake4}
+out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
+case "$out" in *"no catalog provider has a fir login"*) ok "no logins: no block, and it says so" ;; *) bad "expected the no-login note"; echo "$out" ;; esac
+jq -e 'has("quick_models") | not' "$cfg4" >/dev/null && ok "no logins: no quick_models written" || bad "no logins must write no block"
+echo '{"anthropic":{"access":"SECRET"},"poe#work":{},"nosuchprovider":{}}' >"$fake4/.config/fir/auth.json"
+out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
+got=$(jq -c '[.quick_models[].emoji]' "$cfg4")
+want=$(jq -c '[.quick_models_catalog[] | select(.provider == "anthropic" or .provider == "poe") | .emoji]' "$ROOT/distro.json")
+[ "$got" = "$want" ] && ok "default block = catalog entries with a login ($got)" || bad "wanted $want, got $got"
+grep -q SECRET "$cfg4" && bad "a secret leaked into config.json" || ok "no secret crosses into config.json"
+jq -e '.quick_models | all(has("provider") | not)' "$cfg4" >/dev/null && ok "catalog-only keys are dropped" || bad "provider key leaked"
+out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
+case "$out" in *"config"*"✓"*) ok "the default block is stable on a second apply" ;; *) bad "second apply must be a no-op"; echo "$out" ;; esac
+jq '.quick_models = [{"emoji":"fish","model":"sakana/ultra"}] | .quick_models_menu_emoji = "tools"' "$cfg4" >"$cfg4.new" && mv "$cfg4.new" "$cfg4"
+out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
+jq -e '.quick_models == [{"emoji":"fish","model":"sakana/ultra"}] and .quick_models_menu_emoji == "tools"' "$cfg4" >/dev/null \
+  && ok "a user block on the host is never overwritten" || bad "user block was overwritten: $(cat "$cfg4")"
+case "$out" in *"kept the host's own block"*) ok "keeping the host block is reported" ;; *) bad "expected the keep note"; echo "$out" ;; esac
+jq '.config.quick_models = [{"emoji":"star","model":"astra/best"}]' "$ROOT/distro.json" >"$tmpd/distro-q.json"
+FLEET_DISTRO="$tmpd/distro-q.json" "$CONVERGE" "$BOT" --target-root "$fake4" --apply >/dev/null
+jq -e '.quick_models == [{"emoji":"star","model":"astra/best"}]' "$cfg4" >/dev/null \
+  && ok "a spec block wins over the host and the catalog" || bad "spec block not rendered: $(cat "$cfg4")"
+for badcat in '"x"' '[{"provider":"a","emoji":"","model":"m"}]' \
+              '[{"provider":"a","emoji":"e","model":"m"},{"provider":"b","emoji":"e","model":"n"}]'; do
+  jq --argjson c "$badcat" '.quick_models_catalog = $c' "$ROOT/distro.json" >"$tmpd/distro-bad.json"
+  if FLEET_DISTRO="$tmpd/distro-bad.json" "$CONVERGE" "$BOT" --target-root "$fake4" >/dev/null 2>&1; then
+    bad "bad catalog accepted: $badcat"
+  else
+    ok "bad catalog rejected: $badcat"
+  fi
+done
+
 echo "== fake-target recycle (stubbed systemd + /proc: graceful reload vs hard restart)"
 # The stub models zulip-acp's actual shape: ONE tracked process whose pid never
 # moves across a reload, whose in-memory image (proc/<pid>/exe) is what the

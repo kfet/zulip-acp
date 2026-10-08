@@ -313,6 +313,73 @@ validate_spec() {
     esac
   done
   validate_require
+  validate_quick_catalog
+}
+
+# validate_quick_catalog — `quick_models_catalog` (optional) is the list
+# converge picks a host's default `quick_models` from. Each entry needs a
+# provider, an emoji and a model, and no two entries may share an emoji: the
+# relay refuses to start on a duplicate, so a bad catalog must die here.
+validate_quick_catalog() {
+  local t
+  t=$(jq -r 'if has("quick_models_catalog") then (.quick_models_catalog | type) else "absent" end' "$SPEC")
+  case "$t" in
+    absent) return 0 ;;
+    array) : ;;
+    *) die "quick_models_catalog must be an array (got $t)" ;;
+  esac
+  jq -e '.quick_models_catalog | all(
+           (.provider|type)=="string" and .provider!="" and
+           (.emoji|type)=="string" and .emoji!="" and
+           (.model|type)=="string" and .model!="")' "$SPEC" >/dev/null \
+    || die "quick_models_catalog: every entry needs a non-empty provider, emoji and model"
+  jq -e '.quick_models_catalog | (map(.emoji) | length) == (map(.emoji) | unique | length)' "$SPEC" >/dev/null \
+    || die "quick_models_catalog: duplicate emoji"
+}
+
+# host_fir_providers — the providers the target's fir has a login for, one
+# per line: the top-level keys of ~/.config/fir/auth.json, account suffix
+# (provider#account) stripped. Only the key names cross the wire, never a
+# secret. Empty when there is no auth file or no jq on the target.
+host_fir_providers() {
+  rsh 'f="$HOME/.config/fir/auth.json"; if [ -f "$f" ] && command -v jq >/dev/null 2>&1; then jq -r "keys[] | split(\"#\")[0]" "$f" | sort -u; fi' \
+    || die "failed reading the fir logins on the target (ssh/transport error?)"
+}
+
+# fill_quick_models <want-file> <config-path> — complete the desired
+# config.json with a `quick_models` block, without ever replacing one the
+# user owns:
+#   1. the spec's config has quick_models  -> it is the user's block; keep it.
+#   2. the host's config.json has one      -> keep the host's block (and its
+#                                             menu/sweep emoji keys).
+#   3. otherwise                           -> build one from the spec's
+#      quick_models_catalog, keeping only the providers this host's fir has a
+#      login for, at most 5 entries. No catalog or no match: no block.
+fill_quick_models() {
+  local want=$1 cfg=$2 have tmp provs
+  jq -e '.quick_models' "$want" >/dev/null 2>&1 && return 0
+  have=$(mktemp "$TMPD/have.XXXXXX"); rcat "$cfg" >"$have"
+  tmp=$(mktemp "$TMPD/want.XXXXXX")
+  if jq -e '.quick_models' "$have" >/dev/null 2>&1; then
+    jq --slurpfile h "$have" '. + ($h[0] | with_entries(select(.key |
+          IN("quick_models", "quick_models_menu_emoji", "quick_models_sweep_emoji"))))' \
+      "$want" >"$tmp" && mv "$tmp" "$want"
+    note "quick_models: kept the host's own block"
+    rm -f "$have"; return 0
+  fi
+  rm -f "$have"
+  [ "$(jqs '.agent.kind')" = "fir" ] || return 0
+  jq -e '(.quick_models_catalog // []) | length > 0' "$SPEC" >/dev/null || return 0
+  provs=$(host_fir_providers | jq -R . | jq -sc .)
+  jq --slurpfile s "$SPEC" --argjson p "$provs" '
+      ([ ($s[0].quick_models_catalog // [])[] | select(.provider as $x | $p | index($x)) ][:5]
+       | map({emoji, model} + (if .label then {label} else {} end))) as $q
+      | if ($q | length) > 0 then . + {quick_models: $q} else . end' "$want" >"$tmp" && mv "$tmp" "$want"
+  if jq -e '.quick_models' "$want" >/dev/null; then
+    note "quick_models: default built from the host's fir logins ($(jq -r '[.quick_models[].model] | join(", ")' "$want"))"
+  else
+    note "quick_models: no catalog provider has a fir login on this host; none written"
+  fi
 }
 
 # validate_require — the `require` block, if present, must be an object whose
@@ -849,6 +916,7 @@ converge() {
   [ -n "$cfg_path" ] || cfg_path="~/.config/zulip-acp/config.json"
   want_file=$(mktemp "$TMPD/want.XXXXXX")
   render_config >"$want_file"
+  fill_quick_models "$want_file" "$cfg_path"
   if diff_artifact "config.json" "$cfg_path" "$want_file"; then
     note "config $cfg_path ✓"
   else

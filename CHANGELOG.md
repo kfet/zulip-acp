@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/converge.sh` writes a default `quick_models` block into a host's `config.json` when it has none, built from `quick_models_catalog` in `distro.json` and the host's fir logins. It never overwrites an existing block.
+
 ## [0.50.0] - 2026-10-08
 
 ### Added

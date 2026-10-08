@@ -34,5 +34,37 @@
   },
   "credentials": {
     "env_file": "~/.config/zulip-acp/env"
-  }
+  },
+  "quick_models_catalog": [
+    {
+      "provider": "anthropic",
+      "emoji": "brain",
+      "model": "anthropic/claude-opus-5-5",
+      "label": "Anthropic · Opus 5.5"
+    },
+    {
+      "provider": "openai-codex",
+      "emoji": "robot",
+      "model": "openai-codex/gpt-5.5",
+      "label": "Codex · GPT-5.5"
+    },
+    {
+      "provider": "github-copilot",
+      "emoji": "octopus",
+      "model": "github-copilot/claude-sonnet-5.5",
+      "label": "Copilot · Sonnet 5.5"
+    },
+    {
+      "provider": "poe",
+      "emoji": "speech_balloon",
+      "model": "poe/claude-sonnet-5.5",
+      "label": "Poe · Sonnet 5.5"
+    },
+    {
+      "provider": "openrouter",
+      "emoji": "globe_with_meridians",
+      "model": "openrouter/anthropic/claude-opus-5.5",
+      "label": "OpenRouter · Opus 5.5"
+    }
+  ]
 }
