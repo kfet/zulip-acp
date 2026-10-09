@@ -184,6 +184,11 @@ func (h *Handler) beforeFilters() []convo.Filter {
 			}
 			md := metaOf(in)
 			token := md.key.Token()
+			// Immediate ack: an update can run for minutes before the
+			// reply. Not :eyes: — that means "the agent is on it".
+			if err := h.cfg.Client.AddReaction(ctx, md.m.ID, updateAckEmoji); err != nil {
+				h.cfg.Logf("handler: !update ack reaction: %v", err)
+			}
 			res := h.cfg.Updater.Handle(ctx, update.Request{
 				ConvID: token, Requester: strconv.FormatInt(md.m.SenderID, 10),
 				Who: senderName(md.m), Text: in.Text,
@@ -648,3 +653,7 @@ func (h *Handler) resetSession(token string) error {
 func (h *Handler) StopTurn(token string) bool {
 	return h.ctl().(command.TurnStopper).StopTurn(token)
 }
+
+// updateAckEmoji is the relay's instant receipt for `!update`,
+// `!upgrade` and `!restart`, distinct from the agent's :eyes:.
+const updateAckEmoji = "hourglass_flowing_sand"

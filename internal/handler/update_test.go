@@ -65,6 +65,12 @@ func TestUpdateCommandOwnerOnlyAndHelp(t *testing.T) {
 	if !strings.Contains(got, "Reload failed: boom") || reloads != 1 {
 		t.Fatalf("reply = %q", got)
 	}
+	hh.z.mu.Lock()
+	acks := strings.Join(hh.z.reactAdd, ",")
+	hh.z.mu.Unlock()
+	if !strings.Contains(acks, ":"+updateAckEmoji) || strings.Contains(acks, ":eyes") {
+		t.Fatalf("!update ack reactions = %q", acks)
+	}
 	if out := h.CancelAll(); len(out) != 0 {
 		t.Fatal(out)
 	}
