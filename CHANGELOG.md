@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-09
+
 ### Added
 
 - A reload drain that hits its deadline logs each blocking topic with its turn age.
