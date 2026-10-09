@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Relay MCP `list_children` tool and `history(child: …)`: a session can list and read, in full, the topics branched directly out of it. Each child is confirmed from its branch-point message; grandchildren are not reachable. A topic rename now carries the parent pointers of its children.
 
+### Fixed
+
+- `!update` on a Homebrew host: the relay keeps the `fir` PATH symlink, not the resolved Cellar path. The version report and the `.prev` rollback copy now survive Homebrew's Cellar move.
+
 ## [0.53.0] - 2026-10-09
 
 ### Fixed
