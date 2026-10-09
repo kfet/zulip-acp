@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-09
+
+### Fixed
+
+- Status line model label for gateway routes: `bifrost/bedrock/global.claude-opus-5-5` now shows `🌈 opus-5.5`, not `bedrock/glob` (acp-kit v0.34.0).
+
 ## [0.52.0] - 2026-10-09
 
 ### Added
