@@ -477,6 +477,30 @@ an ambient channel), where there is no origin session to ask.
   parent to the fresh conversation exactly as it carries the `!opts` panel id:
   `!new` clears the context, it does not un-branch the topic.
 
+#### Reading down: the direct children
+
+The reverse direction is also one hop. **A session may read, in full, the
+topics branched DIRECTLY out of it.** `list_children` lists them with topic,
+conv_id, `#channel>topic` link and last activity; `history(child: <conv_id or
+topic>)` reads one. A child read is not clamped: the child was opened from
+here, so all of it is this conversation's own work.
+
+- **The journal pointer is only the candidate list.** `Journal.Children`
+  returns the live conversations whose parent pointer names the caller.
+  `Handler.ConvChildren` then confirms each one from its branch-point message,
+  exactly as `ConvOrigin` does. It then reads the child's CURRENT location
+  from the relay's own last message in it (`LastOwnID`), because the child's
+  journal key rots the same way a parent's does. A child that does not resolve
+  back to the caller, a DM, and a child that cannot be placed or whose channel
+  is no longer served are dropped. At most `zulipmcp.MaxChildren`, the most
+  recently active, are resolved per call: each costs Zulip reads.
+- **`Journal.Move` carries the pointers.** A rename or move of a parent
+  rewrites its children's parent keys in the same commit, so a renamed topic
+  keeps its children and a LATER topic of the old name gets none.
+- **No grandchildren.** `child` matches only the caller's own children, and
+  `Children` is asked for the caller alone. `child` and `origin` cannot be
+  combined.
+
 #### Ordering, and what degrades
 
 Nothing is created until every refusal has been checked: the destination

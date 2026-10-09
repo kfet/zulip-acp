@@ -264,13 +264,14 @@ func runRelayChild() {
 		fatalChild("mcphost.New: %v", err)
 	}
 	tools, err := zulipmcp.NewTools(zulipmcp.Config{
-		Client:  &stubMessages{gen: gen},
-		ConvKey: func(k string) (journal.Key, bool) { return journal.Channel(streamID, topic), k == convID },
-		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
-		Rename:  func(journal.Key, string) (string, error) { return "", nil },
-		Branch:  func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
-		Timeout: 10 * time.Second,
-		Logf:    func(string, ...any) {},
+		Client:   &stubMessages{gen: gen},
+		ConvKey:  func(k string) (journal.Key, bool) { return journal.Channel(streamID, topic), k == convID },
+		Origin:   func(string) (journal.Parent, bool) { return journal.Parent{}, false },
+		Children: func(string) ([]zulipmcp.Child, bool) { return nil, true },
+		Rename:   func(journal.Key, string) (string, error) { return "", nil },
+		Branch:   func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
+		Timeout:  10 * time.Second,
+		Logf:     func(string, ...any) {},
 	})
 	if err != nil {
 		fatalChild("zulipmcp.NewTools: %v", err)

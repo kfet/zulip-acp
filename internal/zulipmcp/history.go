@@ -89,6 +89,12 @@ type Config struct {
 	// of the parent, so a chain of branches does not accumulate into a
 	// licence to read the whole realm.
 	Origin func(sessionKey string) (journal.Parent, bool)
+	// Children maps the same session key to the conversations branched
+	// DIRECTLY out of this one. Required, and it is the entire
+	// permission model of `history(child: …)` and `list_children`: a
+	// session may read the topics it branched out, in full, and nothing
+	// else. ONE HOP, as Origin is. ok=false rejects the call.
+	Children func(sessionKey string) ([]Child, bool)
 	// Rename arms a rename of the conversation's topic, to be applied
 	// when the turn ends. Required; it is the Handler's, because a
 	// rename must not land while the turn is still posting into the
@@ -135,6 +141,9 @@ func NewTools(cfg Config) (*Tools, error) {
 	}
 	if cfg.Origin == nil {
 		return nil, errors.New("zulipmcp: Origin is required")
+	}
+	if cfg.Children == nil {
+		return nil, errors.New("zulipmcp: Children is required")
 	}
 	if cfg.Rename == nil {
 		return nil, errors.New("zulipmcp: Rename is required")
@@ -184,6 +193,19 @@ type caller struct {
 	// origin resolves the conversation this one was branched from.
 	// There is deliberately no grandparent: see Config.Origin.
 	origin func() (journal.Parent, bool)
+	// children resolves the conversations branched directly out of
+	// this one. A thunk for the same reason origin is.
+	children func() ([]Child, bool)
+}
+
+// Child is one conversation branched directly out of the caller's.
+type Child struct {
+	// ConvID is the child's stable conversation id.
+	ConvID string
+	// Key is where the child is now.
+	Key journal.Key
+	// Link is the child's `#**channel>topic**` mention.
+	Link string
 }
 
 // Tools builds the tool set as data.
@@ -195,9 +217,11 @@ func (t *Tools) Tools() []Tool {
 			"session started, or before the context was cleared. Long replies are truncated: page " +
 			"further back with before_id. With origin=true it instead reads the conversation THIS " +
 			"topic was branched out of, up to the moment of the branch — available only when the relay " +
-			"opened this topic with `!branch`, the fork reaction or the `branch` tool. Those two are the only conversations it can ever read; " +
-			"there is no way to address any other topic or DM, and the origin's own origin is not " +
-			"reachable.",
+			"opened this topic with `!branch`, the fork reaction or the `branch` tool. With child=<conv_id or topic> it " +
+			"instead reads, in full, a topic branched DIRECTLY out of this one (see " + ToolListChildren + "). " +
+			"This conversation, its origin and its direct children are the only conversations it can ever read; " +
+			"there is no way to address any other topic or DM, and neither the origin's origin nor a child's " +
+			"children are reachable.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -220,27 +244,43 @@ func (t *Tools) Tools() []Tool {
 						"origin's later messages are not yours to read. Fails when this topic was not " +
 						"branched from anything.",
 				},
+				"child": map[string]any{
+					"type": "string",
+					"description": "Read a topic branched DIRECTLY out of this one, in full — not clamped. " +
+						"Give its conv_id or its topic name, as " + ToolListChildren + " shows them. " +
+						"Fails for anything that is not a direct child. Cannot be combined with origin.",
+				},
 			},
 		},
 		Handler: t.wrap(func(c caller, args json.RawMessage) (string, error) {
 			var a struct {
-				Limit    int   `json:"limit"`
-				BeforeID int64 `json:"before_id"`
-				Origin   bool  `json:"origin"`
+				Limit    int    `json:"limit"`
+				BeforeID int64  `json:"before_id"`
+				Origin   bool   `json:"origin"`
+				Child    string `json:"child"`
 			}
 			if err := decode(args, &a); err != nil {
 				return "", err
 			}
-			return t.history(c, a.Limit, a.BeforeID, a.Origin)
+			return t.history(c, a.Limit, a.BeforeID, a.Origin, a.Child)
 		}),
-	}, t.renameTool(), t.branchTool()}
+	}, t.listChildrenTool(), t.renameTool(), t.branchTool()}
 }
 
 // history fetches and renders one page, of this conversation or of its
 // origin.
-func (t *Tools) history(c caller, limit int, beforeID int64, origin bool) (string, error) {
+func (t *Tools) history(c caller, limit int, beforeID int64, origin bool, child string) (string, error) {
 	if limit < 0 || beforeID < 0 {
 		return "", errors.New("limit and before_id must not be negative")
+	}
+	child = strings.TrimSpace(child)
+	if origin && child != "" {
+		return "", errors.New("origin and child cannot be combined: read one conversation at a time")
+	}
+	where := whichConv(origin)
+	again := ""
+	if origin {
+		again = "origin=true and "
 	}
 	clamped := false
 	switch {
@@ -268,6 +308,17 @@ func (t *Tools) history(c caller, limit int, beforeID int64, origin bool) (strin
 			beforeID = limitID
 		}
 	}
+	if child != "" {
+		ch, err := c.child(child)
+		if err != nil {
+			return "", err
+		}
+		// No clamp: a child was opened FROM here, so all of it is this
+		// conversation's own work.
+		key = ch.Key
+		where = "the child conversation " + ch.Link
+		again = fmt.Sprintf("child=%q and ", ch.ConvID)
+	}
 	var narrow []zulipproto.NarrowTerm
 	if key.IsDM() {
 		// A DM is in no channel, so a channel narrow would match
@@ -282,8 +333,8 @@ func (t *Tools) history(c caller, limit int, beforeID int64, origin bool) (strin
 	if err != nil {
 		return "", err
 	}
-	t.cfg.Logf("zulipmcp: history read %d message(s) in %s (%s)", len(msgs), key.Label(), whichConv(origin))
-	return render(msgs, clamped, origin), nil
+	t.cfg.Logf("zulipmcp: history read %d message(s) in %s (%s)", len(msgs), key.Label(), where)
+	return render(msgs, clamped, where, again), nil
 }
 
 // whichConv names the conversation a reply is about. The empty page in
@@ -302,8 +353,7 @@ func whichConv(origin bool) string {
 // Messages arrive oldest first. The budget is spent NEWEST first and
 // the result reversed, so what survives a bound is the recent end of
 // the conversation, and before_id names the oldest that did survive.
-func render(msgs []zulipproto.Message, clamped, origin bool) string {
-	where := whichConv(origin)
+func render(msgs []zulipproto.Message, clamped bool, where, again string) string {
 	if len(msgs) == 0 {
 		return "No earlier messages in " + where + "."
 	}
@@ -342,10 +392,6 @@ func render(msgs []zulipproto.Message, clamped, origin bool) string {
 	}
 	if truncated {
 		fmt.Fprintf(&sb, "\nMessage bodies longer than %d characters were truncated.", MaxMessageRunes)
-	}
-	again := ""
-	if origin {
-		again = "origin=true and "
 	}
 	fmt.Fprintf(&sb, "\nTo read further back, call %s again with %sbefore_id=%d.", ToolHistory, again, oldestID)
 	return sb.String()
@@ -388,6 +434,9 @@ func (t *Tools) wrap(fn func(c caller, args json.RawMessage) (string, error)) mc
 			session: sessionKey,
 			key:     key,
 			origin:  func() (journal.Parent, bool) { return t.cfg.Origin(sessionKey) },
+			children: func() ([]Child, bool) {
+				return t.cfg.Children(sessionKey)
+			},
 		}, args)
 	}
 }

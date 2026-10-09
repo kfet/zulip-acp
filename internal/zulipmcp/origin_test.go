@@ -109,9 +109,10 @@ func TestHistoryOriginIsOneHop(t *testing.T) {
 			asked = append(asked, k)
 			return journal.Parent{Key: journal.Channel(4, "child"), MessageID: 500}, true
 		},
-		Rename: func(journal.Key, string) (string, error) { return "", nil },
-		Branch: noBranch,
-		Logf:   func(string, ...any) {},
+		Children: noKids,
+		Rename:   func(journal.Key, string) (string, error) { return "", nil },
+		Branch:   noBranch,
+		Logf:     func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
@@ -170,7 +171,7 @@ func TestHistoryWithoutOriginStillReadsHere(t *testing.T) {
 // conversation was empty, or an agent reading its origin cannot tell
 // "nothing there" from "wrong place".
 func TestRenderNamesTheConversationItRead(t *testing.T) {
-	if got := render(nil, false, true); !strings.Contains(got, "the origin conversation") {
+	if got := render(nil, false, "the origin conversation", "origin=true and "); !strings.Contains(got, "the origin conversation") {
 		t.Fatalf("render = %q", got)
 	}
 }

@@ -30,12 +30,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/schedule"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
+	"github.com/kfet/zulip-acp/internal/zulipmcp"
 )
 
 // scheduledSender is the name a scheduled prompt is attributed to. Turns
@@ -151,6 +153,78 @@ func (h *Handler) resolveOrigin(c journal.Conv) (journal.Parent, bool) {
 	}
 	parent.Key = journal.Channel(m.StreamID, m.Topic)
 	return parent, true
+}
+
+// ConvChildren maps an MCP session key to the conversations branched
+// DIRECTLY out of this one — by the `branch` tool, `!branch` or the
+// fork reaction. It is zulipmcp.Config.Children, and the whole
+// permission surface of `history(child: …)` and `list_children`.
+//
+// ONE HOP, as ConvOrigin is: a child's own children are not returned.
+//
+// The journal's parent pointer is only the candidate list. Every
+// candidate is then confirmed twice from Zulip: its branch-point
+// message must place its parent at the caller, exactly as ConvOrigin
+// confirms an origin, and its own location is read back by
+// childLocation. A pointer or a key that has rotted grants nothing.
+func (h *Handler) ConvChildren(sessionKey string) ([]zulipmcp.Child, bool) {
+	c, ok := h.cfg.Journal.LookupID(sessionKey)
+	if !ok {
+		return nil, false
+	}
+	cands := h.cfg.Journal.Children(c.Key)
+	// Each candidate costs two Zulip reads. Keep the most recently
+	// active ones, so one call cannot burn the rate limit or block the
+	// turn for minutes.
+	sort.SliceStable(cands, func(a, b int) bool { return cands[a].LastOwnID > cands[b].LastOwnID })
+	if len(cands) > zulipmcp.MaxChildren {
+		h.cfg.Logf("handler: %s has %d children; resolving the newest %d", c.ID, len(cands), zulipmcp.MaxChildren)
+		cands = cands[:zulipmcp.MaxChildren]
+	}
+	var out []zulipmcp.Child
+	for _, ch := range cands {
+		p, ok := h.resolveOrigin(ch)
+		if !ok || !p.Key.Same(c.Key) {
+			h.cfg.Logf("handler: %s is not confirmed as a child of %s; leaving it out", ch.ID, c.ID)
+			continue
+		}
+		key, channel, ok := h.childLocation(ch)
+		if !ok {
+			continue
+		}
+		out = append(out, zulipmcp.Child{
+			ConvID: ch.ID,
+			Key:    key,
+			Link:   topicMention(channel, key.Topic),
+		})
+	}
+	return out, true
+}
+
+// childLocation reads where a child conversation is NOW, from the
+// newest message the relay posted in it — at the least, the branch
+// seed. The journal key is only a cache: a topic moved while the relay
+// was not watching leaves it pointing at whatever later takes the old
+// name. A child the relay has posted nothing in, a DM, and a child in
+// a channel the relay no longer serves are refused.
+func (h *Handler) childLocation(ch journal.Conv) (journal.Key, string, bool) {
+	if ch.IsDM() || ch.LastOwnID == 0 {
+		h.cfg.Logf("handler: not reading child %s: it is a DM or holds no relay message", ch.ID)
+		return journal.Key{}, "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), originTimeout)
+	defer cancel()
+	m, err := h.cfg.Client.GetMessage(ctx, ch.LastOwnID)
+	if err != nil || m.IsDM() || m.StreamID == 0 {
+		h.cfg.Logf("handler: not reading child %s: message %d does not place it (%v)", ch.ID, ch.LastOwnID, err)
+		return journal.Key{}, "", false
+	}
+	channel, served := h.cfg.Channels.Name(m.StreamID)
+	if !served {
+		h.cfg.Logf("handler: not reading child %s: channel %d is no longer served", ch.ID, m.StreamID)
+		return journal.Key{}, "", false
+	}
+	return journal.Channel(m.StreamID, m.Topic), channel, true
 }
 
 // originTimeout bounds the single message read ConvOrigin costs. The

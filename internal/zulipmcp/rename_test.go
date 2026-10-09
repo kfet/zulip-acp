@@ -21,9 +21,10 @@ func renameTools(t *testing.T, key journal.Key, reply string, rerr error) (*Tool
 	t.Helper()
 	var calls []renameCall
 	tools, err := NewTools(Config{
-		Client:  &fakeClient{},
-		ConvKey: func(k string) (journal.Key, bool) { return key, k == "c1" },
-		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
+		Client:   &fakeClient{},
+		ConvKey:  func(k string) (journal.Key, bool) { return key, k == "c1" },
+		Origin:   func(string) (journal.Parent, bool) { return journal.Parent{}, false },
+		Children: noKids,
 		Rename: func(k journal.Key, title string) (string, error) {
 			calls = append(calls, renameCall{k, title})
 			return reply, rerr

@@ -18,10 +18,11 @@ func branchTools(t *testing.T, key journal.Key, res []BranchResult, berr error) 
 	var got []BranchTask
 	var session string
 	tools, err := NewTools(Config{
-		Client:  &fakeClient{},
-		ConvKey: func(k string) (journal.Key, bool) { return key, k == "c1" },
-		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
-		Rename:  func(journal.Key, string) (string, error) { return "", nil },
+		Client:   &fakeClient{},
+		ConvKey:  func(k string) (journal.Key, bool) { return key, k == "c1" },
+		Origin:   func(string) (journal.Parent, bool) { return journal.Parent{}, false },
+		Children: noKids,
+		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch: func(s string, tasks []BranchTask) ([]BranchResult, error) {
 			session, got = s, tasks
 			return res, berr

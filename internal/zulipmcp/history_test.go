@@ -54,9 +54,10 @@ func newBranchedTools(t *testing.T, c *fakeClient, convID string, key journal.Ke
 			}
 			return *parent, true
 		},
-		Rename: func(journal.Key, string) (string, error) { return "armed", nil },
-		Branch: noBranch,
-		Logf:   func(string, ...any) {},
+		Children: noKids,
+		Rename:   func(journal.Key, string) (string, error) { return "armed", nil },
+		Branch:   noBranch,
+		Logf:     func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
@@ -71,7 +72,7 @@ func only(t *testing.T, tools *Tools) Tool { return pick(t, tools, ToolHistory) 
 func pick(t *testing.T, tools *Tools, name string) Tool {
 	t.Helper()
 	set := tools.Tools()
-	if len(set) != 3 {
+	if len(set) != 4 {
 		t.Fatalf("tool set = %+v", set)
 	}
 	for _, x := range set {
@@ -93,22 +94,25 @@ func TestNewToolsRequiresItsDependencies(t *testing.T) {
 	key := func(string) (journal.Key, bool) { return journal.Key{}, true }
 	origin := func(string) (journal.Parent, bool) { return journal.Parent{}, false }
 	rename := func(journal.Key, string) (string, error) { return "", nil }
-	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Client must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no ConvKey has no identity and must not construct")
 	}
 	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Origin must not construct: history(origin) would panic on the first call")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
+		t.Fatal("a Tools with no Children must not construct")
+	}
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Branch: noBranch}); err == nil {
 		t.Fatal("a Tools with no Rename must not construct: rename_topic would panic on the first call")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no Branch must not construct: branch would panic on the first call")
 	}
-	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch})
+	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
 	}
@@ -119,7 +123,9 @@ func TestNewToolsRequiresItsDependencies(t *testing.T) {
 }
 
 // TestSchemaTakesNoConversation pins the guarantee the design rests on:
-// there is nowhere in the tool's arguments to name a conversation.
+// there is nowhere in the tool's arguments to name an ARBITRARY
+// conversation. `child` names one only among the caller's own direct
+// children, which are resolved server-side from the token.
 func TestSchemaTakesNoConversation(t *testing.T) {
 	tools := newTools(t, &fakeClient{}, "c1", journal.Channel(4, "t"))
 	props, ok := only(t, tools).Schema["properties"].(map[string]any)
@@ -127,7 +133,7 @@ func TestSchemaTakesNoConversation(t *testing.T) {
 		t.Fatal("schema has no properties")
 	}
 	for name := range props {
-		if name != "limit" && name != "before_id" && name != "origin" {
+		if name != "limit" && name != "before_id" && name != "origin" && name != "child" {
 			t.Fatalf("unexpected parameter %q: a tool must not take a conversation", name)
 		}
 	}
@@ -224,12 +230,13 @@ func TestHistoryPropagatesClientErrors(t *testing.T) {
 func TestHistoryTimesOut(t *testing.T) {
 	blocked := make(chan struct{})
 	tools, err := NewTools(Config{
-		Client:  clientFunc(func(ctx context.Context) error { <-ctx.Done(); close(blocked); return ctx.Err() }),
-		ConvKey: func(string) (journal.Key, bool) { return journal.Channel(4, "t"), true },
-		Origin:  func(string) (journal.Parent, bool) { return journal.Parent{}, false },
-		Rename:  func(journal.Key, string) (string, error) { return "", nil },
-		Branch:  noBranch,
-		Timeout: time.Millisecond,
+		Client:   clientFunc(func(ctx context.Context) error { <-ctx.Done(); close(blocked); return ctx.Err() }),
+		ConvKey:  func(string) (journal.Key, bool) { return journal.Channel(4, "t"), true },
+		Origin:   func(string) (journal.Parent, bool) { return journal.Parent{}, false },
+		Children: noKids,
+		Rename:   func(journal.Key, string) (string, error) { return "", nil },
+		Branch:   noBranch,
+		Timeout:  time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
@@ -268,7 +275,7 @@ func TestRegisterInstallsOnAHost(t *testing.T) {
 // --- rendering -----------------------------------------------------------
 
 func TestRenderEmptyPage(t *testing.T) {
-	if got := render(nil, false, false); !strings.Contains(got, "No earlier messages") {
+	if got := render(nil, false, "this conversation", ""); !strings.Contains(got, "No earlier messages") {
 		t.Fatalf("render = %q", got)
 	}
 }
@@ -277,7 +284,7 @@ func TestRenderEmptyPage(t *testing.T) {
 // conversation in the order it happened, and is told how to go further
 // back without having to guess an id.
 func TestRenderIsOldestFirst(t *testing.T) {
-	got := render([]zulipproto.Message{msg(1, "Alice", "first"), msg(2, "bot", "second")}, false, false)
+	got := render([]zulipproto.Message{msg(1, "Alice", "first"), msg(2, "bot", "second")}, false, "this conversation", "")
 	if strings.Index(got, "first") > strings.Index(got, "second") {
 		t.Fatalf("not oldest first: %q", got)
 	}
@@ -294,7 +301,7 @@ func TestRenderIsOldestFirst(t *testing.T) {
 func TestRenderFallsBackToTheSenderEmail(t *testing.T) {
 	m := msg(1, "", "hi")
 	m.SenderEmail = "bot@example.com"
-	if got := render([]zulipproto.Message{m}, false, false); !strings.Contains(got, "bot@example.com") {
+	if got := render([]zulipproto.Message{m}, false, "this conversation", ""); !strings.Contains(got, "bot@example.com") {
 		t.Fatalf("render = %q", got)
 	}
 }
@@ -302,7 +309,7 @@ func TestRenderFallsBackToTheSenderEmail(t *testing.T) {
 // TestRenderTruncatesOneLongMessage: a single maximal Zulip message is
 // 10000 code points; the reply says when it cut one.
 func TestRenderTruncatesOneLongMessage(t *testing.T) {
-	got := render([]zulipproto.Message{msg(1, "Alice", strings.Repeat("é", MaxMessageRunes+50))}, false, false)
+	got := render([]zulipproto.Message{msg(1, "Alice", strings.Repeat("é", MaxMessageRunes+50))}, false, "this conversation", "")
 	if !strings.Contains(got, "[truncated]") || !strings.Contains(got, "were truncated") {
 		t.Fatalf("render = %q", got)
 	}
@@ -319,7 +326,7 @@ func TestRenderDropsTheOldestWhenTheTotalBinds(t *testing.T) {
 	for i := int64(1); i <= 40; i++ {
 		msgs = append(msgs, msg(i, "Alice", strings.Repeat("x", MaxMessageRunes)))
 	}
-	got := render(msgs, false, false)
+	got := render(msgs, false, "this conversation", "")
 	if n := utf8.RuneCountInString(got); n > MaxTotalRunes+500 {
 		t.Fatalf("reply not bounded: %d runes", n)
 	}
@@ -337,7 +344,7 @@ func TestRenderDropsTheOldestWhenTheTotalBinds(t *testing.T) {
 // TestRenderKeepsOneOversizeMessage: a single message bigger than the
 // whole budget must still come back, or the tool would answer nothing.
 func TestRenderKeepsOneOversizeMessage(t *testing.T) {
-	got := render([]zulipproto.Message{msg(9, "Alice", strings.Repeat("x", MaxTotalRunes*2))}, false, false)
+	got := render([]zulipproto.Message{msg(9, "Alice", strings.Repeat("x", MaxTotalRunes*2))}, false, "this conversation", "")
 	if !strings.Contains(got, "[#9 ") {
 		t.Fatalf("render = %q", got)
 	}

@@ -198,3 +198,89 @@ func TestBranchKeepsItsAuditRecord(t *testing.T) {
 		t.Fatalf("audit record = %+v", got.Parent)
 	}
 }
+
+// TestChildrenFollowTheirParent: Children returns the live, direct
+// children of a key; a rename of the parent carries the pointers with
+// it, and a failed commit puts them back.
+func TestChildrenFollowTheirParent(t *testing.T) {
+	j, path := openTemp(t)
+	origin := Channel(4, "origin")
+	if _, err := j.Ensure(origin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Branch(Channel(4, "a"), Parent{Key: origin, MessageID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Branch(Channel(4, "b"), Parent{Key: Channel(4, "✔ origin"), MessageID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Branch(Channel(4, "grand"), Parent{Key: Channel(4, "a"), MessageID: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := j.Retire(Channel(4, "b")); err != nil {
+		t.Fatal(err)
+	}
+	kids := j.Children(origin)
+	if len(kids) != 2 || kids[0].ID == kids[1].ID {
+		t.Fatalf("children = %+v", kids)
+	}
+
+	// A failed write leaves the pointers where they were.
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if _, _, err := j.Rename(4, "origin", "renamed"); err == nil {
+		t.Fatal("a failed write must be reported")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Children(origin)) != 2 {
+		t.Fatalf("a failed rename moved the pointers: %+v", j.Convs())
+	}
+
+	if _, ok, err := j.Rename(4, "origin", "renamed"); err != nil || !ok {
+		t.Fatalf("Rename: %v %v", ok, err)
+	}
+	if len(j.Children(origin)) != 0 || len(j.Children(Channel(4, "renamed"))) != 2 {
+		t.Fatalf("pointers did not follow the rename: %+v", j.Convs())
+	}
+	if !Channel(4, "✔ x").Same(Channel(4, "x")) || Channel(4, "x").Same(Channel(5, "x")) {
+		t.Fatal("Same")
+	}
+}
+
+// TestChildrenGoToTheSurvivorOfAMoveClash: a move onto a key that
+// already has a conversation drops the moved one, and its children
+// follow the key, never staying on the old name.
+func TestChildrenGoToTheSurvivorOfAMoveClash(t *testing.T) {
+	j, path := openTemp(t)
+	for _, k := range []Key{Channel(4, "old"), Channel(4, "new")} {
+		if _, err := j.Ensure(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.Branch(Channel(4, "kid"), Parent{Key: Channel(4, "old"), MessageID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := j.Rename(4, "old", "new"); err == nil {
+		t.Fatal("a failed write must be reported")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Children(Channel(4, "old"))) != 1 {
+		t.Fatal("a failed clash moved the pointer")
+	}
+	if _, ok, err := j.Rename(4, "old", "new"); err != nil || ok {
+		t.Fatalf("Rename = %v, %v", ok, err)
+	}
+	if len(j.Children(Channel(4, "old"))) != 0 || len(j.Children(Channel(4, "new"))) != 1 {
+		t.Fatalf("pointers = %+v", j.Convs())
+	}
+}

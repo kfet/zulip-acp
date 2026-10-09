@@ -680,10 +680,11 @@ func main() {
 		// through ConvKey — the same server-side binding, one layer
 		// earlier.
 		zulipTools, err := zulipmcp.NewTools(zulipmcp.Config{
-			Client:  zc,
-			ConvKey: func(k string) (journal.Key, bool) { return h.ConvKey(k) },
-			Origin:  func(k string) (journal.Parent, bool) { return h.ConvOrigin(k) },
-			Rename:  func(k journal.Key, title string) (string, error) { return h.RenameTopic(k, title) },
+			Client:   zc,
+			ConvKey:  func(k string) (journal.Key, bool) { return h.ConvKey(k) },
+			Origin:   func(k string) (journal.Parent, bool) { return h.ConvOrigin(k) },
+			Children: func(k string) ([]zulipmcp.Child, bool) { return h.ConvChildren(k) },
+			Rename:   func(k journal.Key, title string) (string, error) { return h.RenameTopic(k, title) },
 			Branch: func(k string, tasks []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 				return h.BranchTasks(k, tasks)
 			},

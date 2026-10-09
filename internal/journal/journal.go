@@ -599,21 +599,72 @@ func (j *Journal) Move(oldStreamID int64, oldTopic string, newStreamID int64, ne
 		// the migrated one become unreachable rather than leaving two
 		// conv-ids answering to the same key.
 		delete(j.byID, c.ID)
+		// The dropped conversation's children go to the one that keeps
+		// the key, or a later topic of the old name would inherit them.
+		moved := j.repointChildren(oldKey, newK)
 		out := *existing
 		return out, false, j.commit(func() {
+			for _, ch := range moved {
+				ch.Parent.Key = oldK
+			}
 			j.byID[c.ID] = c
 			j.byKey[oldKey] = c
 		})
 	}
 	c.StreamID, c.Topic = newStreamID, newTopic
 	j.byKey[newKey] = c
+	// The children follow their parent. Children reads the parent
+	// pointer by key, so a pointer left at the old key would orphan
+	// every branch of a renamed topic — and hand them to a LATER topic
+	// of the old name.
+	moved := j.repointChildren(oldKey, newK)
 	out := *c
 	return out, true, j.commit(func() {
+		for _, ch := range moved {
+			ch.Parent.Key = oldK
+		}
 		delete(j.byKey, newKey)
 		c.StreamID, c.Topic = oldStreamID, oldTopic
 		j.byKey[oldKey] = c
 	})
 }
+
+// repointChildren moves every parent pointer at oldIdx to k and
+// returns the conversations it changed. Caller holds mu.
+func (j *Journal) repointChildren(oldIdx string, k Key) []*Conv {
+	var moved []*Conv
+	for _, ch := range j.byID {
+		if ch.Parent != nil && ch.Parent.Key.index() == oldIdx {
+			ch.Parent.Key = k
+			moved = append(moved, ch)
+		}
+	}
+	return moved
+}
+
+// Children returns the live conversations BRANCHED directly out of k:
+// those whose parent pointer names k. Retired ones are left out — they
+// no longer answer to a topic. Ordered by conv-id.
+//
+// It is one hop by construction, exactly as the parent pointer is: a
+// child's own children are not returned.
+func (j *Journal) Children(k Key) []Conv {
+	idx := k.normalise().index()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []Conv
+	for _, c := range j.byID {
+		if !c.Retired && c.Parent != nil && c.Parent.Key.index() == idx {
+			out = append(out, *c)
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	return out
+}
+
+// Same reports whether k and o name the same conversation, ignoring
+// the resolved prefix and the order of DM participants.
+func (k Key) Same(o Key) bool { return k.normalise().index() == o.normalise().index() }
 
 // Retire replaces the conversation at k with a brand-new one, which is
 // what `!new` does. The old conversation keeps its id and its

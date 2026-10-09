@@ -595,10 +595,11 @@ func TestBranchedSessionReadsItsParentAndNothingElse(t *testing.T) {
 
 	reader := &branchMessages{}
 	tools, err := zulipmcp.NewTools(zulipmcp.Config{
-		Client:  reader,
-		ConvKey: func(k string) (journal.Key, bool) { return hh.h.ConvKey(k) },
-		Origin:  func(k string) (journal.Parent, bool) { return hh.h.ConvOrigin(k) },
-		Rename:  func(k journal.Key, title string) (string, error) { return hh.h.RenameTopic(k, title) },
+		Client:   reader,
+		ConvKey:  func(k string) (journal.Key, bool) { return hh.h.ConvKey(k) },
+		Origin:   func(k string) (journal.Parent, bool) { return hh.h.ConvOrigin(k) },
+		Children: func(k string) ([]zulipmcp.Child, bool) { return hh.h.ConvChildren(k) },
+		Rename:   func(k journal.Key, title string) (string, error) { return hh.h.RenameTopic(k, title) },
 		Branch: func(k string, ts []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 			return hh.h.BranchTasks(k, ts)
 		},
@@ -1257,5 +1258,128 @@ func TestBranchReactionDedupForgetsARetiredBranch(t *testing.T) {
 	}
 	if strings.Contains(hh.z.lastBody(), "already been branched") {
 		t.Fatalf("the tap was refused by a retired branch: %q", hh.z.lastBody())
+	}
+}
+
+// TestConvChildrenListsOnlyConfirmedDirectChildren: `!branch` records
+// the child, and the parent sees it — with its link — through the real
+// tool set. A pointer that names the parent but cannot be confirmed
+// from its branch-point message, a child in an unserved channel, a DM
+// and a grandchild are all left out.
+func TestConvChildrenListsOnlyConfirmedDirectChildren(t *testing.T) {
+	hh := branchHarness(t)
+	parent, err := hh.j.Ensure(journal.Channel(4, "planning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hh.branch(t, "planning", "!branch rework the splitter")
+	child, _ := hh.j.Lookup(journal.Channel(4, "rework the splitter"))
+	at := child.Parent.MessageID
+
+	// Pointers that name the parent but must not count.
+	if _, err := hh.j.Branch(journal.Channel(9, "unserved"), journal.Parent{Key: parent.Key, MessageID: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hh.j.Branch(journal.DM([]int64{1, 2}), journal.Parent{Key: parent.Key, MessageID: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hh.j.Branch(journal.Channel(4, "forged"), journal.Parent{Key: parent.Key, MessageID: 999999}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hh.j.Branch(journal.Channel(4, "grandchild"), journal.Parent{Key: child.Key, MessageID: at}); err != nil {
+		t.Fatal(err)
+	}
+
+	kids, ok := hh.h.ConvChildren(parent.ID)
+	if !ok || len(kids) != 1 || kids[0].ConvID != child.ID || kids[0].Link != "#**fleet>rework the splitter**" {
+		t.Fatalf("children = %+v, %v", kids, ok)
+	}
+	if _, ok := hh.h.ConvChildren("cdeadbeef"); ok {
+		t.Fatal("an unknown conv-id resolved to children")
+	}
+
+	// Through the tool: the parent reads its child in full.
+	reader := &branchMessages{}
+	tools, err := zulipmcp.NewTools(zulipmcp.Config{
+		Client:   reader,
+		ConvKey:  func(k string) (journal.Key, bool) { return hh.h.ConvKey(k) },
+		Origin:   func(k string) (journal.Parent, bool) { return hh.h.ConvOrigin(k) },
+		Children: func(k string) ([]zulipmcp.Child, bool) { return hh.h.ConvChildren(k) },
+		Rename:   func(journal.Key, string) (string, error) { return "", nil },
+		Branch:   func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range tools.Tools() {
+		if x.Name != zulipmcp.ToolHistory {
+			continue
+		}
+		if _, err := x.Handler(parent.ID, json.RawMessage(`{"child":"rework the splitter"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if reader.narrow[1].Operand != "rework the splitter" || reader.beforeID != 0 {
+			t.Fatalf("narrow %+v before %d: a child read is not clamped", reader.narrow, reader.beforeID)
+		}
+		if _, err := x.Handler(parent.ID, json.RawMessage(`{"child":"grandchild"}`)); err == nil {
+			t.Fatal("a grandchild must not be readable")
+		}
+	}
+}
+
+// TestConvChildrenReadsTheChildWhereItIsNow: the child's journal key
+// is a cache. Its location comes from the relay's own last message in
+// it, so a move the relay never saw is followed, and a child that
+// cannot be placed — unreadable, or moved out of the served set — is
+// left out. More children than MaxChildren are cut to the newest.
+func TestConvChildrenReadsTheChildWhereItIsNow(t *testing.T) {
+	hh := branchHarness(t)
+	parent, err := hh.j.Ensure(journal.Channel(4, "planning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hh.branch(t, "planning", "!branch rework the splitter")
+	child, _ := hh.j.Lookup(journal.Channel(4, "rework the splitter"))
+	at := child.Parent.MessageID
+
+	place := func(id, stream int64, topic string) {
+		hh.z.mu.Lock()
+		defer hh.z.mu.Unlock()
+		if hh.z.messages == nil {
+			hh.z.messages = map[int64]zulipproto.Message{}
+		}
+		hh.z.messages[id] = zulipproto.Message{ID: id, StreamID: stream, Topic: topic}
+	}
+	place(child.LastOwnID, 5, "moved away")
+
+	gone, _ := hh.j.Branch(journal.Channel(4, "gone"), journal.Parent{Key: parent.Key, MessageID: at})
+	if err := hh.j.SetLastOwn(gone.ID, 888888); err != nil {
+		t.Fatal(err)
+	}
+	unserved, _ := hh.j.Branch(journal.Channel(4, "unserved"), journal.Parent{Key: parent.Key, MessageID: at})
+	if err := hh.j.SetLastOwn(unserved.ID, 777777); err != nil {
+		t.Fatal(err)
+	}
+	place(777777, 9, "elsewhere")
+
+	kids, _ := hh.h.ConvChildren(parent.ID)
+	if len(kids) != 1 || kids[0].Link != "#**design>moved away**" || kids[0].Key.StreamID != 5 {
+		t.Fatalf("children = %+v", kids)
+	}
+
+	for i := range zulipmcp.MaxChildren {
+		c, err := hh.j.Branch(journal.Channel(4, fmt.Sprintf("extra %d", i)), journal.Parent{Key: parent.Key, MessageID: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := hh.j.SetLastOwn(c.ID, 1000000+int64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kids, _ = hh.h.ConvChildren(parent.ID)
+	for _, k := range kids {
+		if k.ConvID == child.ID {
+			t.Fatal("the oldest child was resolved past the cap")
+		}
 	}
 }
