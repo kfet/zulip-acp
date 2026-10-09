@@ -255,6 +255,11 @@ func childPID(root string, self int, bin string) int {
 	if bin == "" {
 		return 0
 	}
+	// bin may be a symlink (Homebrew's bin/fir -> Cellar/<ver>/bin/fir);
+	// /proc/<pid>/exe is always the resolved file.
+	if r, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = r
+	}
 	tasks, _ := filepath.Glob(filepath.Join(root, strconv.Itoa(self), "task", "*", "children"))
 	for _, t := range tasks {
 		b, _ := os.ReadFile(t)
@@ -276,7 +281,17 @@ func agentBinFor(argv []string) string {
 	if len(argv) == 0 || filepath.Base(argv[0]) != "fir" {
 		return ""
 	}
-	return resolveBin(argv[0])
+	// Keep the symlink: Homebrew moves the real file to a new Cellar
+	// version directory on update, so a resolved path goes stale
+	// (lost version, no .prev copy).
+	p, err := exec.LookPath(argv[0])
+	if err != nil {
+		return ""
+	}
+	if a, err := filepath.Abs(p); err == nil {
+		p = a
+	}
+	return p
 }
 
 // resolveBin resolves a command name to an absolute, symlink-free path,
