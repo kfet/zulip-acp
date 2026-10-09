@@ -6,8 +6,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kfet/acp-kit/update"
+	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -192,5 +194,41 @@ func TestUpdateDecideSeesReactionsFirst(t *testing.T) {
 	hh.h.Handle(ctx, reactionEvent(botID, 9, "check", zulipproto.ReactionAdd))
 	if strings.Join(got, ",") != "check,tada" {
 		t.Fatal(got)
+	}
+}
+
+// TestBusyNamesTopicAndAge: a reload drain that hits its deadline logs
+// each blocking topic with its turn age.
+func TestBusyNamesTopicAndAge(t *testing.T) {
+	hh := cmdHarness(t, newAgent("x"), nil)
+	now := time.Unix(100000, 0)
+	hh.h.cfg.Now = func() time.Time { return now }
+	conv, err := hh.h.cfg.Journal.Ensure(journal.Key{StreamID: 999999, Topic: "long"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hh.h.Busy(); len(got) != 0 {
+		t.Fatalf("idle Busy() = %q", got)
+	}
+	e := &inflightEntry{cancel: func() {}, started: now.Add(-11 * time.Hour)}
+	hh.h.setInflight(conv.ID, e)
+	defer hh.h.clearInflight(conv.ID, e)
+	got := hh.h.Busy()
+	if len(got) != 1 || !strings.Contains(got[0], "long") || !strings.Contains(got[0], "running 11h0m0s") {
+		t.Fatalf("Busy() = %q", got)
+	}
+}
+
+// TestUpdateCommandAckFailureIsLogged: a failed ack reaction does not
+// stop `!update`; it is logged.
+func TestUpdateCommandAckFailureIsLogged(t *testing.T) {
+	var h *Handler
+	reloads := 0
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) { c.Updater = testUpdater(t, &h, nil, &reloads) })
+	h = hh.h
+	hh.z.reactErr = errors.New("no such emoji")
+	hh.deliverDM(t, humanID, "!update", humanID, botID)
+	if !hh.logged("!update ack reaction") {
+		t.Fatalf("ack failure not logged: %q", hh.logs)
 	}
 }

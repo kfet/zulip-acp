@@ -82,7 +82,7 @@ func TestValidate(t *testing.T) {
 	}{
 		{"auto_update", Config{AutoUpdate: "always"}},
 		{"idle", Config{SessionIdleTimeoutSeconds: -1}},
-		{"prompt", Config{PromptTimeoutSeconds: -1}},
+		{"reload drain", Config{ReloadDrainSeconds: -1}},
 		{"no progress", Config{NoProgressTimeoutSeconds: -1}},
 		{"edit", Config{EditIntervalMs: -1}},
 		{"spinner", Config{SpinnerIntervalMs: intPtr(-1)}},
@@ -198,9 +198,16 @@ func TestDefaults(t *testing.T) {
 		c.EditInterval() != DefaultEditInterval || c.SpinnerInterval() != DefaultSpinnerInterval {
 		t.Fatal("duration defaults not applied")
 	}
-	// The ceiling is OPT-IN: unset must mean no ceiling, not a default.
-	if c.TurnCeiling() != 0 {
-		t.Fatalf("turn ceiling = %s, want none by default", c.TurnCeiling())
+	// Unset means the 2h default; negative disables; the drain
+	// defaults to 5m and is configurable.
+	if c.TurnCeiling() != DefaultTurnCeiling || c.ReloadDrain() != 5*time.Minute {
+		t.Fatalf("turn ceiling = %s, reload drain = %s", c.TurnCeiling(), c.ReloadDrain())
+	}
+	if (&Config{PromptTimeoutSeconds: -1}).TurnCeiling() != 0 {
+		t.Fatal("negative prompt_timeout_seconds must disable the ceiling")
+	}
+	if (&Config{ReloadDrainSeconds: 90}).ReloadDrain() != 90*time.Second {
+		t.Fatal("reload_drain_seconds not applied")
 	}
 	if !c.GetStreamEdits() {
 		t.Fatal("streaming edits must be the default")

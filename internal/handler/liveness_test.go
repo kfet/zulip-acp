@@ -84,8 +84,8 @@ func TestToolActivityKeepsATurnAlive(t *testing.T) {
 	}
 }
 
-// TestTurnCeilingIsOptIn: with prompt_timeout_seconds unset there is no
-// absolute cap, so a turn that keeps working is never cut by one.
+// TestTurnCeilingIsOptIn: with a zero handler TurnCeiling (what a
+// negative prompt_timeout_seconds gives) there is no absolute cap, so a turn that keeps working is never cut by one.
 func TestTurnCeilingIsOptIn(t *testing.T) {
 	agent := newAgent("done")
 	hh := newHarness(t, agent, nil)

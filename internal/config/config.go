@@ -38,6 +38,11 @@ const (
 	// no longer has a default to borrow; they are HTTP requests, not
 	// turns, and one wedged request must not hang the agent forever.
 	DefaultZulipCallTimeout = 2 * time.Minute
+	// DefaultTurnCeiling is the absolute wall-clock cap on one turn
+	// when prompt_timeout_seconds is unset. The no-progress watchdog
+	// cannot stop a turn that keeps making progress; an 11-hour turn
+	// once hung a graceful reload that way.
+	DefaultTurnCeiling = 2 * time.Hour
 	// minInlineImagePixels floors a non-zero max_inline_image_pixels.
 	// 64px on the long edge is already unreadable; below it the
 	// operator meant 0.
@@ -200,16 +205,17 @@ type Config struct {
 	// as progress, so a legitimately long tool is never cut. 0 = 2
 	// minutes.
 	NoProgressTimeoutSeconds int `json:"no_progress_timeout_seconds,omitempty"`
-	// PromptTimeoutSeconds is an OPT-IN absolute ceiling on one agent
-	// turn, enforced regardless of progress.
-	//
-	// 0 = NO ceiling. This changed in v0.27.0: it used to mean "10
-	// minutes", a plain wall-clock cap that punished exactly the turns
-	// working hardest — a turn was killed at 10m00s mid-tool-call while
-	// the tool went on running. The guard that actually fires now is
-	// NoProgressTimeoutSeconds. A config that sets this key gets a
-	// startup warning naming both bounds in effect.
+	// PromptTimeoutSeconds is the absolute ceiling on one agent turn,
+	// enforced regardless of progress. 0 (unset) = DefaultTurnCeiling
+	// (2 hours); a negative value disables the ceiling. The guard that
+	// normally fires is NoProgressTimeoutSeconds; this one stops a turn
+	// that keeps making progress for hours.
 	PromptTimeoutSeconds int `json:"prompt_timeout_seconds,omitempty"`
+	// ReloadDrainSeconds bounds how long a SIGHUP graceful reload waits
+	// for in-flight turns before it cancels them and re-execs. 0 =
+	// reload.DefaultReloadDrain (5 minutes). The -reload-drain-deadline
+	// flag, when given, wins.
+	ReloadDrainSeconds int `json:"reload_drain_seconds,omitempty"`
 
 	// SystemPrompt is appended to the built-in Zulip-formatting
 	// instructions and injected into every ACP session.
@@ -471,8 +477,8 @@ func (c *Config) Validate() error {
 	if c.CatchupMaxAgeSeconds != nil && *c.CatchupMaxAgeSeconds < 0 {
 		return fmt.Errorf("catchup_max_age_seconds must be >= 0")
 	}
-	if c.PromptTimeoutSeconds < 0 {
-		return fmt.Errorf("prompt_timeout_seconds must be >= 0")
+	if c.ReloadDrainSeconds < 0 {
+		return fmt.Errorf("reload_drain_seconds must be >= 0")
 	}
 	if c.NoProgressTimeoutSeconds < 0 {
 		return fmt.Errorf("no_progress_timeout_seconds must be >= 0")
@@ -603,16 +609,24 @@ func (c *Config) NoProgressTimeout() time.Duration {
 	return time.Duration(c.NoProgressTimeoutSeconds) * time.Second
 }
 
-// TurnCeiling returns the OPT-IN absolute per-turn cap. 0 means none.
-//
-// Named for what it is rather than after its JSON key so that every
-// call site of the old PromptTimeout() had to be re-read when the
-// meaning changed underneath it.
+// TurnCeiling returns the absolute per-turn cap: DefaultTurnCeiling
+// when unset, 0 (none) when prompt_timeout_seconds is negative.
 func (c *Config) TurnCeiling() time.Duration {
-	if c.PromptTimeoutSeconds <= 0 {
+	switch {
+	case c.PromptTimeoutSeconds < 0:
 		return 0
+	case c.PromptTimeoutSeconds == 0:
+		return DefaultTurnCeiling
 	}
 	return time.Duration(c.PromptTimeoutSeconds) * time.Second
+}
+
+// ReloadDrain returns the graceful-reload drain deadline.
+func (c *Config) ReloadDrain() time.Duration {
+	if c.ReloadDrainSeconds <= 0 {
+		return reload.DefaultReloadDrain
+	}
+	return time.Duration(c.ReloadDrainSeconds) * time.Second
 }
 
 // EditInterval returns the streaming coalescing period.

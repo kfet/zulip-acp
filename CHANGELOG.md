@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A reload drain that hits its deadline logs each blocking topic with its turn age.
+- `reload_drain_seconds` config key sets the graceful-reload drain deadline. The `-reload-drain-deadline` flag still wins.
+
+### Changed
+
+- A graceful reload now waits at most 5 minutes (was 30), below Zulip's 10-minute queue lifespan. At the deadline it cancels the remaining turns (the `!update --force` path) and re-execs; the successor marks the cut messages interrupted.
+- `prompt_timeout_seconds` now defaults to 2 hours (was no ceiling). A negative value disables the ceiling. A turn that keeps making progress resets the no-progress watchdog, and an 11-hour turn once hung a reload that way.
+
 ## [0.51.0] - 2026-10-08
 
 ### Added

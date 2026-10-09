@@ -399,7 +399,8 @@ the error and stop — do not paper over.
   deploy (see `deploy` skill).
 - **A reload waits for the drain** — if some other conversation is mid-turn, the
   exec does not happen until that turn finishes (up to `-reload-drain-deadline`,
-  30m). That is correct, not a hang. The queue is buffering throughout.
+  5m by default). At the deadline the relay cancels the remaining turns and
+  re-execs; their messages are marked interrupted. The queue buffers throughout.
 
 ## Finish on the FLEET, not on one host
 

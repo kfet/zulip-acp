@@ -69,11 +69,10 @@ func main() {
 	channelsFlag := flag.String("channels", "", "comma-separated Zulip channel names or ids to serve; overrides config")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir and agent command, then exit")
-	reloadDrain := flag.Duration("reload-drain-deadline", reload.DefaultReloadDrain,
-		"how long a SIGHUP graceful reload waits for in-flight turns to finish before re-execing anyway. "+
-			"Nothing external is waiting on this — the Zulip event queue buffers server-side meanwhile — and agent turns "+
-			"legitimately run tens of minutes, so this is a leak backstop, not a working bound "+
-			"(no_progress_timeout_seconds bounds a turn as work)")
+	reloadDrain := flag.Duration("reload-drain-deadline", 0,
+		"how long a SIGHUP graceful reload waits for in-flight turns before it cancels them and re-execs "+
+			"(default: config reload_drain_seconds, else 5m). Keep it under the server's event-queue lifespan "+
+			"(about 10m when the server ignores queue_lifespan_secs)")
 	stopDrain := flag.Duration("drain-deadline", reload.DefaultStopDrain,
 		"how long a SIGINT/SIGTERM shutdown waits for in-flight turns to finish posting. Something external IS waiting "+
 			"(systemd SIGKILLs the cgroup at TimeoutStopSec), so keep it comfortably underneath that")
@@ -94,16 +93,17 @@ func main() {
 		}
 		cfg = c
 	}
-	// prompt_timeout_seconds changed meaning in v0.27.0: it is now an
-	// opt-in absolute ceiling, not the working bound, and unset means
-	// no ceiling at all. Say so once, at startup, to whoever set it —
-	// otherwise the day a turn behaves differently is the first they
-	// hear of it.
-	if cfg.PromptTimeoutSeconds > 0 {
-		log.Printf("config: prompt_timeout_seconds is now an ABSOLUTE CEILING, not the working bound — "+
-			"this turn ceiling is %s, and the guard that normally fires is no_progress_timeout_seconds (%s)",
-			cfg.TurnCeiling(), cfg.NoProgressTimeout())
+	// Name both turn bounds once at startup, so a cut turn is never
+	// the first an operator hears of them.
+	if *reloadDrain <= 0 {
+		*reloadDrain = cfg.ReloadDrain()
 	}
+	ceiling := "none (prompt_timeout_seconds < 0)"
+	if d := cfg.TurnCeiling(); d > 0 {
+		ceiling = d.String()
+	}
+	log.Printf("config: turn ceiling %s (prompt_timeout_seconds), no-progress watchdog %s, reload drain %s",
+		ceiling, cfg.NoProgressTimeout(), *reloadDrain)
 	// Environment overrides, so the API key never has to live in a
 	// config file on the host.
 	if v := os.Getenv("ZULIP_SITE"); v != "" {
@@ -798,6 +798,9 @@ func main() {
 		StopDeadline:   *stopDrain,
 		DiscardQueue:   runner.Discard,
 		Logf:           log.Printf,
+		Busy:           h.Busy,
+		CancelAll:      h.CancelAll,
+		WaitCancelled:  h.WaitCancelled,
 	})
 
 	if !reloading {

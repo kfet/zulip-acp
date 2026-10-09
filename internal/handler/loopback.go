@@ -365,7 +365,7 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	// holds nothing else up.
 	// No anchor: a scheduled prompt has no triggering message, so it
 	// cannot rename the topic (see rename.go).
-	entry := &inflightEntry{cancel: cancelTurn, rename: &pendingRename{}}
+	entry := &inflightEntry{cancel: cancelTurn, rename: &pendingRename{}, started: h.now()}
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
 		return err
 	}

@@ -61,7 +61,11 @@ the state directory.
    re-exec then kills. A reaction burst whose turn has already begun is an
    in-flight turn like any other and is drained at step 3.
 3. `reload.Drain` blocks on `handler.WaitIdle` until every in-flight turn has
-   finished posting, bounded by `-reload-drain-deadline` (30m).
+   finished posting, bounded by `-reload-drain-deadline` / `reload_drain_seconds`
+   (5m). At the deadline the relay logs each blocking topic with its turn age,
+   cancels the remaining turns (the `!update --force` path: `CancelAll`, then
+   `WaitCancelled` bounded by `-drain-deadline`), and goes on. The successor's
+   `MarkInterrupted` annotates the cut messages.
 4. The MCP loopback's session→token registry is read out
    (`mcphost.Host.ExportTokens`), then `cleanup()` closes the ACP agent, the
    session manager and the MCP host. The host is closed with `CloseForExec`,
@@ -87,7 +91,7 @@ correct and no readiness handshake is needed.
 
 ### Holding the queue open across a long drain
 
-Step 3 can legitimately take half an hour (`-reload-drain-deadline`), and a
+Step 3 can take up to `-reload-drain-deadline` (5m by default), and a
 Zulip queue is **garbage-collected once nothing has touched it for the queue's
 lifespan** — ten minutes by default. A long turn would therefore cost the very
 queue the handoff exists to preserve, and the successor would register fresh
@@ -335,6 +339,8 @@ pid stable at 833097/854272 throughout):
 - `systemctl --user restart zulip-acp` — unit-file change, a stopped service,
   or the **first cutover** onto a build that has reload support (the older
   binary has no `SIGHUP` handler and would simply die on the signal).
-- `-reload-drain-deadline` (30m) — leak backstop for a reload drain. Nothing
-  external is waiting; `no_progress_timeout_seconds` is what bounds a turn as work.
+- `-reload-drain-deadline` / `reload_drain_seconds` (5m) — reload drain bound.
+  Turns still running at the deadline are cancelled. Keep it under the server's
+  queue lifespan: a server that ignores `queue_lifespan_secs` collects the
+  queue after about 10 minutes.
 - `-drain-deadline` (30s) — stop drain. Keep it under `TimeoutStopSec`.

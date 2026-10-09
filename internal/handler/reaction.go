@@ -320,7 +320,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 	// already expired and post "*error: context deadline exceeded*"
 	// into the topic, caused by nothing but an emoji.)
 	turnCtx, cancelTurn := context.WithCancel(context.WithoutCancel(ctx))
-	entry := &inflightEntry{cancel: cancelTurn}
+	entry := &inflightEntry{cancel: cancelTurn, started: h.now()}
 	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
 		cancelTurn()
 		h.takeReactions(conv.ID)

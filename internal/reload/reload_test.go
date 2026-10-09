@@ -235,14 +235,14 @@ func TestDrain(t *testing.T) {
 	})
 	t.Run("a cancelled parent cuts the drain short", func(t *testing.T) {
 		// A SIGTERM landing during a long reload drain: the operator
-		// asked to stop, and that must beat the 30m reload budget
+		// asked to stop, and that must beat the reload budget
 		// rather than be ignored until systemd SIGKILLs the cgroup.
 		parent, cancel := context.WithCancel(context.Background())
 		cancel()
 		// A short deadline on purpose: the invariant under test is
-		// "the parent wins", not "30m is long". With
+		// "the parent wins", not "5m is long". With
 		// DefaultReloadDrain here a broken cancel propagation would
-		// HANG the suite for half an hour instead of failing.
+		// HANG the suite for five minutes instead of failing.
 		ok, err := Drain(parent, idleFunc(func(ctx context.Context) error {
 			<-ctx.Done()
 			return ctx.Err()
@@ -501,6 +501,53 @@ func TestFinish(t *testing.T) {
 		if !h.logged("WARN reload drain hit its") {
 			t.Fatalf("forced drain not warned: %q", h.logs)
 		}
+	})
+
+	t.Run("a forced reload drain names its blockers, cancels them, and re-execs", func(t *testing.T) {
+		h := &finishHarness{}
+		var waited bool
+		if reexec := Finish(context.Background(), FinishConfig{
+			Reloading: true, Idle: blocked, ReloadDeadline: time.Millisecond, StopDeadline: time.Minute,
+			Logf:          h.logf,
+			Busy:          func() []string { return []string{`#dev > "long" (running 11h0m0s)`} },
+			CancelAll:     func() []string { return []string{`#dev > "long"`} },
+			WaitCancelled: func(context.Context) error { waited = true; return nil },
+		}); !reexec {
+			t.Fatal("a forced reload drain must still re-exec")
+		}
+		if !h.logged(`reload drain blocked by #dev > "long" (running 11h0m0s)`) {
+			t.Fatalf("blocker not logged: %q", h.logs)
+		}
+		if !h.logged("reload drain cancelled 1 turn(s)") || !waited {
+			t.Fatalf("turns not cancelled and awaited: %q", h.logs)
+		}
+		if h.logged("did not unwind") {
+			t.Fatalf("clean unwind warned: %q", h.logs)
+		}
+	})
+
+	t.Run("cancelled turns that do not unwind are bounded by the default stop deadline", func(t *testing.T) {
+		h := &finishHarness{}
+		if reexec := Finish(context.Background(), FinishConfig{
+			Reloading: true, Idle: blocked, ReloadDeadline: time.Millisecond,
+			Logf:          h.logf,
+			CancelAll:     func() []string { return nil },
+			WaitCancelled: func(context.Context) error { return context.DeadlineExceeded },
+		}); !reexec {
+			t.Fatal("a forced reload drain must still re-exec")
+		}
+		if !h.logged("did not unwind within 30s") {
+			t.Fatalf("wedged unwind not warned: %q", h.logs)
+		}
+	})
+
+	t.Run("a forced shutdown drain does not cancel", func(t *testing.T) {
+		h := &finishHarness{}
+		Finish(context.Background(), FinishConfig{
+			Idle: blocked, StopDeadline: time.Millisecond, Logf: h.logf,
+			CancelAll:     func() []string { t.Fatal("shutdown cancelled turns"); return nil },
+			WaitCancelled: func(context.Context) error { return nil },
+		})
 	})
 
 	t.Run("a forced shutdown drain warns and does not re-exec", func(t *testing.T) {

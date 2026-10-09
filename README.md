@@ -335,7 +335,8 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `state_dir` | `$XDG_STATE_HOME/zulip-acp` | per-conversation cwds + journal |
 | `session_idle_timeout_seconds` | `1800` | idle session GC |
 | `no_progress_timeout_seconds` | `120` | cut a turn with no agent output **and** no tool activity for this long. Tool calls reset it, so a long-running tool is never cut |
-| `prompt_timeout_seconds` | off | **opt-in** absolute ceiling on one turn, regardless of progress. `0`/unset = no ceiling (it used to mean 600) |
+| `prompt_timeout_seconds` | 7200 | absolute ceiling on one turn, regardless of progress. `0`/unset = 2 hours; a negative value disables the ceiling |
+| `reload_drain_seconds` | 300 | how long a graceful reload waits for turns before it cancels them and re-execs. The `-reload-drain-deadline` flag wins |
 | `system_prompt` | — | appended to the built-in Zulip formatting block |
 | `disable_system_prompt` | `false` | skip injection entirely |
 | `hide_thinking` | `false` | suppress the agent's thought lines |
@@ -867,9 +868,9 @@ A hard `restart` is still required for three things: a change to the unit file,
 a service that is stopped or dead, and the **first cutover** onto a build that
 has reload support (the older binary has no SIGHUP handler and would just die).
 
-Two knobs bound the drains: `-reload-drain-deadline` (30m, a leak backstop —
-nothing external is waiting, and `no_progress_timeout_seconds` is what bounds a turn as
-work) and `-drain-deadline` (30s, a service stop — keep it under
+Two knobs bound the drains: `-reload-drain-deadline` (5m, or `reload_drain_seconds`;
+turns still running at the deadline are cancelled, and each blocking topic is
+logged with its turn age) and `-drain-deadline` (30s, a service stop — keep it under
 `TimeoutStopSec`). Details in
 [docs/graceful-reload.md](docs/graceful-reload.md).
 

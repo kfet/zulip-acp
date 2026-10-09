@@ -60,11 +60,11 @@
 //     deletes it. Nothing posted across the change is lost, and the
 //     window both queues saw is de-duplicated on message identity.
 //
-// If the drain deadline expires with turns still running, the exec
-// happens anyway and the successor's handler.MarkInterrupted annotates
-// the truncated messages — the pre-existing behaviour for a hard
-// restart, which is strictly the worst case here rather than the normal
-// one.
+// If the drain deadline expires with turns still running, Finish logs
+// each blocking topic with its turn age, cancels the remaining turns
+// (the `!update --force` path: CancelAll, then a bounded WaitCancelled),
+// and execs anyway. The successor's handler.MarkInterrupted annotates
+// the cut messages.
 //
 // # Wire contract
 //
@@ -247,12 +247,15 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 // ---------------------------------------------------------------------------
 
 // DefaultReloadDrain bounds the wait for in-flight turns on a RELOAD.
-// Nothing external is waiting on this: systemd's ExecReload is just a
-// kill(1) that has already returned, and the relay is not "down" while
-// it drains — the Zulip queue is buffering for it. Agent turns
-// legitimately run tens of minutes, and no_progress_timeout is what bounds a
-// turn as work, so this is a leak backstop rather than a working bound.
-const DefaultReloadDrain = 30 * time.Minute
+// systemd's ExecReload is a kill(1) that has already returned, but the
+// Zulip event queue that buffers for the successor is NOT safe for
+// long: a server that ignores queue_lifespan_secs collects an unpolled
+// queue after about 10 minutes, and the successor then misses what was
+// posted during the drain. So the drain stays well under that, and a
+// turn still running at the deadline is cancelled (see Finish). A turn
+// that keeps making progress resets the no-progress watchdog forever,
+// so a long drain deadline can hang a reload behind it for hours.
+const DefaultReloadDrain = 5 * time.Minute
 
 // DefaultStopDrain bounds the wait for in-flight turns on a SERVICE
 // STOP. Something external IS waiting here — systemd SIGTERMs the
@@ -272,9 +275,9 @@ type IdleWaiter interface {
 // still running, or parent was cancelled.
 //
 // parent matters on the RELOAD path, where the deadline is deliberately
-// long (DefaultReloadDrain) because nothing external is waiting. Pass
+// longer than a stop drain (DefaultReloadDrain) because nothing external is waiting. Pass
 // the process's signal context there: a SIGTERM arriving mid-reload is
-// an operator saying "stop now", and it must win over a 30-minute
+// an operator saying "stop now", and it must win over a 5-minute
 // drain rather than be ignored until systemd SIGKILLs the cgroup. On
 // the STOP path the signal context is already cancelled, so the caller
 // passes context.Background() — otherwise the drain would return
@@ -315,6 +318,17 @@ type FinishConfig struct {
 	DiscardQueue func()
 	// Logf receives the operator-facing narration. Required.
 	Logf func(format string, args ...any)
+
+	// Busy, when set, describes each turn still in flight (topic and
+	// turn age). Finish logs it when a drain hits its deadline, so the
+	// operator can see what blocked the drain.
+	Busy func() []string
+	// CancelAll and WaitCancelled, when both are set, cancel the turns
+	// still running when a RELOAD drain hits its deadline — the
+	// `!update --force` path — so the re-exec does not kill them
+	// mid-post. WaitCancelled is bounded by StopDeadline.
+	CancelAll     func() []string
+	WaitCancelled func(ctx context.Context) error
 }
 
 // Finish performs the end-of-run drain and reports whether the caller
@@ -326,7 +340,7 @@ type FinishConfig struct {
 // excluded from the coverage gate.
 //
 // ctx is the process signal context. It is passed to a RELOAD drain, so
-// an operator SIGTERM cuts a 30-minute wait short; it is deliberately
+// an operator SIGTERM cuts a reload wait short; it is deliberately
 // NOT passed to a stop drain, where it is already cancelled and would
 // make the drain a no-op.
 func Finish(ctx context.Context, cfg FinishConfig) (reexec bool) {
@@ -338,6 +352,11 @@ func Finish(ctx context.Context, cfg FinishConfig) (reexec bool) {
 	// messages behind; the next start annotates them (MarkInterrupted).
 	warnForced := func(kind string, d time.Duration, err error) {
 		cfg.Logf("zulip-acp: WARN %s drain hit its %s deadline with turns still running (%v); their messages will be marked interrupted", kind, d, err)
+		if cfg.Busy != nil {
+			for _, b := range cfg.Busy() {
+				cfg.Logf("zulip-acp: WARN %s drain blocked by %s", kind, b)
+			}
+		}
 	}
 
 	ok, err := Drain(parent, cfg.Idle, deadline)
@@ -354,6 +373,9 @@ func Finish(ctx context.Context, cfg FinishConfig) (reexec bool) {
 		cfg.Logf("zulip-acp: %s drain finished with %v", what, err)
 	} else if !ok && !preempted {
 		warnForced(what, deadline, err)
+		if cfg.Reloading {
+			cancelRemaining(cfg)
+		}
 	}
 	if !preempted {
 		return cfg.Reloading
@@ -362,7 +384,7 @@ func Finish(ctx context.Context, cfg FinishConfig) (reexec bool) {
 	cfg.Logf("zulip-acp: stop requested during the reload drain — abandoning the re-exec")
 	// Only re-drain if turns are actually still running: the reload
 	// drain above was almost certainly cut by the cancelled context
-	// rather than by its own (30m) deadline, so they have had no stop
+	// rather than by its own deadline, so they have had no stop
 	// budget yet. In the vanishing case where both landed together this
 	// grants one extra StopDeadline — cheaper than distinguishing them.
 	if !ok {
@@ -376,4 +398,24 @@ func Finish(ctx context.Context, cfg FinishConfig) (reexec bool) {
 		cfg.DiscardQueue()
 	}
 	return false
+}
+
+// cancelRemaining cancels the turns a reload drain left running, then
+// waits for them to unwind, bounded by StopDeadline. A turn that does
+// not unwind in time is cut by the exec; MarkInterrupted covers it.
+func cancelRemaining(cfg FinishConfig) {
+	if cfg.CancelAll == nil || cfg.WaitCancelled == nil {
+		return
+	}
+	where := cfg.CancelAll()
+	cfg.Logf("zulip-acp: reload drain cancelled %d turn(s): %s", len(where), strings.Join(where, ", "))
+	d := cfg.StopDeadline
+	if d <= 0 {
+		d = DefaultStopDrain
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	if err := cfg.WaitCancelled(ctx); err != nil {
+		cfg.Logf("zulip-acp: WARN cancelled turns did not unwind within %s (%v); re-execing anyway", d, err)
+	}
 }

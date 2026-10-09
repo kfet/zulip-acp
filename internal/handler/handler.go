@@ -252,8 +252,9 @@ type Config struct {
 	// keeps resetting it, so a turn that is working is never cut. 0
 	// defaults to 2 minutes.
 	NoProgressTimeout time.Duration
-	// TurnCeiling is an OPT-IN absolute cap on one turn, enforced
-	// regardless of progress. 0 (the default) means no ceiling.
+	// TurnCeiling is the absolute cap on one turn, enforced regardless
+	// of progress. 0 means no ceiling. config.Config.TurnCeiling
+	// supplies it: 2 hours unless prompt_timeout_seconds says otherwise.
 	TurnCeiling time.Duration
 	// ZulipCallTimeout bounds one relay-initiated Zulip API call made
 	// outside a turn (the `post` loopback tool). 0 defaults to 2
@@ -513,6 +514,8 @@ type inflightEntry struct {
 	cancel context.CancelFunc
 	rename *pendingRename
 	turn   *convo.Turn
+	// started is when the turn began; Busy reports the turn age from it.
+	started time.Time
 }
 
 // Handler implements the event side of the relay.
@@ -1222,7 +1225,7 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 	// prompted. LIFO as ever: endTurn (After) runs only once the turn
 	// is fully unwound and no longer in flight, so `new_session` cannot
 	// cancel the very turn that requested it.
-	entry := &inflightEntry{rename: &pendingRename{anchor: anchorID}}
+	entry := &inflightEntry{rename: &pendingRename{anchor: anchorID}, started: h.now()}
 	h.convo.Start(ctx, convo.Job{
 		Conv:  conv.ID,
 		Value: entry,
@@ -2056,6 +2059,21 @@ func (h *Handler) CancelAll() []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, where[id])
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Busy describes each turn in flight as its topic and turn age, sorted,
+// so a reload drain that hits its deadline can name what blocked it.
+func (h *Handler) Busy() []string {
+	var out []string
+	for _, c := range h.cfg.Journal.Convs() {
+		e := h.inflightOf(c.ID)
+		if e == nil {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s (running %s)", h.describe(c.Key), h.now().Sub(e.started).Round(time.Second)))
 	}
 	sort.Strings(out)
 	return out

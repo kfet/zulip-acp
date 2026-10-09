@@ -955,7 +955,7 @@ func TestBufferedReactionsFollowTheConversation(t *testing.T) {
 // reactions pile up — would start the reaction turn already expired and
 // post an error into the topic, caused by nothing but an emoji.
 //
-// It is asserted on the OPT-IN ceiling, because that is the bound with
+// It is asserted on the absolute turn ceiling, because that is the bound with
 // a visible deadline; the no-progress window is armed in the very same
 // place, so proving one proves both.
 func TestBufferedReactionTurnGetsAFullTimeout(t *testing.T) {
