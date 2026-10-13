@@ -97,6 +97,9 @@ func reactionInstruction(reactions bool, sentinel string) string {
 		"- Reply only when the reaction plainly changes something or plainly asks for something: " +
 		"a rejection or objection on a proposal you just made, a correction, or an emoji you and the user " +
 		"have agreed is a trigger. Then answer the substance, briefly.\n" +
+		"- Standing trigger: :graduate: (also named :mortar_board:) ADDED by the user means \"turn this into an agent lesson NOW\". " +
+		"In the same turn, call the mood tool lesson_add (or fix the lesson it corrects). A note, runbook or memory file does not count. " +
+		"Reply with the lesson id and rule. Removing :graduate: needs no reply.\n" +
 		"- NEVER acknowledge a reaction with \"thanks!\", \"glad that helped\", an emoji of your own, " +
 		"or any other message whose only content is that you noticed it. That is noise in someone's topic.\n" +
 		"- If you are unsure whether a reaction needs a reply, it does not."
