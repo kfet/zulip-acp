@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `zulip-acp status` shows every relay, systemd/launchd unit and binary on this host against the latest release.
+- `zulip-acp update` with no `-check`/`-restart-cmd` updates every install on this host: plan, confirm (`-y` skips), swap each binary, then reload each running relay gracefully.
+
 ## [0.54.0] - 2026-10-09
 
 ### Added

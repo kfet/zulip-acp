@@ -70,6 +70,9 @@ internal/handler/       event → ACP prompt; streaming sink; topic poster; comm
                         render AND vote on iOS; all converge on one `!` parser;
                         inbox.go = INBOUND attachment ingestion (the mirror of
                         the outbox upload in handler.go)
+internal/discover/      `zulip-acp status` + the discovery flow of `update`: finds
+                        relays, systemd/launchd units and binaries on THIS host
+                        (behind the Sys interface), then swaps + SIGHUP-reloads
 internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
                         photo (NO Zulip imports) — a provider rejects a
                         many-image request over 2000px a side; promotion

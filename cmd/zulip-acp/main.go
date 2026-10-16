@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -33,6 +34,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/catchup"
 	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/discover"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/reload"
@@ -49,8 +51,18 @@ func main() {
 	// under the running process (ETXTBSY-safe), so nobody has to
 	// hand-place a binary. Dispatched before flag parsing, like every
 	// other subcommand.
-	if len(os.Args) > 1 && os.Args[1] == "update" {
-		os.Exit(updater.Main(os.Args[2:], version, os.Stdout, os.Stderr))
+	//
+	// With no -check / -restart-cmd, `update` covers every install on
+	// THIS host (discover): plan, confirm, swap each binary, then reload
+	// each running relay gracefully. `status` is the read-only half.
+	if len(os.Args) > 1 && (os.Args[1] == "update" || os.Args[1] == "status") {
+		deps := discover.Default(updater.Config, func(args []string, stdout, stderr io.Writer) int {
+			return updater.Main(args, version, stdout, stderr)
+		})
+		if os.Args[1] == "status" {
+			os.Exit(discover.Status(os.Args[2:], version, os.Stdout, os.Stderr, deps))
+		}
+		os.Exit(discover.Update(os.Args[2:], version, os.Stdin, os.Stdout, os.Stderr, deps))
 	}
 
 	// The redirector subcommand must be intercepted before anything

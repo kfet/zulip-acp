@@ -965,9 +965,39 @@ Zulip.
 ### Upgrading
 
 ```bash
-zulip-acp update                 # verify sha256, swap the binary atomically
-systemctl --user reload zulip-acp   # drain in-flight turns, re-exec in place
+zulip-acp status                 # every relay + binary on THIS host vs the latest release
+zulip-acp update                 # plan, confirm, swap each binary, reload each relay
+zulip-acp update -y              # the same, without the question (and from a script)
 ```
+
+`zulip-acp status` finds the installs on this host only: running relays
+(PID, running version, binary, config, state dir), systemd `--user` and
+system units on Linux, launchd agents and daemons on macOS
+(`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`,
+`brew services` included), and `zulip-acp` binaries on `PATH` and in
+`~/.local/bin`. It exits **3** when something is behind the latest release.
+
+`zulip-acp update` with no `-check` / `-restart-cmd` uses the same discovery.
+It prints a plan, asks once (`-y` skips the question), swaps each distinct binary that is behind, and then reloads
+each running relay gracefully: `systemctl [--user] reload <unit>` for a
+systemd unit, `SIGHUP` to the PID for a launchd job or a bare process. Every
+path ends in the SIGHUP drain-and-re-exec, so no message is lost; a hard
+`launchctl kickstart -k` / `systemctl restart` is never used. A relay that
+runs the update itself (from an agent turn) reloads last, after that turn
+ends.
+
+**On a Mac:**
+
+```bash
+brew install kfet/ai/zulip-acp    # first install
+zulip-acp status                  # see what is running and what is behind
+zulip-acp update                  # brew upgrade (keg) or swap, then SIGHUP each relay
+```
+
+`-check`, `-version vX.Y.Z`, `-repo` and `-restart-cmd` keep working.
+`-check`, `-restart-cmd`, and any run with no terminal and no `-y` (a script,
+`converge.sh` over ssh) act on this one binary only, as before. A dev build or
+a binary that reports no version is skipped unless `-version` is pinned.
 
 `zulip-acp update` resolves the release over the GitHub API — asset bytes
 included, which is what let it work while this repo was private and still

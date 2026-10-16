@@ -252,7 +252,31 @@ Converge refuses to guess: it reads the version of the image the *running*
 process is executing (via `/proc/<MainPID>/exe`), not the on-disk file, and
 reports `graceful reload` or `hard restart` with the reason before it acts.
 
-**Any other host — the binary updates itself:**
+**Any other host — the binary updates itself, and finds every install:**
+```bash
+zulip-acp status            # relays (systemd / launchd / bare process), units, binaries vs latest; exit 3 = behind
+zulip-acp update            # plan → confirm → swap each binary → reload each running relay
+zulip-acp update -y         # same, no question — REQUIRED from an agent turn or script:
+                            # with no tty and no -y it is the old single-binary update
+```
+
+`update` without `-check`/`-restart-cmd` discovers what is on THIS host only
+(never over ssh — a fleet host is converge's), swaps every distinct binary that
+is behind (brew keg → `brew upgrade`), then reloads each running relay:
+`systemctl [--user] reload <unit>` for systemd, `SIGHUP` to the PID for launchd
+or a bare process. All of them end in the graceful drain + re-exec. A unit with
+no `ExecReload` is reported, not restarted. The relay that runs the command
+(your own, from a turn) reloads last and re-execs once the turn ends.
+
+**macOS (Homebrew + launchd, e.g. `brew services`):**
+```bash
+zulip-acp status    # finds ~/Library/LaunchAgents/*.plist (homebrew.mxcl.zulip-acp) and the running PID
+zulip-acp update    # brew upgrade kfet/ai/zulip-acp, then kill -HUP <pid>
+```
+Do not use `brew services restart` or `launchctl kickstart -k`: both are hard
+restarts and drop the messages posted before the new queue registers.
+
+Single-binary forms (no discovery):
 ```bash
 ssh <host> 'zulip-acp update'                        # latest
 ssh <host> 'zulip-acp update --check'                # report only, install nothing

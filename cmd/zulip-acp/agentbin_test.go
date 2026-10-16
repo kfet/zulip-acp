@@ -24,3 +24,12 @@ func TestAgentBinForKeepsSymlink(t *testing.T) {
 		t.Fatalf("agentBinFor = %q, want %q", got, link)
 	}
 }
+
+// A fir that is not on PATH resolves to "", on every host: the branch
+// must not depend on whether the test host has fir installed.
+func TestAgentBinForMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := agentBinFor([]string{"fir"}); got != "" {
+		t.Fatalf("agentBinFor = %q, want \"\"", got)
+	}
+}
