@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-16
+
 ### Added
 
 - `zulip-acp status` shows every relay, systemd/launchd unit and binary on this host against the latest release.
