@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-10-20
+
 ### Changed
 
 - A reaction turn now shows the same in-flight signal as a text turn: the ack emoji on each message reacted to, and the typing indicator for the whole turn, also when the agent stays silent. The typing cadence is now resolved in streaming mode too.
