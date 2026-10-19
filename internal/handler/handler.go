@@ -282,11 +282,12 @@ type Config struct {
 	// spinner goroutine is started at all. It is unused in batch mode,
 	// where there is no placeholder to animate.
 	SpinnerInterval *time.Duration
-	// TypingInterval is how often quiet mode refreshes the typing
-	// indicator. It must be comfortably inside the realm's
+	// TypingInterval is how often the typing indicator is refreshed:
+	// for every turn in quiet mode, and for reaction turns in every
+	// mode. It must be comfortably inside the realm's
 	// server_typing_started_expiry_period_milliseconds; resolve it
-	// with TypingIntervalFor. 0 in batch mode defaults to 10s; a
-	// negative value turns the indicator off. Unused while streaming.
+	// with TypingIntervalFor. 0 defaults to 10s; a negative value
+	// turns the indicator off.
 	TypingInterval time.Duration
 
 	// Budget, SealMarker and ContinuationMarker configure the splitter.
@@ -663,7 +664,7 @@ func New(cfg Config) (*Handler, error) {
 		}
 		cfg.SpinnerInterval = &d
 	}
-	if cfg.BatchEdits && cfg.TypingInterval == 0 {
+	if cfg.TypingInterval == 0 {
 		cfg.TypingInterval = defaultTypingInterval
 	}
 	if cfg.Logf == nil {
@@ -1244,7 +1245,14 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 // runTurn owns the goroutine and unwinding of a turn that was CLAIMED
 // (claimConvIdle) rather than started — a batched reaction. It unwinds
 // exactly as a started turn does.
-func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv journal.Conv, entry *inflightEntry, prompt string, addressed bool, ackMsgID int64) {
+//
+// ackIDs are the messages the turn is about (for a reaction batch, the
+// messages reacted to). Each gets the in-flight ack for the whole turn.
+// They are NOT the turn's msgID: that id drives markBusy and topic
+// semantics, which a reaction must not change. The typing indicator is
+// raised for the whole turn, the abstain path included, so the user
+// sees the agent is reading even when it then stays silent.
+func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv journal.Conv, entry *inflightEntry, prompt string, addressed bool, ackIDs []int64) {
 	go func() {
 		// LIFO: deferred actions the agent asked for are applied only
 		// after the turn is fully unwound and no longer inflight, so
@@ -1252,7 +1260,10 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 		defer h.endTurn(conv, entry)
 		defer h.clearInflight(conv.ID, entry)
 		defer cancel()
-		if err := h.run(pctx, conv, prompt, addressed, ackMsgID, nil); err != nil {
+		for _, id := range ackIDs {
+			defer h.ack(pctx, id)()
+		}
+		if err := h.runOpts(pctx, conv, prompt, addressed, 0, nil, true); err != nil {
 			h.cfg.Logf("handler: turn for %s failed: %v", conv.ID, err)
 		}
 	}()
@@ -1293,6 +1304,13 @@ func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv 
 // human waiting on it, and a check that found nothing new must not post
 // a new message each time. It updates a heartbeat instead (heartbeat.go).
 func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, sched *schedule.Item) error {
+	return h.runOpts(ctx, conv, prompt, addressed, msgID, sched, false)
+}
+
+// runOpts is run with one extra knob: typing raises the typing
+// indicator for the whole agent prompt, in every mode and on the
+// abstain path too. It is lowered when the prompt returns.
+func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string, addressed bool, msgID int64, sched *schedule.Item, typing bool) error {
 	fired := sched != nil
 	defer h.ack(ctx, msgID)()
 	// Before anything is posted: every message of this turn goes to
@@ -1321,8 +1339,11 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 	wctx, wcancel := context.WithCancel(ctx)
 	defer wcancel()
 
+	if typing {
+		h.startTyping(wctx, conv.Key)
+	}
 	if !abstaining {
-		h.showWorking(ctx, wctx, conv, split, sink)
+		h.showWorking(ctx, wctx, conv, split, sink, typing)
 	}
 
 	var sess *state.Session
@@ -1335,7 +1356,7 @@ func (h *Handler) run(ctx context.Context, conv journal.Conv, prompt string, add
 		// sentinel it is already known that a reply IS coming — so the
 		// placeholder can go up then instead of minutes later.
 		sinkFor = &sentinelWatch{next: vs, sentinel: h.cfg.SilentSentinel, onCommit: func() {
-			h.showWorking(ctx, wctx, conv, split, sink)
+			h.showWorking(ctx, wctx, conv, split, sink, typing)
 			if h.cfg.OnEarlyPlaceholder != nil {
 				h.cfg.OnEarlyPlaceholder(conv.ID)
 			}
@@ -2177,9 +2198,13 @@ func watchdogLoop(ctx context.Context, split *rollover.Splitter, tick <-chan tim
 //
 // turnCtx bounds the posted placeholder; workCtx bounds the background
 // signal, and is cancelled the moment the agent's prompt returns.
-func (h *Handler) showWorking(turnCtx, workCtx context.Context, conv journal.Conv, split *rollover.Splitter, sink *streamingSink) {
+// typed reports that the caller already raised the typing indicator,
+// so quiet mode must not start a second one.
+func (h *Handler) showWorking(turnCtx, workCtx context.Context, conv journal.Conv, split *rollover.Splitter, sink *streamingSink, typed bool) {
 	if h.cfg.BatchEdits {
-		h.startTyping(workCtx, conv.Key)
+		if !typed {
+			h.startTyping(workCtx, conv.Key)
+		}
 		return
 	}
 	if err := split.Start(turnCtx, statusline.Thinking(sink.Status())); err != nil {

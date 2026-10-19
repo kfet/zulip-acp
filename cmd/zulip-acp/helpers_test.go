@@ -249,25 +249,21 @@ func (p *fakeTypingProbe) TypingStartedExpiry(context.Context) (time.Duration, e
 	return p.expiry, p.err
 }
 
-// TestResolveTypingInterval: streaming mode never probes (it has a
-// placeholder and sends no typing at all), quiet mode follows the
-// realm, and a probe that fails degrades to the stock cadence rather
+// TestResolveTypingInterval: the cadence follows the realm, and a probe that fails degrades to the stock cadence rather
 // than losing liveness.
 func TestResolveTypingInterval(t *testing.T) {
 	cases := []struct {
 		name  string
-		quiet bool
 		probe *fakeTypingProbe
 		want  time.Duration
 		asked int
 	}{
-		{name: "streaming", quiet: false, probe: &fakeTypingProbe{expiry: 15 * time.Second}, want: 0, asked: 0},
-		{name: "quiet", quiet: true, probe: &fakeTypingProbe{expiry: 30 * time.Second}, want: 20 * time.Second, asked: 1},
-		{name: "probe failed", quiet: true, probe: &fakeTypingProbe{err: errors.New("nope")}, want: 10 * time.Second, asked: 1},
+		{name: "quiet", probe: &fakeTypingProbe{expiry: 30 * time.Second}, want: 20 * time.Second, asked: 1},
+		{name: "probe failed", probe: &fakeTypingProbe{err: errors.New("nope")}, want: 10 * time.Second, asked: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveTypingInterval(context.Background(), tc.probe, tc.quiet)
+			got := resolveTypingInterval(context.Background(), tc.probe)
 			if got != tc.want {
 				t.Fatalf("interval = %s, want %s", got, tc.want)
 			}

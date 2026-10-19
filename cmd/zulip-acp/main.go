@@ -383,11 +383,10 @@ func main() {
 	// relay cannot perform.
 	archiveID, archiveName, archiveLimit := resolveArchive(ctx, cfg, zc, streams, served, me)
 
-	// Quiet mode's liveness is the typing indicator, whose cadence has
-	// to stay inside the realm's expiry period — so it is read from
-	// the server rather than guessed. Streaming mode never sends one,
-	// so the probe is skipped there entirely.
-	typingInterval := resolveTypingInterval(ctx, zc, !cfg.GetStreamEdits())
+	// The typing indicator (every quiet-mode turn, every reaction
+	// turn) has a cadence that must stay inside the realm's expiry
+	// period — so it is read from the server rather than guessed.
+	typingInterval := resolveTypingInterval(ctx, zc)
 
 	// Teardown is explicit rather than purely deferred: a graceful
 	// reload ends in syscall.Exec, which replaces the process image and

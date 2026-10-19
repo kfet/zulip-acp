@@ -109,22 +109,17 @@ type typingProbe interface {
 	TypingStartedExpiry(ctx context.Context) (time.Duration, error)
 }
 
-// resolveTypingInterval settles quiet mode's typing-refresh cadence at
-// startup, from the realm's own expiry period.
-//
-// Returns 0 when the relay is streaming: there is a placeholder there,
-// no typing indicator is ever sent, and probing for a number nobody
-// reads would cost a register round-trip per start.
+// resolveTypingInterval settles the typing-refresh cadence at startup,
+// from the realm's own expiry period. Every mode needs it: quiet mode
+// types for every turn, and a reaction turn types in streaming mode
+// too, because it posts no placeholder.
 //
 // A probe that fails is NOT fatal and does not disable liveness: the
 // stock 15s expiry is what an unpatched realm uses anyway, so the
 // fallback cadence is right far more often than it is wrong, and the
 // worst case is an indicator that blinks rather than one that is
 // missing.
-func resolveTypingInterval(ctx context.Context, probe typingProbe, quiet bool) time.Duration {
-	if !quiet {
-		return 0
-	}
+func resolveTypingInterval(ctx context.Context, probe typingProbe) time.Duration {
 	expiry, err := probe.TypingStartedExpiry(ctx)
 	if err != nil {
 		log.Printf("zulip-acp: could not read %s (%v); refreshing the typing indicator every %s",
@@ -132,7 +127,7 @@ func resolveTypingInterval(ctx context.Context, probe typingProbe, quiet bool) t
 		expiry = zulipproto.DefaultTypingExpiry
 	}
 	d := handler.TypingIntervalFor(expiry)
-	log.Printf("zulip-acp: quiet mode: no \"Thinking…\" placeholder; the typing indicator is refreshed every %s (server expiry %s)", d, expiry)
+	log.Printf("zulip-acp: the typing indicator is refreshed every %s (server expiry %s)", d, expiry)
 	return d
 }
 

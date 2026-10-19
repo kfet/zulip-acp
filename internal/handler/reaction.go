@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +108,9 @@ const (
 type reactionBatch struct {
 	lines []string
 	extra int
+	// msgIDs are the distinct messages reacted to, in arrival order.
+	// Each one gets the in-flight ack while the turn runs.
+	msgIDs []int64
 }
 
 // msgIndex is a bounded id→string map with FIFO eviction.
@@ -258,7 +262,7 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 	if h.reactionTrigger(ctx, conv, ev, msg) {
 		return
 	}
-	h.enqueueReaction(ctx, conv, reactionLine(who, ev, msg, h.cfg.BotUserID))
+	h.enqueueReaction(ctx, conv, ev.MessageID, reactionLine(who, ev, msg, h.cfg.BotUserID))
 }
 
 // enqueueReaction buffers one rendered reaction for a conversation and,
@@ -270,7 +274,10 @@ func (h *Handler) handleReaction(ctx context.Context, ev zulipproto.Event) {
 // conversational fact — "ten people reacted" — so it must cost one
 // agent turn, not ten. Without it the feature would be a token pump
 // that any popular message could start.
-func (h *Handler) enqueueReaction(ctx context.Context, conv journal.Conv, line string) {
+//
+// msgID is the message reacted to. It was resolved by convForReaction,
+// so it is known to exist. Duplicates are acked once.
+func (h *Handler) enqueueReaction(ctx context.Context, conv journal.Conv, msgID int64, line string) {
 	h.reactMu.Lock()
 	b, armed := h.reactPending[conv.ID]
 	if !armed {
@@ -285,6 +292,9 @@ func (h *Handler) enqueueReaction(ctx context.Context, conv journal.Conv, line s
 		// told how many it did not see rather than being handed a
 		// prompt that grows without limit.
 		b.extra++
+	}
+	if !slices.Contains(b.msgIDs, msgID) && len(b.msgIDs) < reactionBatchMax {
+		b.msgIDs = append(b.msgIDs, msgID)
 	}
 	h.reactMu.Unlock()
 	if !armed {
@@ -326,7 +336,7 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 		h.takeReactions(conv.ID)
 		return
 	}
-	lines, extra := h.takeReactions(conv.ID)
+	lines, extra, ackIDs := h.takeReactions(conv.ID)
 	// Re-read the conversation: seconds have passed, and unlike a
 	// message turn — where this window is microseconds — the topic may
 	// have been renamed (posting under the stale name would recreate
@@ -356,10 +366,12 @@ func (h *Handler) flushReactions(ctx context.Context, conv journal.Conv) {
 	// Ambient, never addressed: a reaction is by nature something the
 	// agent should usually pass over, so it goes down the same path a
 	// non-mention channel message takes and may be answered with the
-	// silent sentinel. No ack reaction either (msgID 0) — reacting to
-	// a reaction is noise, and the message reacted to is often an old
-	// one nobody is looking at any more.
-	h.runTurn(turnCtx, cancelTurn, conv, entry, reactionBatchPrompt(lines, extra), false, 0)
+	// silent sentinel. It still gets the same in-flight signal as a
+	// text turn: the ack on each message reacted to, and the typing
+	// indicator for the whole turn. The signal means "the agent is
+	// reading", not "a reply is coming". The ids go in as acks only,
+	// not as the turn's msgID, so markBusy and the topic are unchanged.
+	h.runTurn(turnCtx, cancelTurn, conv, entry, reactionBatchPrompt(lines, extra), false, ackIDs)
 }
 
 // DropPendingReactions discards every buffered reaction burst and
@@ -384,15 +396,15 @@ func (h *Handler) DropPendingReactions() int {
 // takeReactions removes and returns a conversation's buffered
 // reactions. An empty result is possible only on a shutdown race and
 // renders as nothing.
-func (h *Handler) takeReactions(convID string) (lines []string, extra int) {
+func (h *Handler) takeReactions(convID string) (lines []string, extra int, msgIDs []int64) {
 	h.reactMu.Lock()
 	defer h.reactMu.Unlock()
 	b, ok := h.reactPending[convID]
 	if !ok {
-		return nil, 0
+		return nil, 0, nil
 	}
 	delete(h.reactPending, convID)
-	return b.lines, b.extra
+	return b.lines, b.extra, b.msgIDs
 }
 
 // after is the injected timer. Production uses time.After; the test

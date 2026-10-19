@@ -860,8 +860,11 @@ is refreshed on a ticker at two thirds of that. The period is read from the
 realm at startup (`Client.TypingStartedExpiry`, over the same
 `fetch_event_types` snapshot the move-policy probe uses) rather than hardcoded;
 a probe that fails logs and falls back to the stock 15s, because a blinking
-indicator beats a missing one. Streaming mode never sends a typing notification
-and never runs the probe.
+indicator beats a missing one. The probe runs in every mode: a reaction turn
+raises the typing indicator for the whole turn in streaming mode too, the
+abstain path included, and puts the ack emoji on each message reacted to. The
+signal means "the agent is reading", not "a reply is coming". A text turn in
+streaming mode still sends no typing notification.
 
 > The source comment that used to justify the eager placeholder said *"Zulip has
 > no typing indicator"*. That was true when it was written. Channel typing

@@ -882,7 +882,7 @@ func TestReactionFlushGivesUpOnShutdown(t *testing.T) {
 // no-op rather than a panic.
 func TestTakeReactionsUnknownConv(t *testing.T) {
 	hh, _ := reactHarness(t, nil)
-	lines, extra := hh.h.takeReactions("no-such-conv")
+	lines, extra, _ := hh.h.takeReactions("no-such-conv")
 	if lines != nil || extra != 0 {
 		t.Fatalf("takeReactions(unknown) = %v,%d", lines, extra)
 	}
@@ -1063,5 +1063,65 @@ func TestReactionTurnFailureIsLogged(t *testing.T) {
 	hh.react(t, reactionEvent(humanID, own, "tada", zulipproto.ReactionAdd))
 	if !hh.logged("turn for") {
 		t.Fatalf("failure not logged: %v", hh.logs)
+	}
+}
+
+// waitTyping waits for n typing ops. The stop runs on the typing
+// goroutine after the turn is no longer inflight, so WaitIdle cannot
+// observe it.
+func (hh *harness) waitTyping(t *testing.T, n int) []string {
+	t.Helper()
+	for range n {
+		select {
+		case <-hh.z.typed:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("typing ops = %q, want %d", hh.z.typingOps(), n)
+		}
+	}
+	return hh.z.typingOps()
+}
+
+// TestReactionTurnShowsInFlightSignal: a reaction turn gets the same
+// in-flight signal as a text turn — the ack on the message reacted to
+// (once, however many reactions it got) and the typing indicator —
+// even when the agent then stays silent.
+func TestReactionTurnShowsInFlightSignal(t *testing.T) {
+	hh, own := reactHarness(t, func(c *Config) { c.AckEmoji = "eyes" })
+	hh.a.chunks = []string{"<<SILENT>>"}
+	addBefore, delBefore := hh.z.reactions()
+	hh.react(t,
+		reactionEvent(humanID, own, "tada", "add"),
+		reactionEvent(humanID, own, "heart", "add"),
+	)
+	got := hh.waitTyping(t, 2)
+	add, del := hh.z.reactions()
+	add, del = add[len(addBefore):], del[len(delBefore):]
+	want := fmt.Sprintf("%d:eyes", own)
+	if len(add) != 1 || add[0] != want || len(del) != 1 || del[0] != want {
+		t.Fatalf("acks: added %v, removed %v, want one %s each", add, del, want)
+	}
+	if !strings.HasPrefix(got[0], "start:") {
+		t.Fatalf("typing ops = %q, want start first", got)
+	}
+	if last := got[len(got)-1]; !strings.HasPrefix(last, "stop:") {
+		t.Fatalf("typing ops = %q, want stop last", got)
+	}
+	if n := len(hh.z.stored()); n != 1 {
+		t.Fatalf("silent reaction turn posted: %d messages", n)
+	}
+}
+
+// TestReactionTurnQuietReplyTypesOnce: in quiet mode a reaction turn
+// that does reply must not start a second typing loop when the reply
+// commits.
+func TestReactionTurnQuietReplyTypesOnce(t *testing.T) {
+	hh, own := reactHarness(t, func(c *Config) { c.BatchEdits = true })
+	// The first turn's start and stop; the stop lands after WaitIdle.
+	before := len(hh.waitTyping(t, 2))
+	hh.a.chunks = []string{"noted"}
+	hh.react(t, reactionEvent(humanID, own, "tada", "add"))
+	got := hh.waitTyping(t, 2)[before:]
+	if len(got) != 2 || !strings.HasPrefix(got[0], "start:") || !strings.HasPrefix(got[1], "stop:") {
+		t.Fatalf("typing ops = %q, want exactly one start and one stop", got)
 	}
 }
