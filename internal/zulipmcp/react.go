@@ -46,12 +46,13 @@ func checkEmoji(s string) (string, error) {
 func (t *Tools) reactTool() Tool {
 	return Tool{
 		Name: ToolReact,
-		Description: "Add an emoji reaction, as the bot, to a message in THIS conversation. Use it to offer " +
-			"choices the user can tap: post the question with `post` (its result gives the message id), then " +
-			"call react once per option, for example one, two, three, or thumbs_up and thumbs_down. The user's " +
-			"tap reaches you as a reaction line. `msg_id` must be a message in this conversation — get ids from " +
-			"`post` or from the `" + ToolHistory + "` tool; an id from anywhere else is refused. `emoji` is a Zulip " +
-			"emoji name, with or without colons. Adding a reaction that is already there succeeds.",
+		Description: "Add an emoji reaction, as the bot, to a message in THIS conversation. " +
+			"When the user must choose between options, post the choices with one emoji per option, then call " +
+			"react on that message once per option emoji so the user only taps. Prefer this over free-text replies. " +
+			"`post` returns the message id; the user's tap reaches you as a reaction line and is their answer. " +
+			"`msg_id` must be a message in this conversation (from `post` or the `" + ToolHistory + "` tool); an id " +
+			"from anywhere else is refused. `emoji` is a Zulip emoji name such as one, two or thumbs_up, with or " +
+			"without colons. Adding a reaction that is already there succeeds.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

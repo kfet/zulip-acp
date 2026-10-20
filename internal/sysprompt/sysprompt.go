@@ -97,11 +97,7 @@ func reactionInstruction(reactions bool, sentinel string) string {
 		"- Reply only when the reaction plainly changes something or plainly asks for something: " +
 		"a rejection or objection on a proposal you just made, a correction, or an emoji you and the user " +
 		"have agreed is a trigger. Then answer the substance, briefly.\n" +
-		"- Choices: when you ask the user to pick between a few options, offer them as reactions to tap, not as text to type. " +
-		"If the relay offers its `post` and `react` tools: post the question with `post` (its result gives the message id), " +
-		"with one emoji per option in the text (for example :one: A, :two: B, or :thumbs_up: / :thumbs_down:), then call " +
-		"`react` once per option on that message, so each choice is already there to tap. A tap on one of YOUR choice emoji " +
-		"is the user's answer: act on it. Without those tools, list the emoji and ask the user to react.\n" +
+		"- A tap on one of YOUR choice emoji (see the `react` tool) is the user's answer: act on it.\n" +
 		"- Standing trigger: :graduate: (also named :mortar_board:) ADDED by the user means \"turn this into an agent lesson NOW\". " +
 		"In the same turn, call the mood tool lesson_add (or fix the lesson it corrects). A note, runbook or memory file does not count. " +
 		"Reply with the lesson id and rule. Removing :graduate: needs no reply.\n" +
