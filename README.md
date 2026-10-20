@@ -216,9 +216,9 @@ offer the same surface.
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
 | `!think` | show this conversation's thinking level |
 | `!think <off\|minimal\|low\|medium\|high>` | set it for **this conversation**, from the next message on (also on the `!opts` panel) |
-| `!fir <args…>` | run the `fir` CLI on the relay host — no agent, no LLM, so it works while the agent is rate-limited or down (`!fir auth refresh`, `!fir sessions list`, `!fir update -check`). It runs in a scratch directory and **cannot change the live session** |
-| `!skills [name]` | list the skills whose directory holds scripts, or one skill's scripts |
-| `!run <skill> [script] [args…]` | run one of those scripts on the relay host — no agent, no LLM |
+| `!fir <args…>` | owner only: run the `fir` CLI on the relay host — no agent, no LLM, so it works while the agent is rate-limited or down (`!fir auth refresh`, `!fir sessions list`, `!fir update -check`). It runs in a scratch directory and **cannot change the live session** |
+| `!skills [name]` | owner only: list the skills whose directory holds scripts, or one skill's scripts |
+| `!run <skill> [script] [args…]` | owner only: run one of those scripts on the relay host — no agent, no LLM |
 | `!branch [#**channel**] <text>` | spin `<text>` out into a new topic that can read this one (or react `:fork_and_knife:` on a message to spin that message out) |
 | `!new` | retire this conversation and start a fresh one |
 | `!stop` | interrupt the turn currently running here |
@@ -251,9 +251,12 @@ spaces; there is no shell. `!skills` asks `fir skills list` / `fir skills show
 --path` where each skill lives, so it finds them exactly as fir does. A skill
 is listed when its directory (down to two levels, e.g. `scripts/`) holds an
 executable file or a `.sh`, `.py`, `.js`, `.rb` or `.pl` file; there is no
-allowlist. Anyone the relay answers can use them — including `!fir install`,
-`!fir update` and `!fir logout` — which is the same trust the agent's own shell
-already gives them. fir scopes `sessions list` to its cwd, so use
+allowlist. They are **owner-only**: like `!update`, only the user ids in
+`update_owner_ids` can run them, and with no owner configured the relay does
+not answer them at all. Anybody else gets a short ⛔ refusal, and nothing runs.
+`!fir logout` or a skill script changes the relay host for every conversation,
+not only the sender's. `!think` stays open to everyone: it changes only this
+conversation's session. fir scopes `sessions list` to its cwd, so use
 `!fir -C <dir> sessions list` to see a real directory's sessions. See [Options panel](#options-panel),
 [Archiving a topic](#archiving-a-topic-archive_channel) and
 [Branching a topic](#branching-a-topic-branch).

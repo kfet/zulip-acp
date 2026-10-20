@@ -10,6 +10,10 @@ package handler
 // session: each run gets a fresh scratch directory as its cwd, which is
 // removed afterwards.
 //
+// They are owner-only (Config.OpsOwners, the `update_owner_ids` of
+// `!update`): `!fir logout` or a skill script can break the relay host
+// for every conversation, not only the sender's.
+//
 // Every run has a hard timeout (the whole process group is killed) and
 // an output cap, so one command cannot hang the relay or flood a topic.
 
@@ -51,9 +55,9 @@ const (
 )
 
 // opsHelp is the `!help` text for the operator commands.
-const opsHelp = "- `" + command.DisplaySigil + firVerb + " <args…>` — run the `fir` CLI on the relay host (no agent, no LLM; works when the agent is down). It runs in a scratch directory and cannot change the live session\n" +
-	"- `" + command.DisplaySigil + skillsVerb + " [name]` — list skills that hold scripts, or one skill's scripts\n" +
-	"- `" + command.DisplaySigil + runVerb + " <skill> [script] [args…]` — run a skill's script on the relay host (no agent, no LLM)\n"
+const opsHelp = "- `" + command.DisplaySigil + firVerb + " <args…>` — owner only: run the `fir` CLI on the relay host (no agent, no LLM; works when the agent is down). It runs in a scratch directory and cannot change the live session\n" +
+	"- `" + command.DisplaySigil + skillsVerb + " [name]` — owner only: list skills that hold scripts, or one skill's scripts\n" +
+	"- `" + command.DisplaySigil + runVerb + " <skill> [script] [args…]` — owner only: run a skill's script on the relay host (no agent, no LLM)\n"
 
 // OpsResult is the outcome of one process run.
 type OpsResult struct {
@@ -105,14 +109,29 @@ func opsArgs(text, verb string) ([]string, bool) {
 }
 
 // opsEnabled reports whether the operator commands can work here.
-func (h *Handler) opsEnabled() bool { return len(h.cfg.FirCmd) > 0 }
+// Like `!update`, they need an owner.
+func (h *Handler) opsEnabled() bool { return len(h.cfg.FirCmd) > 0 && len(h.cfg.OpsOwners) > 0 }
+
+// opsVerbs are the owner-only verbs, in the order opsFilter tries them.
+var opsVerbs = []string{firVerb, skillsVerb, runVerb}
 
 // opsFilter is the before-filter for `!fir`, `!skills` and `!run`.
 func (h *Handler) opsFilter(ctx context.Context, in *convo.In) convo.Verdict {
 	if !h.opsEnabled() {
 		return convo.Pass
 	}
-	key := metaOf(in).key
+	md := metaOf(in)
+	key := md.key
+	if !slices.Contains(h.cfg.OpsOwners, md.m.SenderID) {
+		for _, v := range opsVerbs {
+			if _, ok := opsArgs(in.Text, v); ok {
+				// The refusal style of `!update` (acp-kit/update).
+				h.reply(ctx, key, "⛔ `"+command.DisplaySigil+v+"` is owner-only on this relay.")
+				return convo.Handled
+			}
+		}
+		return convo.Pass
+	}
 	if args, ok := opsArgs(in.Text, firVerb); ok {
 		if len(args) == 0 {
 			h.reply(ctx, key, "Usage: `"+command.DisplaySigil+firVerb+" <args…>`, e.g. `"+command.DisplaySigil+firVerb+" auth refresh`.")

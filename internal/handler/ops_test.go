@@ -42,6 +42,7 @@ func opsHarness(t *testing.T, fn func(argv []string) OpsResult) (*harness, *fake
 	f := &fakeOps{fn: fn}
 	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
 		c.FirCmd = []string{"fir", "--agent-dir", "/d"}
+		c.OpsOwners = []int64{humanID}
 		c.OpsRunner = f.run
 	})
 	return hh, f
@@ -159,6 +160,7 @@ func TestFirOutputIsCapped(t *testing.T) {
 	f := &fakeOps{fn: func([]string) OpsResult { return ok(strings.Repeat("x", 50)) }}
 	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
 		c.FirCmd = []string{"fir"}
+		c.OpsOwners = []int64{humanID}
 		c.OpsRunner = f.run
 		c.OpsOutputCap = 10
 	})
@@ -238,6 +240,7 @@ func skillsHarness(t *testing.T) (*harness, *fakeOps, map[string]string) {
 	f := &fakeOps{fn: fn}
 	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
 		c.FirCmd = []string{"fir"}
+		c.OpsOwners = []int64{humanID}
 		c.OpsRunner = f.run
 	})
 	return hh, f, paths
@@ -413,6 +416,7 @@ func TestFirAnswersWhileATurnIsInFlight(t *testing.T) {
 	f := &fakeOps{fn: func([]string) OpsResult { return ok("alive") }}
 	hh := dmCmdHarness(t, agent, func(c *Config) {
 		c.FirCmd = []string{"fir"}
+		c.OpsOwners = []int64{humanID}
 		c.OpsRunner = f.run
 	})
 	hh.h.Handle(context.Background(), dmEvent(humanID, "think hard", humanID, botID))
@@ -428,4 +432,35 @@ func TestFirAnswersWhileATurnIsInFlight(t *testing.T) {
 	}
 	close(agent.block)
 	waitIdle(t, hh)
+}
+
+func TestOpsAreOwnerOnly(t *testing.T) {
+	hh, f := opsHarness(t, func([]string) OpsResult { return ok("x") })
+	hh.h.cfg.OpsOwners = []int64{humanID + 1000}
+	for _, v := range []string{"fir", "skills", "run"} {
+		got := hh.ops(t, "!"+v+" a")
+		if want := "⛔ `!" + v + "` is owner-only on this relay."; got != want {
+			t.Fatalf("%s: got %q, want %q", v, got, want)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("a refused command ran: %q", f.calls)
+	}
+}
+
+func TestOpsNeedAnOwner(t *testing.T) {
+	hh, _ := opsHarness(t, func([]string) OpsResult { return ok("x") })
+	hh.h.cfg.OpsOwners = nil
+	if hh.h.opsEnabled() {
+		t.Fatal("ops enabled without an owner")
+	}
+}
+
+func TestOpsGateLetsOtherTextPass(t *testing.T) {
+	hh, _ := opsHarness(t, func([]string) OpsResult { return ok("x") })
+	hh.h.cfg.OpsOwners = []int64{humanID + 1000}
+	got := hh.ops(t, "hello")
+	if strings.Contains(got, "⛔") {
+		t.Fatalf("plain text was refused: %q", got)
+	}
 }

@@ -296,6 +296,10 @@ type Config struct {
 	// FirCmd is the argv prefix that runs the fir CLI for `!fir`,
 	// `!skills` and `!run` (ops.go). Empty disables those commands.
 	FirCmd []string
+	// OpsOwners are the Zulip user ids allowed to run `!fir`, `!skills`
+	// and `!run` — the `update_owner_ids` of `!update`. Empty disables
+	// those commands, like `!update` without an owner.
+	OpsOwners []int64
 	// OpsTimeout bounds one of those runs. 0 uses DefaultOpsTimeout.
 	OpsTimeout time.Duration
 	// OpsOutputCap bounds the output shown, in code points. 0 uses
