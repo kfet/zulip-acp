@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-10-20
+
 ### Changed
 
 - The `react` tool description holds the choice guidance: post one emoji per option, pre-react each, prefer this over free-text replies. The system prompt keeps only one line about choice taps.
