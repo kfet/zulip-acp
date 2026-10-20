@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-10-20
+
 ### Changed
 
 - `!fir`, `!skills` and `!run` are owner-only (`update_owner_ids`, the gate of `!update`). A non-owner gets a ⛔ refusal and nothing runs; with no owner the relay does not answer them. `!help` marks them "owner only". `!think` stays open to everyone.
