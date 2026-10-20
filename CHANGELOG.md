@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Relay MCP tool `react(msg_id, emoji)`: the agent adds an emoji reaction, as the bot, to a message in its own conversation. A message id from another topic or DM is refused. The system prompt tells the agent to offer choices as pre-added reactions.
+- The `post` tool returns the ids of the messages it posted (acp-kit v0.35.0).
+
 ## [0.56.1] - 2026-10-20
 
 ### Changed

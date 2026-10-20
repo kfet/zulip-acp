@@ -27,6 +27,7 @@ func branchTools(t *testing.T, key journal.Key, res []BranchResult, berr error) 
 			session, got = s, tasks
 			return res, berr
 		},
+		React: noReact,
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)

@@ -701,6 +701,7 @@ func main() {
 			Branch: func(k string, tasks []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 				return h.BranchTasks(k, tasks)
 			},
+			React:   func(k string, id int64, emoji string) error { return h.ReactTo(k, id, emoji) },
 			Timeout: config.DefaultZulipCallTimeout,
 			Logf:    log.Printf,
 		})

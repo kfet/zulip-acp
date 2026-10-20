@@ -804,7 +804,7 @@ socket and advertises it to its own child agent. The agent can then:
   `!commands`, through the same code;
 - `post` a message into **this** conversation out of band, so a long task can
   report progress, or a result can arrive after the turn that started it has
-  ended;
+  ended. The result gives the posted message id(s);
 - `schedule` / `list_schedules` / `unschedule` a prompt to itself. On fire it
   re-enters the same conversation with its full history and the answer streams
   into the topic normally.
@@ -821,6 +821,10 @@ socket and advertises it to its own child agent. The agent can then:
   (the branch point, as `history` shows it) and an optional `seed` and
   `title`. The relay posts the links in this topic, and one line in the root
   topic when a branch branches again.
+- `react` — add an emoji reaction, as the bot, to a message in **this**
+  conversation. With the id `post` returns, the agent can ask a question and
+  pre-add one emoji per choice, so the user taps an answer instead of typing
+  one. A `msg_id` from any other topic or DM is refused.
 - read `history` — the conversation's **own earlier messages**, oldest first,
   as raw markdown, including the bot's own past replies. That is how an agent
   whose session was cleared (or that started after a restart) recovers what a
@@ -836,8 +840,8 @@ prompt-injected agent could do. Three things bound it:
   the MCP connection token, server-side. No tool takes a channel, topic or
   user as an argument, so there is no way to address anywhere else — and that
   applies to reading as much as to posting: `history` can only read the topic
-  or DM the call came from, and `rename_topic` can only rename that same
-  topic. `branch` is the one tool that writes elsewhere: it opens NEW topics in
+  or DM the call came from, `rename_topic` can only rename that same
+  topic, and `react` can only react to a message in it. `branch` is the one tool that writes elsewhere: it opens NEW topics in
   the caller's own channel, posts a notification line in the root topic of its
   branch tree, and its branch point must be in the caller's topic.
 - **Output is bounded.** `history` caps each message body and the reply as a

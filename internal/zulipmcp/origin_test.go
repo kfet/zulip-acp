@@ -112,6 +112,7 @@ func TestHistoryOriginIsOneHop(t *testing.T) {
 		Children: noKids,
 		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch:   noBranch,
+		React:    noReact,
 		Logf:     func(string, ...any) {},
 	})
 	if err != nil {

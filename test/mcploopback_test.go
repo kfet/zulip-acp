@@ -270,6 +270,7 @@ func runRelayChild() {
 		Children: func(string) ([]zulipmcp.Child, bool) { return nil, true },
 		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch:   func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
+		React:    func(string, int64, string) error { return nil },
 		Timeout:  10 * time.Second,
 		Logf:     func(string, ...any) {},
 	})

@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/kfet/acp-kit/command"
@@ -239,9 +240,18 @@ const originTimeout = 30 * time.Second
 // command.Poster. The key comes from the token, so the worst an agent
 // can do is talk in the topic it was already talking in.
 func (h *Handler) PostTo(token, text string) error {
+	_, err := h.PostToIDs(token, text)
+	return err
+}
+
+// PostToIDs satisfies command.IDPoster: it is PostTo, and it returns
+// the ids of every message the post put up, oldest first. The agent
+// needs them to act on its own post — for example, to add the choice
+// emoji to a question with the `react` tool.
+func (h *Handler) PostToIDs(token, text string) ([]string, error) {
 	key, err := journal.ParseToken(token)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The token holds the base topic; post where the topic is now.
 	key = h.cfg.Journal.Current(key)
@@ -253,7 +263,7 @@ func (h *Handler) PostTo(token, text string) error {
 		ContMarker: h.cfg.ContinuationMarker,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Through the splitter, not straight to SendMessage: Zulip
 	// truncates past MAX_MESSAGE_LENGTH silently, and an out-of-band
@@ -282,7 +292,11 @@ func (h *Handler) PostTo(token, text string) error {
 	// still put real messages on the surface, and those are ours
 	// whether or not the last write failed.
 	h.rememberPosted(key, split)
-	return err
+	ids := make([]string, 0, len(split.IDs()))
+	for _, id := range split.IDs() {
+		ids = append(ids, strconv.FormatInt(id, 10))
+	}
+	return ids, err
 }
 
 // rememberPosted indexes every message a loopback post actually put on
@@ -513,5 +527,6 @@ func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
 // the agent's tool list at runtime instead of as a build failure.
 var (
 	_ command.Poster    = (*Handler)(nil)
+	_ command.IDPoster  = (*Handler)(nil)
 	_ command.Scheduler = (*Handler)(nil)
 )

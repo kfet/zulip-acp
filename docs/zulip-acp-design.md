@@ -1771,8 +1771,8 @@ implemented, plus two OPTIONAL capabilities in the shape of `TurnStopper`:
 | `Poster` | `post` tool | yes | no — nothing to speak on after the response |
 | `Scheduler` | `schedule` tools, `!schedules`, `!unschedule` | yes | no — same reason |
 
-`history`, `rename_topic` and `branch` sit outside that table on purpose: none
-has a Broker action, because neither is a relay-generic control
+`history`, `rename_topic`, `branch` and `react` sit outside that table on
+purpose: none has a Broker action, because none is a relay-generic control
 at all. See below.
 
 ### What is deliberately not exposed

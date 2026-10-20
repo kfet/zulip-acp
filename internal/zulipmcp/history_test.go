@@ -57,6 +57,7 @@ func newBranchedTools(t *testing.T, c *fakeClient, convID string, key journal.Ke
 		Children: noKids,
 		Rename:   func(journal.Key, string) (string, error) { return "armed", nil },
 		Branch:   noBranch,
+		React:    noReact,
 		Logf:     func(string, ...any) {},
 	})
 	if err != nil {
@@ -72,7 +73,7 @@ func only(t *testing.T, tools *Tools) Tool { return pick(t, tools, ToolHistory) 
 func pick(t *testing.T, tools *Tools, name string) Tool {
 	t.Helper()
 	set := tools.Tools()
-	if len(set) != 4 {
+	if len(set) != 5 {
 		t.Fatalf("tool set = %+v", set)
 	}
 	for _, x := range set {
@@ -94,25 +95,28 @@ func TestNewToolsRequiresItsDependencies(t *testing.T) {
 	key := func(string) (journal.Key, bool) { return journal.Key{}, true }
 	origin := func(string) (journal.Parent, bool) { return journal.Parent{}, false }
 	rename := func(journal.Key, string) (string, error) { return "", nil }
-	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch, React: noReact}); err == nil {
 		t.Fatal("a Tools with no Client must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch, React: noReact}); err == nil {
 		t.Fatal("a Tools with no ConvKey has no identity and must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Rename: rename, Branch: noBranch, React: noReact}); err == nil {
 		t.Fatal("a Tools with no Origin must not construct: history(origin) would panic on the first call")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Rename: rename, Branch: noBranch, React: noReact}); err == nil {
 		t.Fatal("a Tools with no Children must not construct")
 	}
-	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Branch: noBranch}); err == nil {
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Branch: noBranch, React: noReact}); err == nil {
 		t.Fatal("a Tools with no Rename must not construct: rename_topic would panic on the first call")
 	}
 	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename}); err == nil {
 		t.Fatal("a Tools with no Branch must not construct: branch would panic on the first call")
 	}
-	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch})
+	if _, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch}); err == nil {
+		t.Fatal("a Tools with no React must not construct: react would panic on the first call")
+	}
+	tools, err := NewTools(Config{Client: &fakeClient{}, ConvKey: key, Origin: origin, Children: noKids, Rename: rename, Branch: noBranch, React: noReact})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
 	}
@@ -236,6 +240,7 @@ func TestHistoryTimesOut(t *testing.T) {
 		Children: noKids,
 		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch:   noBranch,
+		React:    noReact,
 		Timeout:  time.Millisecond,
 	})
 	if err != nil {

@@ -27,6 +27,7 @@ func newKidTools(t *testing.T, c *fakeClient, kids []Child, ok bool) *Tools {
 		Children: func(string) ([]Child, bool) { return kids, ok },
 		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch:   noBranch,
+		React:    noReact,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -12,7 +12,7 @@ agent — so the agent can drive the relay from inside a turn: post out of band,
 schedule a prompt back into the same conversation, and read that
 conversation's own earlier messages (`history`), and rename the topic it is
 talking in (`rename_topic`), and branch work out into new topics
-(`branch`). ACP has no
+(`branch`), and react to a message in its own conversation (`react`). ACP has no
 agent-initiated message and the streaming sink is bound per turn, but an MCP
 tool call runs agent→client, so this is the mechanism the protocol already
 gives us. It is **off by default** (`"relay_mcp": true`), because it widens
@@ -163,9 +163,10 @@ Zulip wire protocol it stays here.
   Zulip knows: conv-id → broker token / `journal.Key`, posting through the
   splitter, and re-applying the relay's gates when a schedule fires.
 - **A tool that needs something only Zulip knows lives in
-  `internal/zulipmcp`.** That is `history`, `rename_topic` and `branch` today —
+  `internal/zulipmcp`.** That is `history`, `rename_topic`, `branch` and `react` today —
   a narrow over a topic or a DM, a topic move, and a topic fan-out, all
-  resolved from `Handler.ConvKey`. None has a Broker action, because none is a
+  resolved from `Handler.ConvKey`, and a reaction on a message in the
+  caller's own conversation. None has a Broker action, because none is a
   relay-generic control. `branch` is the agent twin of `!branch` and
   :fork_and_knife:, and all three MUST go through `branchOnce` in
   `internal/handler/branch.go` — never a second way to create a branch. Do not

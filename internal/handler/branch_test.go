@@ -603,7 +603,8 @@ func TestBranchedSessionReadsItsParentAndNothingElse(t *testing.T) {
 		Branch: func(k string, ts []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 			return hh.h.BranchTasks(k, ts)
 		},
-		Logf: func(string, ...any) {},
+		React: func(k string, id int64, emoji string) error { return hh.h.ReactTo(k, id, emoji) },
+		Logf:  func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("NewTools: %v", err)
@@ -1307,6 +1308,7 @@ func TestConvChildrenListsOnlyConfirmedDirectChildren(t *testing.T) {
 		Children: func(k string) ([]zulipmcp.Child, bool) { return hh.h.ConvChildren(k) },
 		Rename:   func(journal.Key, string) (string, error) { return "", nil },
 		Branch:   func(string, []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) { return nil, nil },
+		React:    func(string, int64, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

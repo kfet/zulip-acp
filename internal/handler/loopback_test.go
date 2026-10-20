@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -736,5 +737,29 @@ func TestSchedulingSurfaceHiddenWithoutTheStore(t *testing.T) {
 	hh.deliver(t, "plain", "!schedules")
 	if got := hh.only(t); !strings.Contains(got, "Unknown command") {
 		t.Fatalf("!schedules with no store = %q", got)
+	}
+}
+
+// TestPostToIDsReturnsEveryPostedID: the agent gets the id of each
+// message the post made, oldest first, so it can react to its own
+// question.
+func TestPostToIDsReturnsEveryPostedID(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), func(c *Config) { c.Budget = 200 })
+	ids, err := lh.h.PostToIDs(chanToken("loopback"), strings.Repeat("x", 600))
+	if err != nil {
+		t.Fatalf("PostToIDs: %v", err)
+	}
+	if len(ids) < 2 || len(ids) != len(lh.z.stored()) {
+		t.Fatalf("ids = %v for %d messages", ids, len(lh.z.stored()))
+	}
+	for i := 1; i < len(ids); i++ {
+		a, _ := strconv.ParseInt(ids[i-1], 10, 64)
+		b, _ := strconv.ParseInt(ids[i], 10, 64)
+		if a <= 0 || b <= a {
+			t.Fatalf("ids not oldest first: %v", ids)
+		}
+	}
+	if _, err := lh.h.PostToIDs("not a token", "x"); err == nil {
+		t.Fatal("want refusal for a bad token")
 	}
 }

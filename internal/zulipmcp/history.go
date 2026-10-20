@@ -105,6 +105,12 @@ type Config struct {
 	// arguments' shape and the task count; everything that needs Zulip
 	// or the journal is the Handler's.
 	Branch func(sessionKey string, tasks []BranchTask) ([]BranchResult, error)
+	// React adds an emoji, as the bot, to a message in the conversation
+	// the session key names. Required. The tool has validated the
+	// arguments' shape; the check that the message is in THIS
+	// conversation is the Handler's, because it needs Zulip and the
+	// journal.
+	React func(sessionKey string, msgID int64, emoji string) error
 	// Timeout bounds one Zulip round-trip. The agent's turn is blocked
 	// until the tool call returns, so an unbounded fetch would let one
 	// wedged request hang the turn forever.
@@ -150,6 +156,9 @@ func NewTools(cfg Config) (*Tools, error) {
 	}
 	if cfg.Branch == nil {
 		return nil, errors.New("zulipmcp: Branch is required")
+	}
+	if cfg.React == nil {
+		return nil, errors.New("zulipmcp: React is required")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
@@ -264,7 +273,7 @@ func (t *Tools) Tools() []Tool {
 			}
 			return t.history(c, a.Limit, a.BeforeID, a.Origin, a.Child)
 		}),
-	}, t.listChildrenTool(), t.renameTool(), t.branchTool()}
+	}, t.listChildrenTool(), t.renameTool(), t.branchTool(), t.reactTool()}
 }
 
 // history fetches and renders one page, of this conversation or of its
