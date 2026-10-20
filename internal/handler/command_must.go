@@ -25,3 +25,12 @@ func mustConvo(m *convo.Manager, err error) *convo.Manager {
 	}
 	return m
 }
+
+// mustOverrides panics if convo.NewOverrides failed. With a nil Store it
+// cannot fail, so an error here is a wiring bug.
+func mustOverrides(o *convo.Overrides, err error) *convo.Overrides {
+	if err != nil {
+		panic("handler: overrides: " + err.Error())
+	}
+	return o
+}

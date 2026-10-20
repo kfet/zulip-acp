@@ -214,6 +214,11 @@ offer the same surface.
 | `!model` | list the models the agent reports |
 | `!model <filter>` | narrow that list |
 | `!model <id>` | switch **this conversation** to that model, from the next message on |
+| `!think` | show this conversation's thinking level |
+| `!think <off\|minimal\|low\|medium\|high>` | set it for **this conversation**, from the next message on (also on the `!opts` panel) |
+| `!fir <args…>` | run the `fir` CLI on the relay host — no agent, no LLM, so it works while the agent is rate-limited or down (`!fir auth refresh`, `!fir sessions list`, `!fir update -check`). It runs in a scratch directory and **cannot change the live session** |
+| `!skills [name]` | list the skills whose directory holds scripts, or one skill's scripts |
+| `!run <skill> [script] [args…]` | run one of those scripts on the relay host — no agent, no LLM |
 | `!branch [#**channel**] <text>` | spin `<text>` out into a new topic that can read this one (or react `:fork_and_knife:` on a message to spin that message out) |
 | `!new` | retire this conversation and start a fresh one |
 | `!stop` | interrupt the turn currently running here |
@@ -228,13 +233,34 @@ Older spellings still work and are not going away: `!models`, `!relay`,
 
 `!opts`, `!archive` and `!branch` are the commands that are **not** in the
 shared broker: each needs something only Zulip has — a button widget, a
-cross-channel topic move, a topic to create. See [Options panel](#options-panel),
+cross-channel topic move, a topic to create. `!think`, `!fir`, `!skills` and
+`!run` are also the relay's own today.
+
+`!think` uses the agent's `thinking_level` session config option, the same
+mechanism as `!model`: the choice is sticky per conversation, survives `!new`,
+and is applied to the live session at the start of the next turn. The session
+and its prompt cache are kept. The panel offers it only when the agent reports
+a thinking level.
+
+`!fir`, `!skills` and `!run` need a `fir` agent. They run outside the turn
+loop, so they answer while a turn is in flight. Each run has a hard timeout
+(2 minutes; the whole process group is killed) and an output cap, gets a fresh
+scratch directory as its working directory, and posts its raw output in a code
+block — with stderr when the exit code is not zero. Arguments are split on
+spaces; there is no shell. `!skills` asks `fir skills list` / `fir skills show
+--path` where each skill lives, so it finds them exactly as fir does. A skill
+is listed when its directory (down to two levels, e.g. `scripts/`) holds an
+executable file or a `.sh`, `.py`, `.js`, `.rb` or `.pl` file; there is no
+allowlist. Anyone the relay answers can use them — including `!fir install`,
+`!fir update` and `!fir logout` — which is the same trust the agent's own shell
+already gives them. fir scopes `sessions list` to its cwd, so use
+`!fir -C <dir> sessions list` to see a real directory's sessions. See [Options panel](#options-panel),
 [Archiving a topic](#archiving-a-topic-archive_channel) and
 [Branching a topic](#branching-a-topic-branch).
 
 Commands the **agent** advertises are forwarded to it when they are on a small
 curated allowlist — `!reload`, `!logout`, `!compact`, `!session`,
-`!changelog`, `!mcp`, `!skills`. These do reach the agent and stream a reply
+`!changelog`, `!mcp`, and `!skills` when the agent is not fir. These do reach the agent and stream a reply
 like any other turn. `!help` lists whichever ones your agent currently offers.
 
 `!new` is why this surface matters most. A channel conversation can always be

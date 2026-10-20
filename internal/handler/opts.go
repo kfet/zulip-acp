@@ -741,6 +741,8 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 		}
 	}
 
+	settingButtons := h.renderSettings(&sb, key)
+
 	sb.WriteString("\n**Session**\n")
 	fmt.Fprintf(&sb, "- `%snew` — fresh context, same model\n", s)
 	fmt.Fprintf(&sb, "- `%sstop` — interrupt the running turn\n", s)
@@ -791,6 +793,7 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 	if h.CanSchedule() {
 		buttons = append(buttons, zulipproto.Choice(schedVerb, "Pending schedules", s+schedVerb))
 	}
+	buttons = append(buttons, settingButtons...)
 	return sb.String(), zulipproto.ZForm("⚙️ "+modelLabel(effective), buttons), chips
 }
 

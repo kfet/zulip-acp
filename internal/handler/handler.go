@@ -73,6 +73,9 @@ type Agent interface {
 	// <id>`; the relay never calls it unless a user asked for a
 	// specific model.
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
+	// SetConfigOption sets one ACP session config option. It backs the
+	// session settings such as `!think` (settings.go).
+	SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error
 	// CurrentModel is the model one session is running. The footer
 	// names it; Models' current is process-wide and names whichever
 	// session was opened last.
@@ -289,6 +292,17 @@ type Config struct {
 	// with TypingIntervalFor. 0 defaults to 10s; a negative value
 	// turns the indicator off.
 	TypingInterval time.Duration
+
+	// FirCmd is the argv prefix that runs the fir CLI for `!fir`,
+	// `!skills` and `!run` (ops.go). Empty disables those commands.
+	FirCmd []string
+	// OpsTimeout bounds one of those runs. 0 uses DefaultOpsTimeout.
+	OpsTimeout time.Duration
+	// OpsOutputCap bounds the output shown, in code points. 0 uses
+	// DefaultOpsOutputCap.
+	OpsOutputCap int
+	// OpsRunner runs one process. Nil uses the real os/exec runner.
+	OpsRunner OpsRunner
 
 	// Budget, SealMarker and ContinuationMarker configure the splitter.
 	Budget             int
@@ -525,6 +539,13 @@ type Handler struct {
 
 	// catchups tracks the goroutine that starts catch-up turns.
 	catchups sync.WaitGroup
+
+	// ops tracks the `!fir` / `!run` goroutines (ops.go).
+	ops sync.WaitGroup
+
+	// settings holds one sticky store per sessionSettings row.
+	settingsOnce sync.Once
+	settings     []*convo.Overrides
 	// liveTurns maps a conv-id to the id of the last live message that
 	// started a turn in it. A catch-up turn still waiting for a slot
 	// must not supersede a newer live turn.
@@ -678,6 +699,15 @@ func New(cfg Config) (*Handler, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.OpsTimeout <= 0 {
+		cfg.OpsTimeout = DefaultOpsTimeout
+	}
+	if cfg.OpsOutputCap <= 0 {
+		cfg.OpsOutputCap = DefaultOpsOutputCap
+	}
+	if cfg.OpsRunner == nil {
+		cfg.OpsRunner = execRunner
 	}
 	h := &Handler{
 		cfg:            cfg,
@@ -1392,6 +1422,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	h.cfg.Sessions.Touch(sess)
 	h.applyDefaultModel(conv.ID)
 	h.convo.ApplyModel(ctx, conv.ID, sess.SessionID)
+	h.applySettings(ctx, conv.ID, sess.SessionID)
 	h.resolveModelInfo(sink, sess.SessionID)
 
 	var blocks []acp.ContentBlock
@@ -2139,6 +2170,9 @@ func (h *Handler) WaitIdle(ctx context.Context) error {
 	started := make(chan struct{})
 	go func() {
 		h.catchups.Wait()
+		// A running `!fir` / `!run` posts its answer too, and its
+		// timeout bounds the wait.
+		h.ops.Wait()
 		close(started)
 	}()
 	select {

@@ -313,3 +313,23 @@ func markOrNil(s *catchup.Store) handler.Mark {
 	}
 	return s
 }
+
+// firCmdFor is the argv prefix for `!fir`, `!skills` and `!run`: the
+// agent's own fir binary, with the agent's --agent-dir when it has one,
+// so the CLI sees the same config, credentials and skills as the agent.
+// It is nil when the agent is not fir.
+func firCmdFor(bin string, agentArgv []string) []string {
+	if bin == "" {
+		return nil
+	}
+	out := []string{bin}
+	for i, a := range agentArgv {
+		switch {
+		case a == "--agent-dir" && i+1 < len(agentArgv):
+			out = append(out, a, agentArgv[i+1])
+		case strings.HasPrefix(a, "--agent-dir="):
+			out = append(out, a)
+		}
+	}
+	return out
+}

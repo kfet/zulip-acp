@@ -607,6 +607,7 @@ func main() {
 		Loopback:           tools,
 		Version:            version,
 		AgentCmd:           strings.Join(cfg.GetAgentCmd(), " "),
+		FirCmd:             firCmdFor(agentBin, cfg.GetAgentCmd()),
 		AgentVersion:       agentVersion,
 		StartTime:          time.Now(),
 		Sessions:           sessions,

@@ -1486,11 +1486,12 @@ status line.
 **A button must never offer what the agent cannot do.** Model options come
 from the boot-time probe (`Agent.Models()`), capped so the menu fits one
 screen, current model first, with `!model <filter>` reaching the rest. Thinking
-level is deliberately *absent*: acp-kit exposes the model config option but no
-snapshot of an agent's other `configOptions`, so the relay cannot know a
-session has one. Inventing the knob would mean a button that silently fails.
-When acp-kit surfaces those options, the knob belongs here — and the acp-kit
-change comes first.
+level is offered only when the agent reports one: acp-kit's `SessionStats`
+carries the session's `thought_level` config option, so the panel shows the
+`!think` buttons only for a conversation whose live session reported a level
+(or which already has a sticky choice). `!think` itself is a row in
+`internal/handler/settings.go`'s table, which maps a command to an ACP config
+option id; a further session knob is one more row.
 
 **The phone still could not tap the buttons — so the models moved to a poll.**
 Everything above makes the markdown body *readable* on a phone; none of it

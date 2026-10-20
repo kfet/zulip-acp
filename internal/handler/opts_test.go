@@ -1038,17 +1038,17 @@ func TestDecoratePlacesTheLineWithTheRelayCommands(t *testing.T) {
 		{
 			name: "next to !help",
 			out:  "Available commands:\n\n- `!help` — show this\n- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
-			want: "Available commands:\n\n- `!help` — show this\n" + optsHelpLine + branchHelp + "- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
+			want: "Available commands:\n\n- `!help` — show this\n" + optsHelpLine + branchHelp + settingsHelp() + "- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
 		},
 		{
 			name: "no !help bullet to anchor to",
 			out:  "Commands:\n\n- `!status`\n",
-			want: "Commands:\n\n- `!status`\n" + optsHelpLine + branchHelp,
+			want: "Commands:\n\n- `!status`\n" + optsHelpLine + branchHelp + settingsHelp(),
 		},
 		{
 			name: "unterminated !help bullet",
 			out:  "- `!help` — show this",
-			want: "- `!help` — show this\n" + optsHelpLine + branchHelp,
+			want: "- `!help` — show this\n" + optsHelpLine + branchHelp + settingsHelp(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

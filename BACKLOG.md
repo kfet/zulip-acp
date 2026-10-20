@@ -339,3 +339,19 @@ compare — so the block has no key for it.
   with it). Fix needs a re-key action in `acp-kit/schedule` (for example
   `Store.Rekey(old, new string)`), called from the journal's `Rename`/`Move`
   paths in the handler. Found while adding the schedule indicators.
+
+## Promote `!think` and the ops commands to acp-kit
+
+`!think` (`internal/handler/settings.go`) and `!fir` / `!skills` / `!run`
+(`internal/handler/ops.go`) hold nothing Zulip-specific except the reply
+path. They live here first so the design can settle on one relay. Move the
+settings table and the runner/discovery to `acp-kit/command` so `poe-acp`
+offers the same surface.
+
+## acp-kit: note config options from the set_config_option response
+
+`client.AgentProc.SetConfigOption` drops the response. fir returns the full
+option set there, including a CLAMPED thinking level when the model does not
+support the one asked for. Until acp-kit records it (`noteConfig`), `!status`
+shows the old level until the agent sends a `config_option_update`, and
+`!think` shows the level asked for, not the clamped one.

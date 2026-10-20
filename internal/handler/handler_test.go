@@ -690,6 +690,26 @@ type fakeAgent struct {
 	listErr  error
 	// leaf is the leaf id PromptTurn reports.
 	leaf string
+	// configSet records every SetConfigOption call as
+	// "sid:id=value"; configErr fails them.
+	configSet []string
+	configErr error
+}
+
+func (a *fakeAgent) SetConfigOption(_ context.Context, sid acp.SessionId, id, value string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.configErr != nil {
+		return a.configErr
+	}
+	a.configSet = append(a.configSet, string(sid)+":"+id+"="+value)
+	return nil
+}
+
+func (a *fakeAgent) configs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.configSet)
 }
 
 func (a *fakeAgent) PromptTurn(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (client.TurnResult, error) {

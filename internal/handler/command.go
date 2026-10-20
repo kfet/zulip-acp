@@ -32,6 +32,7 @@ import (
 	"fmt"
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/convo"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -236,6 +237,11 @@ func (h *Handler) beforeFilters() []convo.Filter {
 			h.schedCommand(ctx, metaOf(in).key)
 			return convo.Handled
 		},
+		h.settingsFilter,
+		// `!fir`, `!skills` and `!run` run a program on the relay host
+		// with no agent involved. They are handled here, ahead of the
+		// broker, so `!skills` is no longer the agent passthrough.
+		h.opsFilter,
 		h.modelRules,
 	}
 }
@@ -350,6 +356,13 @@ func (h *Handler) decorate(text, out string) string {
 		extra += schedHelp
 	}
 	extra += h.quickHelp()
+	extra += settingsHelp()
+	if h.opsEnabled() {
+		extra += opsHelp
+		// The relay now answers `!skills` itself, so the broker's
+		// agent-passthrough line for it would be a lie.
+		out = dropLine(out, "- `"+command.DisplaySigil+skillsVerb+"`")
+	}
 	// Inserted right after the `!help` bullet rather than appended:
 	// the broker's help ends with an optional "Agent commands:"
 	// section, and a relay command filed under that heading would be a
@@ -638,6 +651,7 @@ func (h *Handler) resetSession(token string) error {
 	// The model choice is the user's, not the conversation's: carry it
 	// across so `!new` clears context without silently reverting it.
 	_ = h.convo.Overrides().Carry(prev.ID, fresh.ID)
+	h.carrySettings(prev.ID, fresh.ID)
 	// The retired conversation owns no message any more. Retire has
 	// already cleared the persisted record; this drops the in-memory
 	// one, which would otherwise outlive the conversation it names.
@@ -657,3 +671,9 @@ func (h *Handler) StopTurn(token string) bool {
 // updateAckEmoji is the relay's instant receipt for `!update`,
 // `!upgrade` and `!restart`, distinct from the agent's :eyes:.
 const updateAckEmoji = "hourglass_flowing_sand"
+
+// dropLine removes every line of s that starts with prefix.
+func dropLine(s, prefix string) string {
+	lines := strings.SplitAfter(s, "\n")
+	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, prefix) }), "")
+}

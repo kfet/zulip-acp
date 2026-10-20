@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,5 +377,16 @@ func TestMarkOrNil(t *testing.T) {
 	}
 	if markOrNil(s) == nil {
 		t.Fatal("store lost")
+	}
+}
+
+func TestFirCmdFor(t *testing.T) {
+	if got := firCmdFor("", []string{"claude"}); got != nil {
+		t.Fatalf("got %q", got)
+	}
+	got := firCmdFor("/bin/fir", []string{"fir", "--mode", "acp", "--agent-dir", "/a", "--agent-dir=/b", "--agent-dir"})
+	want := []string{"/bin/fir", "--agent-dir", "/a", "--agent-dir=/b"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

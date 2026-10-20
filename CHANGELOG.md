@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!skills [name]` and `!run <skill> [script] [args…]` list and run the scripts in skill directories on the relay host, with no agent and no LLM. With a fir agent, `!skills` is no longer forwarded to the agent.
+- `!fir <args…>` runs the fir CLI on the relay host with no agent and no LLM, in a scratch directory, with a hard timeout and an output cap. It works while a turn is in flight or the agent is down.
+- `!think [off|minimal|low|medium|high]` shows or sets the thinking level per conversation. The `!opts` panel offers it when the agent reports one.
+
 ## [0.55.1] - 2026-10-20
 
 ### Changed
