@@ -75,6 +75,10 @@ type fakeZulip struct {
 	reactAdd []string
 	reactDel []string
 	reactErr error
+	// topicDeletes records DeleteTopic calls as "stream:topic";
+	// topicDeleteErr makes them fail.
+	topicDeletes   []string
+	topicDeleteErr error
 	// reactDelErr fails only the REMOVAL, so the two halves of the
 	// ack can be driven independently.
 	reactDelErr error
@@ -412,6 +416,23 @@ func (z *fakeZulip) MoveMessageToChannel(_ context.Context, id, streamID int64, 
 		z.messages[id] = m
 	}
 	return nil
+}
+
+func (z *fakeZulip) DeleteTopic(_ context.Context, streamID int64, topic string) error {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.topicDeleteErr != nil {
+		return z.topicDeleteErr
+	}
+	z.topicDeletes = append(z.topicDeletes, fmt.Sprintf("%d:%s", streamID, topic))
+	return nil
+}
+
+// deletedTopics returns the recorded topic deletions, in order.
+func (z *fakeZulip) deletedTopics() []string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return slices.Clone(z.topicDeletes)
 }
 
 func (z *fakeZulip) DeleteMessage(_ context.Context, id int64) error {

@@ -316,3 +316,43 @@ func TestMovePolicyTooOld(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteTopic pins the wire shape and the batch loop: the call
+// repeats while the server answers complete=false.
+func TestDeleteTopic(t *testing.T) {
+	n := 0
+	ts := newServer(t, func(recordedReq) (int, string) {
+		n++
+		if n < 3 {
+			return 200, okJSON(`"complete":false`)
+		}
+		return 200, okJSON(`"complete":true`)
+	})
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	reqs := ts.requests()
+	if len(reqs) != 3 || reqs[0].method != "POST" || reqs[0].path != "/api/v1/streams/42/delete_topic" ||
+		reqs[0].form.Get("topic_name") != "t" {
+		t.Fatalf("requests = %+v", reqs)
+	}
+}
+
+// TestDeleteTopicShapes: an omitted complete is done, a refusal is a
+// RejectedByServer error, and a server that never completes is bounded.
+func TestDeleteTopicShapes(t *testing.T) {
+	ts := newServer(t, func(recordedReq) (int, string) { return 200, okJSON("") })
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); err != nil || len(ts.requests()) != 1 {
+		t.Fatalf("err = %v, requests = %d", err, len(ts.requests()))
+	}
+	ts = newServer(t, func(recordedReq) (int, string) {
+		return 400, `{"result":"error","msg":"Must be an organization administrator","code":"BAD_REQUEST"}`
+	})
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); !RejectedByServer(err) {
+		t.Fatalf("err = %v", err)
+	}
+	ts = newServer(t, func(recordedReq) (int, string) { return 200, okJSON(`"complete":false`) })
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); err == nil || len(ts.requests()) != deleteTopicMaxBatches {
+		t.Fatalf("err = %v, requests = %d", err, len(ts.requests()))
+	}
+}

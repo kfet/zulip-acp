@@ -96,7 +96,7 @@ type QuickModel struct {
 // reservedQuickEmojis are emojis that already mean something on a relay
 // message. A shortlist entry may not take one.
 // The !opts chips, the !opts tick and the schedule mark are included.
-var reservedQuickEmojis = []string{"wastebasket", "fork_and_knife", "gear", "www",
+var reservedQuickEmojis = []string{"wastebasket", "fire", "fork_and_knife", "gear", "www",
 	"new", "octagonal_sign", "bar_chart", "check", "alarm_clock"}
 
 // Config is the operator-facing JSON config.

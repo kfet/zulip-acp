@@ -158,6 +158,10 @@ type Poster interface {
 	// and only after startup has established that realm policy allows
 	// it; see archive.go.
 	MoveMessageToChannel(ctx context.Context, id, streamID int64, topic, propagateMode string) error
+	// DeleteTopic deletes a whole topic for good. Only the delete
+	// confirmation of the archive control uses it; it needs the bot to
+	// be an organisation administrator, so the caller reports a refusal.
+	DeleteTopic(ctx context.Context, streamID int64, topic string) error
 	// DeleteMessage removes a message the bot posted. Used to retire a
 	// superseded `!opts` panel, which cannot be edited when it carries
 	// a widget, and to retract the placeholder-seeded streaming chain

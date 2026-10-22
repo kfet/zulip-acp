@@ -39,8 +39,15 @@
 //     Handler.lastOwnMessage.
 //   - COMMAND: `!archive` (or `!arch`).
 //
-// Either ARMS a confirmation and posts a warning. The ONLY confirmation
-// is :wastebasket: on that warning message. An expired arm is never
+// Either ARMS a confirmation and posts a warning, and the relay itself
+// adds :wastebasket: and :fire: to that warning so the user confirms
+// with one tap. The ONLY confirmations are reactions on that warning
+// message: :wastebasket: archives, :fire: DELETES the topic instead
+// (POST /streams/{id}/delete_topic, organisation-admin only — a bot
+// without the role gets a clear refusal in the topic, and the
+// conversation is already ended). :fire: never arms anything. The
+// relay's own pre-reactions are never a trigger: handleReaction drops
+// every reaction from the bot user before this file sees it. An expired arm is never
 // carried forward: a later tap starts a fresh cycle with a fresh
 // warning, because the alternative is a destructive act authorised by
 // something the user has long since forgotten.
@@ -71,13 +78,18 @@ const (
 	// gesture learnable: tap it, read the warning, tap it again.
 	archiveEmoji = "wastebasket"
 
+	// deleteEmoji confirms DELETING the topic instead of archiving it.
+	// It only confirms: on any message other than an armed warning it
+	// is an ordinary reaction.
+	deleteEmoji = "fire"
+
 	// archiveVerb and archiveAlias are the typed forms. `!purge` is
 	// deliberately NOT among them: the action is an archive — nothing
 	// is deleted — and a destructive-sounding name for a reversible
 	// move would be a lie in the direction that matters.
 	archiveVerb  = "archive"
 	archiveAlias = "arch"
-	archiveHelp  = "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (confirm with :" + archiveEmoji + ":)\n"
+	archiveHelp  = "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (confirm with :" + archiveEmoji + ":, or :" + deleteEmoji + ": to delete it)\n"
 
 	// archiveConfirmTTL is how long an armed confirmation lives.
 	//
@@ -119,8 +131,8 @@ func (h *Handler) archiveEnabled() bool { return h.cfg.ArchiveStreamID != 0 }
 // on the allowlist, and conv is a conversation the relay is engaged in
 // and still serves. What is left is this file's own policy — the right
 // emoji, an add rather than a remove, and the right message.
-func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zulipproto.Event, _ *zulipproto.Message) bool {
-	if !h.archiveEnabled() || ev.EmojiName != archiveEmoji {
+func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
+	if !h.archiveEnabled() || (ev.EmojiName != archiveEmoji && ev.EmojiName != deleteEmoji) {
 		return false
 	}
 	// Un-reacting is not an action. Retracting a :wastebasket: must
@@ -135,6 +147,25 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 		return false
 	}
 	confirm := h.armedFor(conv.ID, ev.MessageID)
+	if ev.EmojiName == deleteEmoji {
+		// :fire: only confirms. On anything but the armed warning it is
+		// ordinary signal for the agent.
+		if !confirm {
+			return false
+		}
+		who, _ := h.reactor(ctx, ev.UserID)
+		if h.takeArchiveConfirm(conv.ID, ev.MessageID) {
+			// The live name, read back from the warning itself: a
+			// delete_topic on a stale name (a resolve since) succeeds
+			// and deletes nothing.
+			topic := topicOf(conv.Key, m)
+			if live, err := h.cfg.Client.GetMessage(ctx, ev.MessageID); err == nil && live.Topic != "" {
+				topic = live.Topic
+			}
+			h.deleteConversation(ctx, conv, topic, who)
+		}
+		return true
+	}
 	last := ev.MessageID == h.lastOwnMessage(ctx, conv)
 	if !confirm && !last {
 		// Not the arming target and not the confirmation: an ordinary
@@ -215,7 +246,7 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	// confirmation is bound to, and each re-arm would park another
 	// expiry timer.
 	if id, live := h.liveArm(conv.ID); live {
-		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, id))
+		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: (archive) or :%s: (delete) to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, deleteEmoji, id))
 		return
 	}
 	// Preflight BEFORE the warning. A warning that invites a
@@ -238,6 +269,15 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	h.archiveMu.Unlock()
 	h.cfg.Logf("handler: %s armed an archive of %s (%s); confirm with :%s: on message %d within %s",
 		who, h.describe(conv.Key), conv.ID, archiveEmoji, id, archiveConfirmTTL)
+	// One tap to confirm: the relay offers both answers itself. The
+	// echo of these reactions comes from the bot user and is dropped
+	// by handleReaction, so they can never confirm anything. A failure
+	// costs only convenience — the user can still add the reaction.
+	for _, e := range []string{archiveEmoji, deleteEmoji} {
+		if err := h.cfg.Client.AddReaction(ctx, id, e); err != nil {
+			h.cfg.Logf("handler: could not pre-add :%s: to the archive confirmation %d: %v", e, id, err)
+		}
+	}
 	go h.expireArchive(conv.ID, id)
 }
 
@@ -463,6 +503,53 @@ func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, wh
 		who, h.describe(conv.Key), prev.ID, h.cfg.ArchiveChannel, prev.ID)
 }
 
+// topicOf is the topic name to delete: the reacted message's own topic
+// when the event carried it — the topic is truth — else the journal's.
+func topicOf(key journal.Key, m *zulipproto.Message) string {
+	if m != nil && m.Topic != "" {
+		return m.Topic
+	}
+	return key.Topic
+}
+
+// deleteConversation ends the conversation and deletes its topic.
+//
+// The order is the archive's: end and retire FIRST, so a turn still
+// streaming cannot re-create the topic after it is gone, and only then
+// the delete.
+func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, topic, who string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
+	defer cancel()
+	h.endSession(ctx, conv.ID)
+	prev, _, existed, err := h.cfg.Journal.Retire(conv.Key)
+	if err != nil {
+		h.cfg.Logf("handler: not deleting %s: retiring it failed (%v) — the topic stays", conv.ID, err)
+		h.reply(ctx, conv.Key, fmt.Sprintf("I could not record the end of this conversation (%v), so I did not delete the topic. Nothing was deleted.", err))
+		return
+	}
+	if !existed {
+		h.cfg.Logf("handler: not deleting %s: it is no longer the conversation in %s", conv.ID, h.describe(conv.Key))
+		return
+	}
+	if err := h.cfg.Client.DeleteTopic(ctx, conv.Key.StreamID, topic); err != nil {
+		h.cfg.Logf("handler: deleting %s: delete_topic failed (%v) — the conversation is ended but the topic stays", prev.ID, err)
+		h.reply(ctx, conv.Key, deleteFailed(err))
+		return
+	}
+	h.cfg.Logf("handler: %s deleted %s (%s): the topic is gone and the session ended; %s is untouched on disk",
+		who, h.describe(conv.Key), prev.ID, prev.ID)
+}
+
+// deleteFailed tells the topic why a confirmed delete did not happen.
+// A server refusal is almost always the missing admin role, so it says
+// so; anything else is reported as it is.
+func deleteFailed(err error) string {
+	if zulipproto.RejectedByServer(err) {
+		return fmt.Sprintf("I ended this conversation, but Zulip refused to delete the topic (%v). Deleting a topic needs the **organisation administrator** role, and this bot does not have it. Nothing was deleted; delete the topic by hand, or react :%s: to archive instead next time.", err, archiveEmoji)
+	}
+	return fmt.Sprintf("I ended this conversation, but deleting the topic failed (%v). Nothing was deleted; delete the topic by hand, or leave it — the next message starts a fresh conversation.", err)
+}
+
 // endSession stops everything running for a conversation: the relay's
 // own turn, the agent's work on the ACP session, any buffered reactions
 // and any archive arm.
@@ -493,14 +580,16 @@ func senderName(m *zulipproto.Message) string {
 	return m.SenderName
 }
 
-// archiveWarning is the message a :wastebasket: must land on to
-// confirm. It says what will happen, what will NOT happen (nothing is
+// archiveWarning is the message a :wastebasket: (archive) or :fire:
+// (delete) must land on to confirm. It says what will happen, what will NOT happen (nothing is
 // deleted), and how to walk away — a destructive prompt that does not
 // explain how to decline is a trap.
 func archiveWarning(who, channel string) string {
 	return fmt.Sprintf("⚠️ **Archive this topic?** — %s asked to end this conversation and move the whole topic to **#%s**, a channel I do not serve.\n\n"+
-		"React :%s: **to this message** within %s to confirm. Nothing is deleted: every message travels with the topic, and the session's files stay on disk. Ignore this message to cancel.",
-		who, channel, archiveEmoji, archiveConfirmTTL)
+		"React :%s: **to this message** within %s to confirm. Nothing is deleted: every message travels with the topic, and the session's files stay on disk.\n\n"+
+		"React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered (needs this bot to be an organisation administrator).\n\n"+
+		"Ignore this message to cancel.",
+		who, channel, archiveEmoji, archiveConfirmTTL, deleteEmoji)
 }
 
 // archiveNotice is the last thing said in the topic before it moves,

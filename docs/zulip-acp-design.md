@@ -589,9 +589,19 @@ stays retryable.
 
 The gesture: react `:wastebasket:` to the relay's **last** message in a topic,
 or type `!archive` (`!arch`). Either arms a confirmation and posts a warning;
-the **only** confirmation is `:wastebasket:` on that warning message. Both
-entry points arm the same state and run the same code — there is one
-destructive path, not two.
+the **only** confirmations are reactions on that warning message. The relay
+pre-adds both to the warning, so the user confirms with one tap:
+`:wastebasket:` archives, `:fire:` **deletes** the topic instead
+(`POST /streams/{id}/delete_topic`, repeated while the server answers
+`complete=false`). `:fire:` never arms; on any other message it is an ordinary
+reaction. The relay's own pre-reactions come from the bot user and are dropped
+before any trigger runs. A delete uses the same arm, expiry and identity rules,
+and the same order — end the session, retire the conversation, then delete —
+so a streaming turn cannot re-create the topic. `delete_topic` is org-admin
+only: a bot without the role gets a refusal, which the relay reports in the
+topic (the conversation is already ended; nothing is deleted). Both entry
+points arm the same state and run the same code — there is one destructive
+path, not two.
 
 #### Why a move, and why to a channel we do not serve
 

@@ -744,9 +744,12 @@ keep.
 A finished conversation can be got out of the way with one gesture: react
 `:wastebasket:` to the relay's **last** message in the topic — or type
 `!archive` (`!arch`) — and the relay posts a warning. React `:wastebasket:` **to
-that warning** and the topic is moved, whole, to `archive_channel`.
+that warning** and the topic is moved, whole, to `archive_channel`. The relay
+adds `:wastebasket:` and `:fire:` to the warning itself, so one tap confirms.
+React `:fire:` instead to **delete** the topic for good; this needs the bot to be
+an organisation administrator, and the relay says so in the topic when it is not.
 
-Nothing is deleted. The messages travel with the topic, and the conversation's
+An archive deletes nothing. The messages travel with the topic, and the conversation's
 `state/convs/<id>/` working directory stays exactly where it is. What ends is the
 conversation: the in-flight turn is cancelled, the ACP session stops, the journal
 entry is retired, and only then is the move issued — in that order, because the

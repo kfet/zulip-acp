@@ -602,6 +602,36 @@ func (c *Client) MoveMessageToChannel(ctx context.Context, id, streamID int64, t
 	return c.do(ctx, http.MethodPatch, "/messages/"+strconv.FormatInt(id, 10), nil, form, nil)
 }
 
+// deleteTopicMaxBatches bounds the DeleteTopic loop. Zulip deletes a
+// big topic in batches and answers complete=false until the last one;
+// a server that never says complete must not wedge the caller.
+const deleteTopicMaxBatches = 100
+
+// DeleteTopic deletes a whole topic, every message in it, for good.
+//
+// POST /streams/{id}/delete_topic is ORGANISATION-ADMIN only; a bot
+// without that role gets a 4xx, which RejectedByServer reports. The
+// server works in batches and answers complete=false while messages
+// remain, so the call is repeated until it says complete.
+func (c *Client) DeleteTopic(ctx context.Context, streamID int64, topic string) error {
+	path := "/streams/" + strconv.FormatInt(streamID, 10) + "/delete_topic"
+	form := url.Values{"topic_name": {topic}}
+	for range deleteTopicMaxBatches {
+		var resp struct {
+			// Complete is a pointer because an older server omits it,
+			// and an omitted field means the delete finished in one go.
+			Complete *bool `json:"complete"`
+		}
+		if err := c.do(ctx, http.MethodPost, path, nil, form, &resp); err != nil {
+			return err
+		}
+		if resp.Complete == nil || *resp.Complete {
+			return nil
+		}
+	}
+	return fmt.Errorf("zulip: delete topic in channel %d: not complete after %d batches", streamID, deleteTopicMaxBatches)
+}
+
 // DeleteMessage removes a message the bot posted.
 //
 // It exists for exactly one caller: retiring a superseded `!opts`
