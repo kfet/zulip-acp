@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-22
+
 ### Added
 
 - The archive warning now carries the relay's own `:wastebasket:` and `:fire:` reactions, so one tap confirms; `:fire:` deletes the topic (`delete_topic`, admin only) instead of archiving it.
