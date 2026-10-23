@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-10-24
+
+### Changed
+
+- The system prompt has a link rule: write a bare URL or `[text](url)`, and never put `**` or `*` around a URL. Zulip does not link `**https://x**`, and it puts the asterisks into the link of `**PR: https://x**`. The prompt also tells the agent to rewrite text from other agents and tools to these rules before it posts it.
+- `branch` silent-mentions the user who branched, so the new topic does not send a notification.
+- `converge.sh` passes `-y` to `zulip-acp update`, because update 0.55.0 and later prompts and converge has no TTY.
+- `make install` is disabled, so it does not leave stray copies in `~/go/bin`.
+
 ## [0.58.0] - 2026-10-22
 
 ### Added

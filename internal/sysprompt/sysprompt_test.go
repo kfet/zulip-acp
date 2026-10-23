@@ -103,3 +103,18 @@ func TestReactionInstruction(t *testing.T) {
 		t.Fatalf("sentinel-less guidance dropped the norm: %q", noSentinel)
 	}
 }
+
+// TestBaseLinkRule pins the rule against bold around URLs. Zulip does
+// not link `**https://x**`, and it puts the `**` into the href of
+// `**PR: https://x**`. Agents copy that shape from other agents' reports.
+func TestBaseLinkRule(t *testing.T) {
+	for _, want := range []string{
+		"Never put `**` or `*` around a URL",
+		"`**PR A**: https://x`",
+		"Rewrite it to these rules before you post it.",
+	} {
+		if !strings.Contains(Base, want) {
+			t.Errorf("Base lacks %q", want)
+		}
+	}
+}

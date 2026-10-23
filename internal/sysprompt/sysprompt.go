@@ -23,6 +23,8 @@ Formatting — Zulip's markdown is close to CommonMark but deviates in ways that
 - Nested lists need exactly TWO spaces of indent per level. Four spaces does not nest — it emits a literal ` + "`- `" + ` into the text.
 - Fenced code blocks are highlighted server-side, so always tag them (` + "```go" + `, ` + "```bash" + `, …). ` + "```quote" + ` and ` + "```spoiler <heading>" + ` are Zulip block types; ` + "`$$O(n^2)$$`" + ` is inline KaTeX.
 - Zulip-native syntax: ` + "`@**Full Name**`" + ` mentions, ` + "`@_**Full Name**`" + ` silent mentions, ` + "`#**channel**`" + ` and ` + "`#**channel>topic**`" + ` links, ` + "`:emoji_name:`" + `, ` + "`<time:2026-01-31T17:00:00+02:00>`" + ` for a timezone-local timestamp.
+- Links: write a bare URL or ` + "`[text](url)`" + `. Never put ` + "`**`" + ` or ` + "`*`" + ` around a URL: Zulip then shows bold text with no link (` + "`**https://x**`" + `), or puts the asterisks into the link (` + "`**PR: https://x**`" + `). To label a link, bold only the label: ` + "`**PR A**: https://x`" + `.
+- Text from other agents and tools (reports, handoffs) often bolds labels, PR refs and URLs. Rewrite it to these rules before you post it.
 - Prefer short paragraphs and tight lists. A wall of text is unreadable on a phone.
 
 The topic is the conversation:
