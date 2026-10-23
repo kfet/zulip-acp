@@ -113,6 +113,9 @@ FIR_DIST_REPO="https://github.com/kfet/fir-dist"
 # updates ITSELF (checksum-verified, ETXTBSY-safe atomic swap); below it there
 # is no self-update to call and converge fetches the asset itself.
 SELFUPDATE_MIN=0.19.0
+# From 0.55.0 `update` discovers every install and asks "proceed? [y/N]";
+# converge has no tty to answer it, so it must pass -y. Older builds reject -y.
+SELFUPDATE_YES_MIN=0.55.0
 # The release that first shipped the SIGHUP graceful reload. Below it a SIGHUP
 # just kills the relay, so the first cutover must be a hard restart.
 GRACEFUL_MIN=0.12.0
@@ -754,8 +757,10 @@ install_binary() { # <binary-spec-path> <current-version> <want-version> <platfo
   local binary=$1 cur=$2 want=$3 platform=$4 os arch b
   b=$(p_home "$binary")
   if ver_ge "$cur" "$SELFUPDATE_MIN"; then
-    note "self-update: $b update --version v$want"
-    rsh "\"$b\" update --version v$want" || die "self-update failed on $HOST"
+    local yes=""
+    ver_ge "$cur" "$SELFUPDATE_YES_MIN" && yes=" -y"
+    note "self-update: $b update --version v$want$yes"
+    rsh "\"$b\" update --version v$want$yes" || die "self-update failed on $HOST"
     return 0
   fi
   os=${platform%%/*}; arch=${platform##*/}
