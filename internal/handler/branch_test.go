@@ -208,7 +208,7 @@ func TestBranchOpensATopicAndRecordsItsOrigin(t *testing.T) {
 			pointer = hh.z.body(id)
 		}
 	}
-	if !strings.Contains(seed, "@**Kfet|8**") {
+	if !strings.Contains(seed, "@_**Kfet|8**") {
 		t.Fatalf("the seed message does not mention the branching user, so a phone never surfaces it: %q", seed)
 	}
 	if !strings.Contains(pointer, "branched → #**fleet>rework the rollover splitter**") {
@@ -885,7 +885,7 @@ func TestBranchReactionSpinsTheMessageOut(t *testing.T) {
 			seed = b
 		}
 	}
-	if !strings.Contains(seed, "@**Ada Lovelace|8**") {
+	if !strings.Contains(seed, "@_**Ada Lovelace|8**") {
 		t.Fatalf("seed = %q, want an @-mention of the reactor", seed)
 	}
 	if strings.Contains(seed, "Grace Hopper") {

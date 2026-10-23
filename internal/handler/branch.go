@@ -674,19 +674,19 @@ func branchSeed(m *zulipproto.Message, origin string) string {
 		mentionOf(m), origin)
 }
 
-// mentionOf renders an @-mention of a message's sender.
+// mentionOf renders a SILENT @-mention (`@_**Name|id**`) of a message's
+// sender: it names and links the user without a notification, because
+// a ping on every branch is noise to the user who branched.
 //
 // The `|id` form is not decoration: Zulip refuses to LINK a bare
-// `@**Name**` when two users in the realm share that display name, and
-// the mention is the only thing that surfaces the new topic on the
-// branching user's phone. A message with no sender id — there is no
+// `@**Name**` when two users in the realm share that display name. A message with no sender id — there is no
 // such thing on the wire, but the zero value exists — degrades to the
 // plain name rather than mentioning user 0.
 func mentionOf(m *zulipproto.Message) string {
 	if m == nil || m.SenderID == 0 {
 		return senderName(m)
 	}
-	return fmt.Sprintf("@**%s|%d**", senderName(m), m.SenderID)
+	return fmt.Sprintf("@_**%s|%d**", senderName(m), m.SenderID)
 }
 
 // branchPrompt is the new session's first turn: the back-link header,
