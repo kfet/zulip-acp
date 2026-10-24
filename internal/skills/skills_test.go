@@ -1,6 +1,10 @@
 package skills
 
 import (
+	"errors"
+	"io/fs"
+
+	"github.com/kfet/acp-kit/command"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,5 +83,48 @@ func TestBuiltinPathsAreStableUnderTheStateDir(t *testing.T) {
 func TestLoadBuiltinRefusesAnEmptyStateDir(t *testing.T) {
 	if _, err := LoadBuiltin(""); err == nil {
 		t.Fatal("LoadBuiltin(\"\") = nil error; an empty state dir must not become a relative path")
+	}
+}
+
+// TestLoadBuiltinShipsRelayCommands guards the acp-kit generated
+// relay-commands skill: it must ship next to the zulip-acp bundle, and
+// the two extractions must not prune each other on a repeat load.
+func TestLoadBuiltinShipsRelayCommands(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	state := t.TempDir()
+	for i := 0; i < 2; i++ {
+		got, err := LoadBuiltin(state)
+		if err != nil {
+			t.Fatalf("LoadBuiltin: %v", err)
+		}
+		var found bool
+		for _, s := range got {
+			if _, err := os.Stat(s.Path); err != nil {
+				t.Fatalf("skill %s path missing after load %d: %v", s.Name, i, err)
+			}
+			found = found || s.Name == command.SkillName
+		}
+		if !found {
+			t.Fatalf("load %d: no %s skill in %v", i, command.SkillName, got)
+		}
+	}
+}
+
+func TestLoadBuiltinBundleErrors(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	old := loadBundle
+	defer func() { loadBundle = old }()
+	for fail := 1; fail <= 2; fail++ {
+		calls := 0
+		loadBundle = func(base string, b fs.FS, app string) ([]Skill, error) {
+			calls++
+			if calls == fail {
+				return nil, errors.New("boom")
+			}
+			return old(base, b, app)
+		}
+		if _, err := LoadBuiltin(t.TempDir()); err == nil || err.Error() != "boom" {
+			t.Fatalf("fail=%d: err = %v, want boom", fail, err)
+		}
 	}
 }

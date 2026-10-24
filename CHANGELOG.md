@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The relay ships the `relay-commands` skill from acp-kit v0.36.0. The skill is generated from the broker command table and tells the agent which `!` command to give the user (for example `!mcp login <server>`).
+
 ## [0.58.1] - 2026-10-24
 
 ### Changed
