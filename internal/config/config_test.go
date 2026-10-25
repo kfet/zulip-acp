@@ -837,3 +837,28 @@ func TestQuickModelsValidation(t *testing.T) {
 		t.Fatalf("eyes is free when the ack is off: %v", err)
 	}
 }
+
+func TestMCPApps(t *testing.T) {
+	c := &Config{}
+	if c.MCPAppsEnabled() || c.MCPAppsListen() != DefaultMCPAppsListen || c.MCPAppsTTL() != 24*time.Hour {
+		t.Fatal("defaults")
+	}
+	c.MCPApps = &MCPApps{}
+	if c.MCPAppsEnabled() || c.Validate() != nil {
+		t.Fatal("empty object must be off and valid")
+	}
+	c.MCPApps = &MCPApps{PublicURL: "https://apps.example.com", Listen: "[::1]:9000", TTLHours: 2}
+	if !c.MCPAppsEnabled() || c.MCPAppsListen() != "[::1]:9000" || c.MCPAppsTTL() != 2*time.Hour || c.Validate() != nil {
+		t.Fatal("set values")
+	}
+	c.MCPApps.Listen = "localhost:9000"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []MCPApps{{Listen: "0.0.0.0:9000"}, {Listen: "example.com:9000"}, {Listen: "nope"}, {TTLHours: -1}} {
+		c.MCPApps = &bad
+		if c.Validate() == nil {
+			t.Errorf("%+v: want error", bad)
+		}
+	}
+}

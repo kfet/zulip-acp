@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/kfet/acp-kit/autoupdate"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -446,6 +447,72 @@ type Config struct {
 	// MinScheduleIntervalSeconds floors a repeating schedule. 0 uses
 	// acp-kit/schedule's default of 60s.
 	MinScheduleIntervalSeconds int `json:"min_schedule_interval_seconds,omitempty"`
+
+	// MCPApps hosts MCP Apps (internal/mcpapps): a tool call that
+	// declares a `ui://` resource gets a link in the topic to a page
+	// the relay serves. Off unless mcp_apps.public_url is set. See
+	// docs/mcp-apps-design.md.
+	MCPApps *MCPApps `json:"mcp_apps,omitempty"`
+}
+
+// DefaultMCPAppsListen is the loopback address the MCP Apps listener
+// binds when mcp_apps.listen is unset.
+const DefaultMCPAppsListen = "127.0.0.1:8737"
+
+// MCPApps configures the MCP Apps host.
+type MCPApps struct {
+	// PublicURL is the origin a reverse proxy serves the listener at,
+	// for example "https://apps.example.com". REQUIRED: without it the
+	// feature is off, because a link must point somewhere a phone can
+	// reach.
+	PublicURL string `json:"public_url,omitempty"`
+	// ContentURL is an optional second origin for the app HTML.
+	ContentURL string `json:"content_url,omitempty"`
+	// Listen is the address the HTTP listener binds. It must be a
+	// loopback address: the relay never listens on the network itself.
+	Listen string `json:"listen,omitempty"`
+	// TTLHours is how long an app link stays valid. 0 is 24.
+	TTLHours int `json:"ttl_hours,omitempty"`
+}
+
+// MCPAppsEnabled reports whether MCP Apps are on.
+func (c *Config) MCPAppsEnabled() bool {
+	return c.MCPApps != nil && c.MCPApps.PublicURL != ""
+}
+
+// MCPAppsListen is the listener address.
+func (c *Config) MCPAppsListen() string {
+	if c.MCPApps == nil || c.MCPApps.Listen == "" {
+		return DefaultMCPAppsListen
+	}
+	return c.MCPApps.Listen
+}
+
+// MCPAppsTTL is the app link lifetime.
+func (c *Config) MCPAppsTTL() time.Duration {
+	if c.MCPApps == nil || c.MCPApps.TTLHours == 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.MCPApps.TTLHours) * time.Hour
+}
+
+// validateMCPApps refuses a listener that is not on loopback and a
+// negative TTL.
+func (c *Config) validateMCPApps() error {
+	if c.MCPApps == nil {
+		return nil
+	}
+	if c.MCPApps.TTLHours < 0 {
+		return fmt.Errorf("mcp_apps.ttl_hours must be >= 0")
+	}
+	host, _, err := net.SplitHostPort(c.MCPAppsListen())
+	if err != nil {
+		return fmt.Errorf("mcp_apps.listen: %w", err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("mcp_apps.listen %q must be a loopback address; put a reverse proxy in front of it", c.MCPAppsListen())
+	}
+	return nil
 }
 
 // Load reads and validates the config file. Unknown fields are an
@@ -542,6 +609,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := c.validateQuickModels(); err != nil {
+		return err
+	}
+	if err := c.validateMCPApps(); err != nil {
 		return err
 	}
 	// A splitter built from these markers must still be constructible;

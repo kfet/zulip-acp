@@ -385,6 +385,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `quick_models_menu_emoji` | `gear` | reaction that opens the switcher menu |
 | `quick_models_sweep_emoji` | `www` | reaction on a switch confirmation that applies it to all sessions |
 | `repost_on_close` | `true` | at the end of a **streamed** turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. A no-op in quiet mode. See below |
+| `mcp_apps` | off | **MCP Apps** — host the `ui://` app a tool opens and post a link to it. Off unless `mcp_apps.public_url` is set. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
 | `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
@@ -864,6 +865,32 @@ The socket lives in a 0700 directory, the socket file is 0600, and each
 session gets its own random token. Nothing outside this host's user can reach
 it, and nothing outside the relay's own child agent is told it exists.
 
+### MCP Apps (`mcp_apps`)
+
+An MCP App is a tool that comes with an HTML user interface (a `ui://`
+resource). Zulip cannot show HTML in a message, so the relay hosts the app on a
+page of its own and posts a link in the topic:
+
+```json
+"mcp_apps": { "public_url": "https://apps.example.com" }
+```
+
+When the agent calls such a tool, the topic gets `🧩 Open app: <tool>`. The
+page runs the app in a sandboxed iframe. The app can call tools of its own MCP
+server, and a message it sends becomes a new turn in the topic — echoed into
+the topic first, so the history stays complete. The link holds a random token
+and expires after `ttl_hours` (default 24). The token is the only check:
+`allowed_user_ids` cannot apply to a browser, so anyone with the link can use
+the app. Turn this on only where every reader of the served topics may drive
+the agent.
+
+The relay listens on a loopback address only (`listen`, default
+`127.0.0.1:8737`). You must put a reverse proxy with TLS in front of it at
+`public_url`, with WebSocket upgrades passed through. An optional
+`content_url` serves the app HTML from a second origin. It needs fir 1.42.0 or
+later, which passes MCP data through ACP (`dev.fir.mcp/v1`). See
+[docs/mcp-apps-design.md](docs/mcp-apps-design.md).
+
 Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 `--state-dir`. Set `ZULIP_ACP_DEBUG=1` for protocol-level logging.
 
@@ -922,6 +949,9 @@ logged with its turn age) and `-drain-deadline` (30s, a service stop — keep it
   Zulip wire protocol as **measured**, including the three traps that cost real
   debugging time: silent truncation, the `/register` narrow operand, and system
   bots posting into your topics.
+- [docs/mcp-apps-design.md](docs/mcp-apps-design.md) — how MCP Apps are
+  hosted outside Zulip: the link, the host shell, the bridge, and the security
+  model.
 - [BACKLOG.md](BACKLOG.md) — what is deliberately not done yet, and why.
 - [internal/skills/bundle/update/SKILL.md](internal/skills/bundle/update/SKILL.md)
   — the update/reload procedure. It is **shipped in the binary**: every session

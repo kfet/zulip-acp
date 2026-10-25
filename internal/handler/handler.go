@@ -10,6 +10,7 @@ package handler
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/kfet/acp-kit/convo"
@@ -102,6 +103,9 @@ type Agent interface {
 	// ListSessions lists the agent's sessions in one directory, newest
 	// first. A branch uses it to find a reaped origin's session.
 	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
+	// ExtMethod sends an agent extension request for one session. MCP
+	// Apps use it for fir's `_fir/mcp/*` methods. See apps.go.
+	ExtMethod(ctx context.Context, sid acp.SessionId, method string, params map[string]any) (json.RawMessage, error)
 }
 
 // Sessions is the subset of *state.Manager the handler uses.
@@ -518,6 +522,10 @@ type Config struct {
 	// must only signal.
 	OnArchiveExpired func(convID string)
 
+	// Apps, when set, hosts MCP Apps: a tool call that declares a
+	// `ui://` resource gets a link in the topic. See apps.go.
+	Apps AppObserver
+
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
 }
@@ -558,6 +566,8 @@ type Handler struct {
 	// started a turn in it. A catch-up turn still waiting for a slot
 	// must not supersede a newer live turn.
 	liveTurns sync.Map
+	// appPosts tracks the MCP App link posts still in flight (apps.go).
+	appPosts sync.WaitGroup
 
 	// sawModels records that the agent has reported a non-empty model
 	// list at least once in this process. It is the difference between
@@ -1408,6 +1418,12 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	live, lctx, stopLive := h.convo.Arm(ctx)
 	defer stopLive()
 	sinkFor = live.Wrap(sinkFor)
+	if h.cfg.Apps != nil {
+		token := conv.Key.Token()
+		sinkFor = &appRouter{next: sinkFor, apps: h.cfg.Apps, convID: conv.ID, post: func(line string) {
+			h.postAppLink(token, line)
+		}}
+	}
 	// Outermost: notices bypass the chain entirely — see noticeRouter.
 	sinkFor = &noticeRouter{next: sinkFor, sink: sink}
 

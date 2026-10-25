@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -715,6 +716,13 @@ type fakeAgent struct {
 	// "sid:id=value"; configErr fails them.
 	configSet []string
 	configErr error
+	// updates are sent to the sink before the chunks: tool calls, for
+	// the MCP Apps tests. exts backs Caps().Extensions; extCalls records
+	// every ExtMethod call and extErr fails them.
+	updates  []acp.SessionUpdate
+	exts     map[string]json.RawMessage
+	extCalls []string
+	extErr   error
 }
 
 func (a *fakeAgent) SetConfigOption(_ context.Context, sid acp.SessionId, id, value string) error {
@@ -832,7 +840,7 @@ func (a *fakeAgent) AvailableCommands() []client.CommandInfo {
 func (a *fakeAgent) Caps() client.Caps {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return client.Caps{Image: a.imageCap, ListSessions: !a.noResume, ResumeSession: !a.noResume}
+	return client.Caps{Image: a.imageCap, ListSessions: !a.noResume, ResumeSession: !a.noResume, Extensions: a.exts}
 }
 
 // AgentInfo and SessionStats play what the agent reported over ACP.
@@ -880,9 +888,13 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 	block, hold, stop, err := a.block, a.hold, a.stop, a.err
 	streamed := a.streamed
 	during := a.during
+	updates := a.updates
 	a.mu.Unlock()
 	if during != nil {
 		during()
+	}
+	for _, u := range updates {
+		_ = sink.OnUpdate(ctx, acp.SessionNotification{Update: u})
 	}
 	select {
 	case a.entered <- struct{}{}:

@@ -5,11 +5,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -37,6 +40,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/discover"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/mcpapps"
 	"github.com/kfet/zulip-acp/internal/reload"
 	"github.com/kfet/zulip-acp/internal/updater"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
@@ -152,6 +156,7 @@ func main() {
 		fmt.Printf("channels:   %s\n", strings.Join(cfg.Channels, ", "))
 		fmt.Printf("dms:        %t\n", cfg.DMs)
 		fmt.Printf("relay-mcp:  %t\n", cfg.RelayMCP)
+		fmt.Printf("mcp-apps:   %t\n", cfg.MCPAppsEnabled())
 		return
 	}
 
@@ -523,6 +528,25 @@ func main() {
 	// holds both. The cycle is broken by capturing h, which is assigned
 	// below before any event, tool call or tick can reach it.
 	var h *handler.Handler
+	// MCP Apps: built before the handler, which observes tool calls
+	// through it, and served after, because its backend is the handler.
+	var apps *mcpapps.Apps
+	var appObserver handler.AppObserver
+	if cfg.MCPAppsEnabled() {
+		apps, err = mcpapps.New(mcpapps.Config{
+			PublicURL:   cfg.MCPApps.PublicURL,
+			ContentURL:  cfg.MCPApps.ContentURL,
+			TTL:         cfg.MCPAppsTTL(),
+			Backend:     appsBackend{h: &h},
+			HostVersion: version,
+			StatePath:   filepath.Join(cfg.StateDir, "mcp-apps.json"),
+			Logf:        log.Printf,
+		})
+		if err != nil {
+			log.Fatalf("mcp_apps: %v", err)
+		}
+		appObserver = apps
+	}
 	var schedules *schedule.Store
 	var tools *relaytool.Tools
 	if cfg.RelayMCP {
@@ -659,10 +683,25 @@ func main() {
 		QuickModels:     quickModels(cfg.QuickModels),
 		QuickMenuEmoji:  cfg.GetQuickModelsMenuEmoji(),
 		QuickSweepEmoji: cfg.GetQuickModelsSweepEmoji(),
+		Apps:            appObserver,
 		Logf:            log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("handler: %v", err)
+	}
+	var appServer *http.Server
+	if apps != nil {
+		ln, err := net.Listen("tcp", cfg.MCPAppsListen())
+		if err != nil {
+			log.Fatalf("mcp_apps listener: %v", err)
+		}
+		appServer = &http.Server{Handler: apps.Handler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := appServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("zulip-acp: WARN mcp_apps listener: %v", err)
+			}
+		}()
+		log.Printf("zulip-acp: MCP Apps on %s, links at %s", ln.Addr(), cfg.MCPApps.PublicURL)
 	}
 	// A restart killed the child agent, so any turn that was in flight
 	// is dead. Say so rather than leaving a truncated answer that looks
@@ -818,6 +857,9 @@ func main() {
 		WaitCancelled:  h.WaitCancelled,
 	})
 
+	if appServer != nil {
+		_ = appServer.Close()
+	}
 	if !reloading {
 		log.Printf("zulip-acp: stopped")
 		return
@@ -847,6 +889,22 @@ func main() {
 	// a failed exec strands it — say so, and exit non-zero so
 	// Restart=on-failure brings the relay back.
 	log.Fatalf("zulip-acp: %v (the event queue is orphaned; a fresh registration will miss messages posted since %d)", reload.Exec(c, mcpTokens), last)
+}
+
+// appsBackend gives mcpapps the handler, which exists only after the
+// Apps store it observes through has been built.
+type appsBackend struct{ h **handler.Handler }
+
+func (b appsBackend) ReadResource(ctx context.Context, conv, server, uri string) (json.RawMessage, error) {
+	return (*b.h).ReadResource(ctx, conv, server, uri)
+}
+
+func (b appsBackend) CallTool(ctx context.Context, conv, server, name string, args json.RawMessage) (json.RawMessage, error) {
+	return (*b.h).CallTool(ctx, conv, server, name, args)
+}
+
+func (b appsBackend) Message(ctx context.Context, conv, label, text string) error {
+	return (*b.h).Message(ctx, conv, label, text)
 }
 
 func splitList(s string) []string {

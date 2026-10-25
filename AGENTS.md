@@ -19,9 +19,16 @@ gives us. It is **off by default** (`"relay_mcp": true`), because it widens
 what a prompt-injected agent could do.
 
 What has NOT changed, and must not: the relay exposes no MCP surface to
-anything outside its own process. There is no network listener, no
-third-party MCP client, and no tool that takes a conversation as an argument —
-identity comes from the connection token, resolved server-side. See
+anything outside its own process. There is no third-party MCP client, and no
+tool that takes a conversation as an argument — identity comes from the
+connection token, resolved server-side.
+
+The one network listener is the **MCP Apps** host (`internal/mcpapps`, off
+unless `mcp_apps.public_url` is set). It binds loopback only, speaks HTTP to
+browsers, and is NOT an MCP server: each app instance is bound to one
+conversation when it is made, by a random token, and it can do no more than
+that conversation's agent session can. See
+[docs/mcp-apps-design.md](docs/mcp-apps-design.md). See
 [docs/zulip-acp-design.md](docs/zulip-acp-design.md) § *The agent→relay
 loopback*.
 
@@ -35,8 +42,11 @@ wire details, and [docs/graceful-reload.md](docs/graceful-reload.md) for how
 `systemctl --user reload` upgrades the relay without dropping a turn.
 
 **Do not port poe-acp's master/worker supervisor here.** It exists to hold a
-bound listen socket across worker generations; zulip-acp has no socket, and
-the Zulip event queue already buffers server-side while we are not polling.
+bound listen socket across worker generations; zulip-acp's Zulip side has no
+socket, and the Zulip event queue already buffers server-side while we are not
+polling. The optional MCP Apps listener simply re-binds after the exec: a
+browser that loses its bridge for that moment reconnects on reload, and the
+app instances are saved on disk, so no link breaks.
 The right shape here is drain-then-`syscall.Exec` in place, which is what
 `internal/reload` is. Reaching for control pipes, parent-death pipes, ready
 signalling or drain ordering means the model has been copied without its
@@ -77,6 +87,9 @@ internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
                         photo (NO Zulip imports) — a provider rejects a
                         many-image request over 2000px a side; promotion
                         candidate for acp-kit, see BACKLOG.md
+internal/mcpapps/       MCP Apps host (NO Zulip imports): instance store + tokens,
+                        loopback HTTP listener, embedded host shell (shell/),
+                        WebSocket bridge to fir's dev.fir.mcp/v1 extension
 internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
