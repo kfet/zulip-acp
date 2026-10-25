@@ -2034,3 +2034,28 @@ func TestModelCommandDoesNotAbortAPendingLogin(t *testing.T) {
 		t.Fatalf("`!model` ended the pending login: %q", hh.only(t))
 	}
 }
+
+// TestModelFilterLargeCatalogue is a regression: over a big catalogue
+// "sakana" narrowed to ONE model, because acp-kit returned only the
+// top fuzzy tier. Every id that holds the filter must be listed.
+func TestModelFilterLargeCatalogue(t *testing.T) {
+	want := []string{"sakana/fugu", "sakana/fugu-ultra", "openrouter/sakana/fugu-ultra",
+		"openrouter/sakana/fugu-max", "openrouter/sakana/sakana-namazu"}
+	ids := make([]string, 0, 1500)
+	for i := range 1500 {
+		ids = append(ids, fmt.Sprintf("prov%d/model-%d", i%40, i))
+		if i%300 == 0 {
+			ids = append(ids, want[i/300])
+		}
+	}
+	hh := dmCmdHarness(t, withModels(newAgent("x"), ids[0], ids...), nil)
+	hh.deliverDM(t, humanID, "hello", humanID, botID)
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!models sakana", humanID, botID)
+	body := hh.z.body(lastMsg(t, hh))
+	for _, id := range want {
+		if !strings.Contains(body, id) {
+			t.Errorf("panel lacks %s:\n%s", id, body)
+		}
+	}
+}
