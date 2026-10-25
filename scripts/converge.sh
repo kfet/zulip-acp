@@ -664,8 +664,8 @@ plan_binary() {
     die "$1: $2 is ${cur:-missing}, which cannot update itself (needs >= $SELFUPDATE_MIN). Bootstrap once: curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want_za sh"
   fi
   # Capability probe, not a version guess: does this binary know --binary?
-  # Older ones get `update --version vX` with no tty and no -y, which is the
-  # same single-binary swap (no discovery, no reload).
+  # Older ones get `update --version vX`; 0.55-0.60 also need -y (they prompt
+  # even with no tty, and then discover + reload by themselves).
   K_NEW[$key]=0
   rsh "\"$b\" update -h 2>&1 | grep -qE -- '-binary( |$)'" && K_NEW[$key]=1
   K_ZA[$key]=$cur; CHANGES=$((CHANGES + 1))
@@ -757,8 +757,10 @@ apply_host() { # <host>
       note "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y"
       rsh "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y" || die "$h: update failed"
     else
-      note "\"$b\" update --version v$want_za (no --binary yet: no tty, no -y = this binary only)"
-      rsh "\"$b\" update --version v$want_za </dev/null" || die "$h: update failed"
+      # 0.55-0.60 prompt and refuse without -y; older ones have no -y.
+      local y=""; [ "$(ver_cmp "${K_ZA[$key]}" 0.55.0)" -ge 0 ] && y=" -y"
+      note "\"$b\" update --version v$want_za$y (no --binary yet: legacy update)"
+      rsh "\"$b\" update --version v$want_za$y </dev/null" || die "$h: update failed"
     fi
     cur=$(rsh "\"$b\" --version 2>/dev/null | head -1 || true")
     [ "$cur" = "$want_za" ] || die "$h: ${key#*|} is ${cur:-unreadable} after update, wanted $want_za"

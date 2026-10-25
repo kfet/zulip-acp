@@ -48,7 +48,7 @@ s=$HOME/st
 case "$1" in
   --version) cat "$s/za" ;;
   update) if [ "${2:-}" = -h ]; then
-            [ "$(cat "$s/za")" = 0.40.0 ] || echo "  -binary string"; exit 0
+            case "$(cat "$s/za")" in 0.40.0|0.59.0) : ;; *) false ;; esac || echo "  -binary string"; exit 0
           fi
           echo "$FAKEHOST zulip-acp $*" >>"$CALLS"
           [ -f "$s/warn" ] && echo "warn:   /usr/local/bin/zulip-acp is 0.1.0 but its directory is not writable"
@@ -201,6 +201,11 @@ echo 0.40.0 >"$W/hosts/host-b/st/za"
 run bot-b --apply
 seq_is "legacy update call" "host-b zulip-acp update --version v$WANT
 host-b systemctl reload zulip-acp.service"
+
+echo "== 0.55-0.60 binary without --binary: legacy update needs -y"
+echo 0.59.0 >"$W/hosts/host-b/st/za"
+run bot-b --apply
+has "update --version v$WANT -y" "legacy 0.55+ passes -y"
 
 echo "== below SELFUPDATE_MIN: refuse with the install.sh line, touch nothing"
 echo 0.18.0 >"$W/hosts/host-b/st/za"
