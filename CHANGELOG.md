@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-10-25
+
 ### Fixed
 
 - `list_models` and `!models <filter>` list every model whose id or name holds the filter (acp-kit v0.37.1). Before, only the top fuzzy match was listed, so "sakana" named one model of many.
