@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.2] - 2026-10-25
+
+### Fixed
+
+- Tests wait for echo-gated reactions before they move the fake clock. v0.60.1 failed its release build on this data race.
+
 ## [0.60.1] - 2026-10-25
 
 ### Fixed
