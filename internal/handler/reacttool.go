@@ -40,11 +40,25 @@ func (h *Handler) ReactTo(sessionKey string, msgID int64, emoji string) error {
 	if !sameConv(key, caller.Key) {
 		return refused
 	}
-	if err := h.cfg.Client.AddReaction(ctx, msgID, emoji); err != nil {
+	// The agent may react to a message the relay posted a moment ago.
+	// Wait for its echo first, so live clients see the message before
+	// the reaction (see reactWhenVisible). This runs on the MCP call's
+	// goroutine, never on the event loop.
+	if m.SenderID == h.cfg.BotUserID && h.now().Unix()-m.Timestamp < reactFreshSeconds {
+		h.awaitEcho(msgID)
+	}
+	// A fresh deadline: the echo wait must not eat into this call's.
+	rctx, rcancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
+	defer rcancel()
+	if err := h.cfg.Client.AddReaction(rctx, msgID, emoji); err != nil {
 		return fmt.Errorf("could not add :%s: to message %d: %v", emoji, msgID, err)
 	}
 	return nil
 }
+
+// reactFreshSeconds is how recent an own message must be for the react
+// tool to wait for its echo. An older one is visible already.
+const reactFreshSeconds = 10
 
 // sameConv reports whether two keys name one conversation. Zulip
 // compares topic names case-insensitively, and the resolve prefix is

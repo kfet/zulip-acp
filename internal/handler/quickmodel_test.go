@@ -84,6 +84,7 @@ func TestQuickMenuSwitchAndSweep(t *testing.T) {
 	if strings.Contains(body, "not offered") {
 		t.Fatalf("every model is offered: %s", body)
 	}
+	hh.h.echoWG.Wait()
 	for _, q := range testQuick {
 		if !hh.hasReaction(menu, q.Emoji) {
 			t.Fatalf("menu lacks the pre-added :%s:", q.Emoji)
@@ -103,6 +104,7 @@ func TestQuickMenuSwitchAndSweep(t *testing.T) {
 	if got := hh.z.body(confirm); got != ":fish: → **Sakana · Ultra** for this topic, from the next turn.\n*Tap :www: to apply to all sessions.*" {
 		t.Fatalf("confirm = %q", got)
 	}
+	hh.h.echoWG.Wait()
 	if !hh.hasReaction(confirm, "www") {
 		t.Fatal("confirm lacks the pre-added :www:")
 	}
@@ -246,7 +248,8 @@ func TestQuickPostFailures(t *testing.T) {
 	hh.z.reactErr = errors.New("no")
 	hh.z.mu.Unlock()
 	hh.qtap(own, "gear")
-	if !hh.logged("adding :brain: to the model switcher") {
+	hh.h.echoWG.Wait()
+	if !hh.logged("pre-add :brain: to the model switcher") {
 		t.Fatal("reaction failure not logged")
 	}
 	hh.z.mu.Lock()

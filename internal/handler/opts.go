@@ -530,11 +530,11 @@ func (h *Handler) placePanel(ctx context.Context, key journal.Key, note, filter 
 // for the same reason nothing else in this file is — a panel is
 // decoration over a command surface that a human can always type.
 func (h *Handler) seedChips(ctx context.Context, msgID int64, chips []optsChip) {
-	for _, c := range chips {
-		if err := h.cfg.Client.AddReaction(ctx, msgID, c.emoji); err != nil {
-			h.cfg.Logf("handler: seeding :%s: on options panel %d: %v", c.emoji, msgID, err)
-		}
+	emojis := make([]string, len(chips))
+	for i, c := range chips {
+		emojis[i] = c.emoji
 	}
+	h.reactWhenVisible(ctx, msgID, "options panel", nil, emojis...)
 }
 
 // optsChips is the panel's chip table: which emoji means which

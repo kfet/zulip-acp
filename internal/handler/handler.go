@@ -426,6 +426,12 @@ type Config struct {
 	// the relay whose behaviour IS a duration.
 	After func(d time.Duration) <-chan time.Time
 
+	// EchoAfter is the timer reactWhenVisible waits on when the echo
+	// of the relay's own message does not come. Defaults to
+	// time.After. It is separate from After so a test of the debounce
+	// does not also have to feed the echo wait.
+	EchoAfter func(d time.Duration) <-chan time.Time
+
 	// OnReactionBatch, if set, is called with a conversation's
 	// coalesced reaction burst at the instant the conversation has
 	// been claimed for it and the buffer emptied — i.e. the one moment
@@ -552,6 +558,10 @@ type inflightEntry struct {
 // Handler implements the event side of the relay.
 type Handler struct {
 	cfg Config
+
+	// ownEcho and echoWG serve reactWhenVisible.
+	ownEcho *ownEcho
+	echoWG  sync.WaitGroup
 
 	// catchups tracks the goroutine that starts catch-up turns.
 	catchups sync.WaitGroup
@@ -737,6 +747,7 @@ func New(cfg Config) (*Handler, error) {
 		branchedMsgs:   newMsgIndex(reactionIndexSize),
 		lastOwn:        map[string]int64{},
 		archivePending: map[string]*pendingArchive{},
+		ownEcho:        newOwnEcho(),
 		quickConfirms:  newMsgIndex(reactionIndexSize),
 		reactPending:   map[string]*reactionBatch{},
 		lookupStart:    cfg.Now(),
@@ -1028,7 +1039,10 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 	// The relay must never act on its own message. This is the first
 	// guard, before any allowlist, so a widened allowlist can never
 	// reorder it.
+	// Its echo is still news: it tells reactWhenVisible that the
+	// message is now visible to live clients.
 	if m.SenderID == h.cfg.BotUserID {
+		h.ownEcho.seen(m.ID)
 		return routed{}, false
 	}
 	// Nor on any other bot's. Zulip posts topic moves, stream
@@ -2197,6 +2211,9 @@ func (h *Handler) WaitIdle(ctx context.Context) error {
 		// A running `!fir` / `!run` posts its answer too, and its
 		// timeout bounds the wait.
 		h.ops.Wait()
+		// Reactions waiting on an echo (see reactWhenVisible); the
+		// echo timeout bounds the wait.
+		h.echoWG.Wait()
 		close(started)
 	}()
 	select {

@@ -1476,7 +1476,7 @@ func TestAFailedChipSeedLosesOneChipNotTheMenu(t *testing.T) {
 	if got := chipsOn(hh, panelMsg(t, hh)); len(got) != 3 {
 		t.Fatalf("attempted %v — seeding stopped at the first refusal", got)
 	}
-	if !hh.logged("seeding :" + optsNewEmoji + ":") {
+	if !hh.logged("pre-add :" + optsNewEmoji + ": to options panel") {
 		t.Fatal("the refusal was not logged")
 	}
 }

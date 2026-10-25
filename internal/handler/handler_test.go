@@ -1090,6 +1090,13 @@ func newHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *harness {
 			}
 			return hh.timer
 		},
+		// The echo of the relay's own message never comes in the
+		// harness, so the echo wait ends at once by default.
+		EchoAfter: func(time.Duration) <-chan time.Time {
+			c := make(chan time.Time)
+			close(c)
+			return c
+		},
 		OnReactionBatch: func(_ string, n int) {
 			select {
 			case hh.batches <- n:

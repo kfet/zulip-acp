@@ -29,6 +29,7 @@ func TestArchiveWarningIsPreReacted(t *testing.T) {
 	if !ok {
 		t.Fatal("nothing armed")
 	}
+	hh.h.echoWG.Wait()
 	hh.z.mu.Lock()
 	added := slices.Clone(hh.z.reactAdd)
 	hh.z.mu.Unlock()
@@ -60,6 +61,7 @@ func TestArchivePreReactionFailureIsLogged(t *testing.T) {
 	if _, ok := hh.armed(conv.ID); !ok {
 		t.Fatal("nothing armed")
 	}
+	hh.h.echoWG.Wait()
 	if !hh.logged("could not pre-add") {
 		t.Fatalf("logs = %v", hh.logs)
 	}

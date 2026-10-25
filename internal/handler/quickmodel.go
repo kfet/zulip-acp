@@ -136,11 +136,7 @@ func (h *Handler) postQuick(ctx context.Context, conv journal.Conv, body string,
 		return 0
 	}
 	h.rememberOwn(conv.ID, id)
-	for _, e := range emojis {
-		if err := h.cfg.Client.AddReaction(ctx, id, e); err != nil {
-			h.cfg.Logf("handler: adding :%s: to the model switcher in %s: %v", e, h.describe(conv.Key), err)
-		}
-	}
+	h.reactWhenVisible(ctx, id, "the model switcher", nil, emojis...)
 	return id
 }
 

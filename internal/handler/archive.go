@@ -273,11 +273,13 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	// echo of these reactions comes from the bot user and is dropped
 	// by handleReaction, so they can never confirm anything. A failure
 	// costs only convenience — the user can still add the reaction.
-	for _, e := range []string{archiveEmoji, deleteEmoji} {
-		if err := h.cfg.Client.AddReaction(ctx, id, e); err != nil {
-			h.cfg.Logf("handler: could not pre-add :%s: to the archive confirmation %d: %v", e, id, err)
-		}
-	}
+	// The reactions wait for the echo of the warning (see
+	// reactWhenVisible), and are skipped if the arm was confirmed or
+	// expired during that wait.
+	h.reactWhenVisible(ctx, id, "the archive confirmation", func() bool {
+		cur, live := h.liveArm(conv.ID)
+		return live && cur == id
+	}, archiveEmoji, deleteEmoji)
 	go h.expireArchive(conv.ID, id)
 }
 
