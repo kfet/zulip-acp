@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-10-25
+
 ### Added
 
 - MCP Apps (`mcp_apps`, off unless `public_url` is set): when a tool opens a `ui://` app, the relay posts a link in the topic and serves the app in a sandboxed host shell on a loopback listener. The app can call tools of its own server and send messages that become new turns, echoed into the topic. Needs fir 1.42.0 (`dev.fir.mcp/v1`). See `docs/mcp-apps-design.md`.
