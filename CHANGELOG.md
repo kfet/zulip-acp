@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.1] - 2026-10-25
+
 ### Fixed
 
 - Reactions that the relay pre-adds to its own message (archive warning, model switcher, `!opts` chips, `react` tool on a fresh message) now wait for the echo of that message, up to 2s. Before, live clients got the reaction events before the message and dropped them until a reload.
