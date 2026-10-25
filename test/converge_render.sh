@@ -5,10 +5,8 @@
 # 1. Golden-fixture tests: render config/execstart/unit for every bot spec and
 #    compare against test/golden/.
 # 2. Absent-key edges: an absent service key must emit no flag at all.
-# 3. Fake-target converge: dry-run against a --target-root dir, apply, then
-#    verify idempotence, backups, and both recycle mechanisms against a
-#    stubbed systemd (including a stubbed /proc, so the "running image"
-#    probe — the thing that decides graceful vs hard — is exercised offline).
+# 3. Spec-level gates (require, merge, no-leak). The end-to-end apply flows
+#    live in test/converge_test.sh.
 #
 # Run from anywhere: ./test/converge_render.sh
 # Regenerate goldens after an intentional renderer change:
@@ -22,6 +20,8 @@ GOLDEN="$ROOT/test/golden"
 # tests run against a frozen copy so they are hermetic.
 FIXTURES="$ROOT/test/fixtures/bots"
 export FLEET_BOTS_DIR="$FIXTURES"
+# Never reach a real host from this suite.
+export CONVERGE_RSH=false
 mapfile -t BOTS < <(cd "$FIXTURES" && for f in ./*.json; do
   [ "$(jq -r '.relay // empty' "$f")" = zulip-acp ] && basename "$f" .json; done)
 
@@ -260,10 +260,9 @@ lockfake="$tmpd/repo"
 jq '.require = {"zulip_acp": ">=99.0.0"}' "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqhigh.json"
 jq '.host = "nowhere"' "$tmpd/repo/bots/reqhigh.json" >"$tmpd/x" && mv "$tmpd/x" "$tmpd/repo/bots/reqhigh.json"
 LOCKED_ZA=$(jq -r .zulip_acp "$lockfake/dist.lock")
-mkdir -p "$tmpd/fakeroot-unused"
 for mode in "" "--apply"; do
   # shellcheck disable=SC2086
-  out=$("$FAKE_CONVERGE" reqhigh --target-root "$tmpd/fakeroot-unused" $mode 2>&1) && rc=0 || rc=$?
+  out=$("$FAKE_CONVERGE" reqhigh $mode 2>&1) && rc=0 || rc=$?
   [ "$rc" -ne 0 ] && ok "converge ${mode:---dry-run} refuses a violating lock" \
     || { bad "a violating lock must abort (${mode:---dry-run})"; echo "$out"; }
   case "$out" in
@@ -283,21 +282,21 @@ case $("$FAKE_CONVERGE" reqhigh --apply 2>&1 || true) in
 esac
 # The fir constraint is enforced too, not just zulip_acp.
 jq '.require = {"fir": ">=99.0.0"}' "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqfir.json"
-out=$("$FAKE_CONVERGE" reqfir --target-root "$tmpd/fakeroot-unused" 2>&1) && rc=0 || rc=$?
+out=$("$FAKE_CONVERGE" reqfir 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] && ok "a violated fir constraint aborts too" || { bad "fir constraint must be enforced"; echo "$out"; }
 case "$out" in *"require.fir"*) ok "the fir refusal names require.fir" ;; *) bad "expected require.fir in: $out" ;; esac
 # ...but only where a fir is actually installed: a non-fir agent has no fir to
 # constrain, so the gate must not fire on it.
 jq '.require = {"fir": ">=99.0.0"} | .agent = {"cmd": "claude --acp", "kind": "claude"} | .fir = {"exts": []}' \
   "$tmpd/repo/bots/bare.json" >"$tmpd/repo/bots/reqnofir.json"
-out=$("$FAKE_CONVERGE" reqnofir --target-root "$tmpd/fakeroot-unused" 2>&1 || true)
+out=$("$FAKE_CONVERGE" reqnofir 2>&1 || true)
 case "$out" in
   *"require.fir"*) bad "a non-fir agent must not be gated on fir" ;;
   *) ok "a non-fir agent skips the fir gate" ;;
 esac
 # A satisfied constraint does not block anything.jq --arg v "$LOCKED_ZA" '.require = {"zulip_acp": (">=" + $v)}' "$tmpd/repo/bots/bare.json" \
   >"$tmpd/repo/bots/reqok2.json"
-out=$("$FAKE_CONVERGE" reqok2 --target-root "$tmpd/fakeroot-unused" 2>&1 || true)
+out=$("$FAKE_CONVERGE" reqok2 2>&1 || true)
 case "$out" in
   *"does not satisfy"*) bad "a satisfied constraint must not block" ;;
   *) ok "a satisfied constraint lets converge proceed" ;;
@@ -341,43 +340,9 @@ rm -f "$tmpd/repo/bots/"*.json
 mkspec plain ""
 got=$("$FAKE_CONVERGE" resolve zulip_acp 0.30.0 0.32.0 0.31.3)
 [ "$got" = 0.32.0 ] && ok "no constraints => newest wins, as before" || bad "wanted 0.32.0, got $got"
-# Restore the fixture specs the later fake-target tests rely on.
+# Restore the fixture spec the later tests rely on.
 rm -f "$tmpd/repo/bots/"*.json
 mkspec bare ""
-
-echo "== recycle mechanism selection"
-expect() { # <expected-mech> <label> <args...>
-  local want=$1 label=$2; shift 2
-  local got; got=$("$CONVERGE" plan-recycle "$@")
-  case "$got" in
-    "$want|"*) ok "$label ($got)" ;;
-    *) bad "$label: wanted $want, got $got" ;;
-  esac
-}
-#                                              unit_changed running version has_reload
-expect graceful "binary-only, running 0.17.1"  0 1 0.17.1 1
-expect graceful "exactly 0.12.0 qualifies"     0 1 0.12.0 1
-expect hard     "unit changed"                 1 1 0.17.1 1
-expect hard     "running 0.11.0 has no SIGHUP handler" 0 1 0.11.0 1
-expect hard     "service not running"          0 0 ''     1
-expect hard     "unit has no ExecReload"       0 1 0.17.1 0
-expect hard     "running version unreadable"   0 1 ''     1
-expect graceful "duplicated ExecReload still reloads" 0 1 0.17.1 2
-
-echo "== running-image staleness (files can match while the process does not)"
-xstale() { # <expected-verdict> <label> <args...>
-  local want=$1 label=$2; shift 2
-  local got; got=$("$CONVERGE" plan-stale "$@")
-  case "$got" in
-    "$want|"*) ok "$label ($got)" ;;
-    *) bad "$label: wanted $want, got $got" ;;
-  esac
-}
-#                                                     running want   running_ver
-xstale current "running image is the wanted one"      1 0.17.1 0.17.1
-xstale stale   "binary swapped but never recycled"    1 0.17.1 0.16.0
-xstale current "unreadable version is never evidence" 1 0.17.1 ''
-xstale current "a stopped bot is not stale"           0 0.17.1 ''
 
 echo "== self-host detection (localhost needs no ssh)"
 # Only a CERTAIN yes may switch the transport: a wrong yes writes to the wrong
@@ -394,233 +359,6 @@ xself self   "this machine's hostname" "$(hostname)"
 xself remote "a name that is not us"   github.com
 xself remote "an unresolvable name"    nosuchhost.invalid.example
 xself remote "an empty name"           ""
-
-echo "== fake-target converge (dry-run, apply, idempotence)"
-fake="$tmpd/fakehost"
-mkdir -p "$fake/.local/bin"
-LOCKED=$(jq -r .zulip_acp "$ROOT/dist.lock")
-printf '#!/bin/sh\necho %s\n' "$LOCKED" >"$fake/.local/bin/zulip-acp"
-chmod +x "$fake/.local/bin/zulip-acp"
-BOT=${BOTS[0]}
-env_file=$(jq -r '.credentials.env_file' "$FIXTURES/$BOT.json" | sed "s|^~|$fake|")
-
-# A unit whose EnvironmentFile is missing starts and dies with no usable
-# journal line, so --apply must refuse before it recycles into that.
-out=$("$CONVERGE" "$BOT" --target-root "$fake" --apply 2>&1) && rc=0 || rc=$?
-[ "$rc" -ne 0 ] && ok "apply refuses a host with no env file" || bad "missing env file must abort"
-case "$out" in *"ZULIP_API_KEY"*) ok "the refusal names the secret" ;; *) bad "expected a ZULIP_API_KEY hint"; echo "$out" ;; esac
-mkdir -p "$(dirname "$env_file")"
-echo 'ZULIP_API_KEY=stub' >"$env_file"
-
-out=$("$CONVERGE" "$BOT" --target-root "$fake")
-case "$out" in
-  *"DRY RUN"*) ok "dry run is the default" ;;
-  *) bad "expected DRY RUN banner"; echo "$out" ;;
-esac
-case "$out" in
-  *"zulip-acp $LOCKED ✓"*) ok "stub binary version matches lock" ;;
-  *) bad "expected zulip-acp version ✓"; echo "$out" ;;
-esac
-cfg_path=$(jq -r '.service.config_path' "$FIXTURES/$BOT.json" | sed "s|^~|$fake|")
-unit_name=$(jq -r '.unit' "$FIXTURES/$BOT.json")
-[ ! -f "$cfg_path" ] && ok "dry run wrote nothing" || bad "dry run must not write config"
-
-out=$("$CONVERGE" "$BOT" --target-root "$fake" --apply)
-[ -f "$cfg_path" ] && ok "apply wrote config" || bad "apply must write config"
-[ -f "$fake/.config/systemd/user/$unit_name.service" ] \
-  && ok "apply wrote unit" || bad "apply must write unit"
-diff <("$CONVERGE" render "$BOT" config) "$cfg_path" >/dev/null \
-  && ok "written config matches render" || bad "config on fake host differs from render"
-
-out=$("$CONVERGE" "$BOT" --target-root "$fake" --apply)
-case "$out" in *"config"*"✓"*) ok "second apply: config already converged" ;; *) bad "second apply should show config ✓"; echo "$out" ;; esac
-case "$out" in *"unit"*"✓"*) ok "second apply: unit already converged" ;; *) bad "second apply should show unit ✓"; echo "$out" ;; esac
-nbaks=$(find "$fake" -name "*.bak-*" | wc -l)
-[ "$nbaks" -eq 0 ] && ok "no spurious backups" || bad "expected 0 backups, got $nbaks"
-
-echo '{"x":1}' >"$cfg_path"
-"$CONVERGE" "$BOT" --target-root "$fake" --apply >/dev/null
-nbaks=$(find "$fake" -name "*.bak-*" | wc -l)
-[ "$nbaks" -eq 1 ] && ok "backup created on overwrite" || bad "expected 1 backup, got $nbaks"
-
-echo "== quick_models: default from the host's fir logins, never over a user block"
-fake4="$tmpd/fakehost4"
-mkdir -p "$fake4/.local/bin" "$fake4/.config/fir" "$(dirname "${env_file/$fake/$fake4}")"
-echo 'ZULIP_API_KEY=stub' >"${env_file/$fake/$fake4}"
-cp "$fake/.local/bin/zulip-acp" "$fake4/.local/bin/"
-cfg4=${cfg_path/$fake/$fake4}
-out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
-case "$out" in *"no catalog provider has a fir login"*) ok "no logins: no block, and it says so" ;; *) bad "expected the no-login note"; echo "$out" ;; esac
-jq -e 'has("quick_models") | not' "$cfg4" >/dev/null && ok "no logins: no quick_models written" || bad "no logins must write no block"
-echo '{"anthropic":{"access":"SECRET"},"poe#work":{},"nosuchprovider":{}}' >"$fake4/.config/fir/auth.json"
-out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
-got=$(jq -c '[.quick_models[].emoji]' "$cfg4")
-want=$(jq -c '[.quick_models_catalog[] | select(.provider == "anthropic" or .provider == "poe") | .emoji]' "$ROOT/distro.json")
-[ "$got" = "$want" ] && ok "default block = catalog entries with a login ($got)" || bad "wanted $want, got $got"
-grep -q SECRET "$cfg4" && bad "a secret leaked into config.json" || ok "no secret crosses into config.json"
-jq -e '.quick_models | all(has("provider") | not)' "$cfg4" >/dev/null && ok "catalog-only keys are dropped" || bad "provider key leaked"
-out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
-case "$out" in *"config"*"✓"*) ok "the default block is stable on a second apply" ;; *) bad "second apply must be a no-op"; echo "$out" ;; esac
-jq '.quick_models = [{"emoji":"fish","model":"sakana/ultra"}] | .quick_models_menu_emoji = "tools"' "$cfg4" >"$cfg4.new" && mv "$cfg4.new" "$cfg4"
-out=$("$CONVERGE" "$BOT" --target-root "$fake4" --apply)
-jq -e '.quick_models == [{"emoji":"fish","model":"sakana/ultra"}] and .quick_models_menu_emoji == "tools"' "$cfg4" >/dev/null \
-  && ok "a user block on the host is never overwritten" || bad "user block was overwritten: $(cat "$cfg4")"
-case "$out" in *"kept the host's own block"*) ok "keeping the host block is reported" ;; *) bad "expected the keep note"; echo "$out" ;; esac
-jq '.config.quick_models = [{"emoji":"star","model":"astra/best"}]' "$ROOT/distro.json" >"$tmpd/distro-q.json"
-FLEET_DISTRO="$tmpd/distro-q.json" "$CONVERGE" "$BOT" --target-root "$fake4" --apply >/dev/null
-jq -e '.quick_models == [{"emoji":"star","model":"astra/best"}]' "$cfg4" >/dev/null \
-  && ok "a spec block wins over the host and the catalog" || bad "spec block not rendered: $(cat "$cfg4")"
-for badcat in '"x"' '[{"provider":"a","emoji":"","model":"m"}]' \
-              '[{"provider":"a","emoji":"e","model":"m"},{"provider":"b","emoji":"e","model":"n"}]'; do
-  jq --argjson c "$badcat" '.quick_models_catalog = $c' "$ROOT/distro.json" >"$tmpd/distro-bad.json"
-  if FLEET_DISTRO="$tmpd/distro-bad.json" "$CONVERGE" "$BOT" --target-root "$fake4" >/dev/null 2>&1; then
-    bad "bad catalog accepted: $badcat"
-  else
-    ok "bad catalog rejected: $badcat"
-  fi
-done
-
-echo "== fake-target recycle (stubbed systemd + /proc: graceful reload vs hard restart)"
-# The stub models zulip-acp's actual shape: ONE tracked process whose pid never
-# moves across a reload, whose in-memory image (proc/<pid>/exe) is what the
-# version probe reads, and which only changes pid on a hard restart.
-fake3="$tmpd/fakehost3"
-mkdir -p "$fake3/.local/bin" "$fake3/.stub" "$fake3/proc" "$(dirname "${env_file/$fake/$tmpd/fakehost3}")"
-echo 'ZULIP_API_KEY=stub' >"${env_file/$fake/$tmpd/fakehost3}"
-printf '%s\n' 999000 >"$fake3/.stub/pid"
-printf '#!/bin/sh\necho %s\n' "$LOCKED" >"$fake3/.local/bin/zulip-acp"
-chmod +x "$fake3/.local/bin/zulip-acp"
-# An OLD image is what the tracked pid starts out executing.
-printf '#!/bin/sh\necho 0.16.0\n' >"$fake3/.local/bin/zulip-acp.running-old"
-chmod +x "$fake3/.local/bin/zulip-acp.running-old"
-relink() { # <pid> <image>
-  mkdir -p "$fake3/proc/$1"
-  ln -sfn "$fake3/.local/bin/$2" "$fake3/proc/$1/exe"
-}
-relink 999000 zulip-acp.running-old
-cat >"$fake3/.local/bin/systemctl" <<'STUB'
-#!/bin/sh
-s="$HOME/.stub"
-echo "$*" >>"$s/log"
-pid=$(cat "$s/pid")
-case "$*" in
-  *"show -p MainPID"*)    echo "$pid" ;;
-  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
-  *is-active*)            echo active ;;
-  *daemon-reload*)        : ;;
-  # A reload re-execs IN PLACE: same pid, new image.
-  *reload*)               ln -sfn "$HOME/.local/bin/zulip-acp" "$HOME/proc/$pid/exe" ;;
-  # A restart replaces the process: new pid, new image.
-  *restart*)              new=$((pid + 1)); echo "$new" >"$s/pid"
-                          mkdir -p "$HOME/proc/$new"
-                          ln -sfn "$HOME/.local/bin/zulip-acp" "$HOME/proc/$new/exe" ;;
-esac
-STUB
-chmod +x "$fake3/.local/bin/systemctl"
-
-out=$("$CONVERGE" "$BOT" --target-root "$fake3")
-case "$out" in
-  *"running image is 0.16.0, wanted $LOCKED"*) ok "running image read from the stubbed /proc" ;;
-  *) bad "expected a staleness note from the running image"; echo "$out" ;;
-esac
-case "$out" in
-  *"would hard restart"*) ok "dry run previews the mechanism (unit missing => hard)" ;;
-  *) bad "dry run must preview the mechanism"; echo "$out" ;;
-esac
-
-# First apply writes config+unit => unit changed => hard restart.
-out=$("$CONVERGE" "$BOT" --target-root "$fake3" --apply)
-case "$out" in
-  *"hard restart (daemon-reload + restart) ✓"*) ok "unit change forces a hard restart" ;;
-  *) bad "expected a hard restart on a unit change"; echo "$out" ;;
-esac
-case "$out" in *"unit changed"*) ok "hard restart reason reported" ;; *) bad "expected reason 'unit changed'" ;; esac
-# A hard restart drops in-flight turns and every message posted before the
-# fresh queue registers — it must never happen quietly.
-case "$out" in
-  *"WARNING: a hard restart drops"*) ok "hard restart warns about the message loss" ;;
-  *) bad "hard restart must warn"; echo "$out" ;;
-esac
-grep -q -- "--user daemon-reload" "$fake3/.stub/log" && ok "daemon-reload issued for a unit change" \
-  || bad "unit change must daemon-reload"
-case "$out" in
-  *"pid 999000 → 999001"*) ok "hard restart moved the pid" ;;
-  *) bad "expected the pid to move across a hard restart"; echo "$out" ;;
-esac
-
-# Binary stale again, unit untouched => graceful reload, pid held.
-: >"$fake3/.stub/log"
-pid=$(cat "$fake3/.stub/pid")
-relink "$pid" zulip-acp.running-old
-out=$("$CONVERGE" "$BOT" --target-root "$fake3")
-case "$out" in
-  *"would graceful reload"*) ok "dry run previews a graceful reload for a binary-only change" ;;
-  *) bad "dry run must preview the graceful reload"; echo "$out" ;;
-esac
-out=$("$CONVERGE" "$BOT" --target-root "$fake3" --apply)
-case "$out" in
-  *"graceful reload ✓ (pid $pid held, running $LOCKED)"*) ok "binary-only change reloads in place" ;;
-  *) bad "expected a graceful reload holding the pid"; echo "$out" ;;
-esac
-grep -q -- "--user reload" "$fake3/.stub/log" && ok "reload issued" || bad "expected systemctl reload"
-grep -q -- "restart" "$fake3/.stub/log" && bad "graceful path must not restart" || ok "no restart on the graceful path"
-grep -q -- "daemon-reload" "$fake3/.stub/log" && bad "graceful path must not daemon-reload" \
-  || ok "no daemon-reload when the unit did not change"
-
-# A config-only change still recycles, and reports the accepted reload even
-# though no version move is observable.
-: >"$fake3/.stub/log"
-echo '{"x":2}' >"$fake3$(jq -r '.service.config_path' "$FIXTURES/$BOT.json" | sed 's|^~||')"
-out=$("$CONVERGE" "$BOT" --target-root "$fake3" --apply)
-case "$out" in
-  *"reload accepted"*"nothing observable to verify"*) ok "config-only change reloads, and says what it could not verify" ;;
-  *) bad "config-only change must reload"; echo "$out" ;;
-esac
-
-# A reload that never re-execs is NOT a failure: the relay drains in-flight
-# turns first. It must report the pending exec instead of dying.
-: >"$fake3/.stub/log"
-pid=$(cat "$fake3/.stub/pid")
-relink "$pid" zulip-acp.running-old
-cat >"$fake3/.local/bin/systemctl" <<'STUB'
-#!/bin/sh
-case "$*" in
-  *"show -p MainPID"*)    cat "$HOME/.stub/pid" ;;
-  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
-  *is-active*)            echo active ;;
-esac
-STUB
-chmod +x "$fake3/.local/bin/systemctl"
-out=$(RELOAD_WAIT=2 "$CONVERGE" "$BOT" --target-root "$fake3" --apply 2>&1) && rc=0 || rc=$?
-[ "${rc:-0}" -eq 0 ] && ok "a still-draining reload is not an error" || { bad "drain wait must not fail"; echo "$out"; }
-case "$out" in
-  *"still draining"*) ok "pending re-exec reported" ;;
-  *) bad "expected a draining note"; echo "$out" ;;
-esac
-
-# A reload whose pid MOVES is a restart in disguise: messages were dropped, so
-# it must fail loudly.
-cat >"$fake3/.local/bin/systemctl" <<'STUB'
-#!/bin/sh
-s="$HOME/.stub"
-pid=$(cat "$s/pid")
-case "$*" in
-  *"show -p MainPID"*)    cat "$s/pid" ;;
-  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
-  *is-active*)            echo active ;;
-  *reload*)               new=$((pid + 1)); echo "$new" >"$s/pid"
-                          mkdir -p "$HOME/proc/$new"
-                          ln -sfn "$HOME/.local/bin/zulip-acp" "$HOME/proc/$new/exe" ;;
-esac
-STUB
-chmod +x "$fake3/.local/bin/systemctl"
-pid=$(cat "$fake3/.stub/pid")
-relink "$pid" zulip-acp.running-old
-if RELOAD_WAIT=2 "$CONVERGE" "$BOT" --target-root "$fake3" --apply >/dev/null 2>&1; then
-  bad "a reload that moves the pid must fail"
-else
-  ok "pid move during a reload fails loudly"
-fi
 
 echo "== distro.json <- bot merge"
 mtmp=$(mktemp -d)

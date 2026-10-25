@@ -112,8 +112,9 @@ test-race-cover: | $(BINDIR)
 		&& $(COVGATE) -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
 
 # Shell tooling under scripts/ (converge.sh) — offline black-box assertions:
-# golden renders, the recycle-mechanism matrix, and a fake host with stubbed
-# systemd and /proc. No network, no ssh, no real service.
+# golden renders and spec gates (converge_render.sh), and end-to-end call
+# sequences against fake hosts reached through CONVERGE_RSH with stubbed
+# zulip-acp, fir, systemctl and /proc (converge_test.sh). No network, no ssh.
 # Public repo: no bot-instance identifier from the private fleet registry
 # may appear in the tracked tree (skipped when the registry is absent).
 check-no-leak:
@@ -121,6 +122,7 @@ check-no-leak:
 
 test-scripts:
 	$(call RUN,test (scripts),./test/converge_render.sh)
+	$(call RUN,test (converge),./test/converge_test.sh)
 	$(call RUN,test (install.sh),./test/installsh_guard.sh)
 	$(call RUN,test (chat-update),./test/chat_update.sh)
 

@@ -86,11 +86,22 @@ Use **restart** — a hard, destructive restart — only for:
 
 1. **Fleet host with a spec in the fleet registry (`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots/<name>.json`) → converge, always.**
    `scripts/converge.sh --tot` rewrites `dist.lock` (review + commit), then
-   `scripts/converge.sh <bot> --apply` converges that host. **Converge is the
-   only sanctioned way to touch a fleet host** — it moves the binary, `fir`,
-   the fir extensions, `config.json` and the unit to the locked state, then
-   picks and verifies the recycle for you. Never hand-upgrade a fleet host to
-   an unlocked version.
+   `scripts/converge.sh --all --apply` (or `<bot>... --apply`) converges the
+   fleet. **Converge is the only sanctioned way to touch a fleet host** — it
+   moves the binary, `fir`, the fir extensions, `config.json` and the unit to
+   the locked state, then does ONE recycle per unit and verifies it. Never
+   hand-upgrade a fleet host to an unlocked version.
+
+   **Ownership.** The binary owns the file swap: converge runs
+   `zulip-acp update --binary <path> --version vX --no-reload -y` (one file,
+   no discovery, no reload). Converge owns the recycle: per unit it picks
+   exactly one of `enable --now` (not active), `restart` (unit file changed —
+   a SIGHUP re-exec keeps the old argv and environment), `reload` (binary,
+   config or fir moved, or the running image is old), or nothing. Then it
+   waits up to 30s for `/proc/<MainPID>/exe --version` to be the locked
+   version, and fails with the last journal lines if it is not. Bots that
+   share a host share ONE binary / fir / extension update. See
+   `docs/converge-design.md`.
 
    **Run it on the host itself.** Converge does not need ssh to reach the
    machine it runs on. Since v0.35.4 it tests the spec host against this
@@ -104,8 +115,14 @@ Use **restart** — a hard, destructive restart — only for:
 
    Only a certain yes changes the transport, so every other host still goes
    over ssh. Do **not** drive a converge from a second host to work around a
-   self-ssh failure: that was a bug, and it is fixed. `--local` remains a
-   manual override and `--force-local` skips the test.
+   self-ssh failure: that was a bug, and it is fixed. `--local` is the manual
+   override ("this host is me") when the test cannot tell.
+
+   **Converge from inside the relay** (`!update`, `update_converge_cmd`):
+   converge sees that it runs in the unit's cgroup. It sends the reload, prints
+   `reload pending: this relay reloads when the current turn ends`, and exits
+   0. When the UNIT file changed it writes the files and refuses the restart —
+   run `systemctl --user restart <unit>` from outside the relay.
 
    **Spec = constraint, lock = resolution.** A bot spec may declare what its
    host needs:
@@ -238,9 +255,9 @@ scripts/converge.sh --tot                    # resolve the newest releases that
                                              # satisfy every spec's `require`,
                                              # rewrite dist.lock; review + commit
 git diff dist.lock
-scripts/converge.sh <bot>                    # dry run: what would change, and
-                                             # which recycle it would use
-scripts/converge.sh <bot> --apply            # converge + recycle + verify
+scripts/converge.sh --all                    # dry run: the full plan, every host
+scripts/converge.sh --all --apply            # plan, then update + ONE recycle
+                                             # per unit + verify
 ```
 
 `--apply` refuses, before it touches the host, when `dist.lock` violates that
@@ -250,7 +267,10 @@ it); do not relax the spec to make a bad lock pass.
 
 Converge refuses to guess: it reads the version of the image the *running*
 process is executing (via `/proc/<MainPID>/exe`), not the on-disk file, and
-reports `graceful reload` or `hard restart` with the reason before it acts.
+prints the recycle it will do (`start`, `restart`, `reload`) before it acts.
+A second `--apply` on a converged fleet writes nothing and recycles nothing.
+A binary older than 0.19.0 cannot update itself: converge refuses and prints
+the `install.sh` command.
 
 **Any other host — the binary updates itself, and finds every install:**
 ```bash

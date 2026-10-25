@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,8 +181,13 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 	repo := fs.String("repo", base.Repo, "github owner/repo to update from")
 	restart := fs.String("restart-cmd", "", "update only this binary, then run this shell command (no discovery)")
 	yes := fs.Bool("y", false, "do not ask for confirmation")
+	binary := fs.String("binary", "", "swap only this binary: no discovery, no reload")
+	noReload := fs.Bool("no-reload", false, "swap the binaries, but reload no relay")
 	if err := fs.Parse(args); err != nil {
 		return parseExit(err)
+	}
+	if *binary != "" {
+		return updateOne(*binary, *pin, *repo, version, stdout, stderr, deps)
 	}
 	// With no terminal and no -y nobody can answer the plan: a script
 	// (converge.sh's `update --version vX` over ssh) gets the plain
@@ -204,6 +210,7 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 	var swaps []Install
 	var skipped []string
 	swapSet := map[string]bool{}
+	stuck := map[string]bool{}
 	for _, b := range rep.Binaries {
 		switch {
 		case same(b.Version, target):
@@ -211,6 +218,11 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 			skipped = append(skipped, b.Path+" does not report a version")
 		case distkit.IsDevBuild(b.Version) && *pin == "":
 			skipped = append(skipped, b.Path+" is a dev build ("+b.Version+"); pin -version to replace it")
+		case !deps.Sys.Writable(filepath.Dir(b.Path)):
+			// Not ours to replace (a root-owned copy, say). A warning, not
+			// a failure — unless a running relay executes it (see below).
+			fmt.Fprintf(stdout, "warn:   %s is %s but its directory is not writable; replace it by hand or remove it\n", b.Path, b.Version)
+			stuck[b.Path] = true
 		default:
 			swaps = append(swaps, b)
 			swapSet[b.Path] = true
@@ -218,8 +230,14 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 	}
 	var reloads []reloadStep
 	var stopped []Relay
+	rc := 0
 	for _, r := range rep.Relays {
+		if r.PID > 0 && stuck[r.Binary] {
+			fmt.Fprintf(stderr, "update: %s runs %s, which this user cannot replace\n", describe(r), r.Binary)
+			rc = 1
+		}
 		switch {
+		case *noReload:
 		case r.PID == 0:
 			if swapSet[r.Binary] {
 				stopped = append(stopped, r)
@@ -239,7 +257,7 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 	}
 	if len(swaps) == 0 && len(reloads) == 0 {
 		fmt.Fprintf(stdout, "nothing to do: target is %s.\n", target)
-		return 0
+		return rc
 	}
 	fmt.Fprintf(stdout, "target release: %s\n\nplan:\n", target)
 	for _, b := range swaps {
@@ -256,7 +274,6 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 		return 1
 	}
 
-	rc := 0
 	failed := map[string]bool{}
 	for _, b := range swaps {
 		c := deps.Config(b.Version)
@@ -280,6 +297,30 @@ func Update(args []string, version string, stdin io.Reader, stdout, stderr io.Wr
 		}
 	}
 	return rc
+}
+
+// updateOne swaps exactly one binary, with no discovery and no reload.
+// The caller (converge.sh) owns the reload. The exit code is 0 only when
+// path is at the target afterwards.
+func updateOne(path, pin, repo, version string, stdout, stderr io.Writer, deps Deps) int {
+	cur := version
+	if out, err := deps.Sys.Run(path, "-version"); err == nil && strings.TrimSpace(out) != "" {
+		cur = strings.TrimSpace(strings.SplitN(out, "\n", 2)[0])
+	}
+	c := deps.Config(cur)
+	c.Repo, c.TargetVersion, c.Stdout, c.Stderr = repo, pin, stdout, stderr
+	c.ExecPath = func() (string, error) { return path, nil }
+	res, err := deps.Swap(context.Background(), c)
+	if err != nil {
+		fmt.Fprintf(stderr, "update %s: %v\n", path, err)
+		return 1
+	}
+	if res.Updated {
+		fmt.Fprintf(stdout, "swapped %s  %s → %s (not reloaded)\n", path, cur, dash(res.Target))
+	} else {
+		fmt.Fprintf(stdout, "current %s  %s\n", path, cur)
+	}
+	return 0
 }
 
 func withoutYes(args []string) []string {

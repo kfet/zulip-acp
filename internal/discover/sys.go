@@ -34,6 +34,9 @@ type Sys interface {
 	EvalSymlinks(path string) (string, error)
 	// IsExec reports whether path is a regular file with an exec bit.
 	IsExec(path string) bool
+	// Writable reports whether this user may create files in dir — what
+	// an atomic rename into dir needs.
+	Writable(dir string) bool
 	// Run runs a command and returns its stdout.
 	Run(name string, args ...string) (string, error)
 	Signal(pid int, sig syscall.Signal) error
@@ -64,6 +67,10 @@ func (osSys) Home() string {
 func (osSys) IsExec(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
+}
+
+func (osSys) Writable(dir string) bool {
+	return syscall.Access(dir, 2) == nil // 2 = W_OK
 }
 
 func (osSys) Run(name string, args ...string) (string, error) {

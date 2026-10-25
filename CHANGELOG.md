@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `zulip-acp update --binary PATH` swaps exactly one binary (no discovery, no reload), and `--no-reload` swaps without a reload.
+- `scripts/converge.sh` takes several bots or `--all`, groups them by host (one binary/fir/extension update per host), and prints the whole plan before any write.
+
+### Changed
+
+- `scripts/converge.sh` no longer swaps or signals by itself: the binary owns the swap, converge does ONE recycle per unit (`enable --now`, `restart` on a unit change, or `reload`) and verifies `/proc/<MainPID>/exe` within 30s, else fails with the journal. Inside its own relay it prints "reload pending" and exits 0. Removed the gh download fallback, the SIGHUP path, the 60s poll, `--target-root` and `--force-local`.
+
+### Fixed
+
+- `zulip-acp update` reports an install in a directory it cannot write (a stray root-owned copy) as a `warn:` line, and no longer exits nonzero after the swaps it could do. It still fails when a running relay executes that binary.
+
 ## [0.60.2] - 2026-10-25
 
 ### Fixed

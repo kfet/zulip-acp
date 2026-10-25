@@ -32,7 +32,10 @@ type fakeSys struct {
 	ran      []string
 	signals  []string
 	sigErr   error
+	readonly map[string]bool
 }
+
+func (f *fakeSys) Writable(dir string) bool { return !f.readonly[dir] }
 
 func (f *fakeSys) GOOS() string                    { return f.goos }
 func (f *fakeSys) Getpid() int                     { return f.pid }
@@ -525,6 +528,9 @@ func TestOSSys(t *testing.T) {
 	if r, _ := s.EvalSymlinks(p + "l"); r != p {
 		t.Fatal(r)
 	}
+	if !s.Writable(dir) || s.Writable(filepath.Join(dir, "missing")) {
+		t.Fatal("writable")
+	}
 	if !s.IsExec(p) || s.IsExec(dir) {
 		t.Fatal("isexec")
 	}
@@ -610,5 +616,69 @@ func TestLookPathRelative(t *testing.T) {
 	d := &discoverer{sys: &fakeSys{}}
 	if d.lookPath("./zulip-acp") != "./zulip-acp" || d.lookPath("zulip-acp") != "zulip-acp" {
 		t.Fatal()
+	}
+}
+
+// A stray copy this user cannot write (root-owned, say) is a warning. It
+// must not fail the run once the swaps this user CAN do have succeeded.
+func TestUpdateStrayRootInstallWarns(t *testing.T) {
+	f := linuxHost()
+	f.runs["/usr/local/Cellar/zulip-acp/bin/zulip-acp -version"] = "v1.0.0"
+	f.runs["/opt/za/zulip-acp -version"] = "v1.0.0"
+	f.readonly = map[string]bool{"/usr/local/Cellar/zulip-acp/bin": true}
+	d, sw := deps(f, "v1.1.0", nil)
+	var out, errb bytes.Buffer
+	if rc := Update([]string{"-y", "-no-reload"}, "v1", nil, &out, &errb, d); rc != 0 {
+		t.Fatalf("rc=%d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	if fmt.Sprint(*sw) != "[/opt/za/zulip-acp@v1.0.0]" {
+		t.Errorf("swapped %v", *sw)
+	}
+	if !strings.Contains(out.String(), "warn:   /usr/local/Cellar/zulip-acp/bin/zulip-acp is v1.0.0") {
+		t.Errorf("no warning:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "reload") || len(f.signals) != 0 {
+		t.Errorf("-no-reload reloaded:\n%s %v", out.String(), f.signals)
+	}
+}
+
+func TestUpdateOneBinary(t *testing.T) {
+	f := &fakeSys{goos: "linux", runs: map[string]string{"/b/zulip-acp -version": "v1.0.0\nextra"}}
+	d, sw := deps(f, "v1.1.0", nil)
+	var out, errb bytes.Buffer
+	if rc := Update([]string{"-binary", "/b/zulip-acp", "-version", "v1.1.0"}, "v9", nil, &out, &errb, d); rc != 0 {
+		t.Fatal(rc, errb.String())
+	}
+	if fmt.Sprint(*sw) != "[/b/zulip-acp@v1.0.0]" || !strings.Contains(out.String(), "swapped /b/zulip-acp  v1.0.0") {
+		t.Fatalf("%v %s", *sw, out.String())
+	}
+	if len(f.ran) != 1 {
+		t.Fatalf("discovery ran: %v", f.ran)
+	}
+	// Unreadable version: fall back to our own. Already current: no swap.
+	d.Swap = func(context.Context, distkit.Config) (distkit.Result, error) { return distkit.Result{}, nil }
+	out.Reset()
+	if rc := Update([]string{"-binary", "/x"}, "v9", nil, &out, io.Discard, d); rc != 0 || !strings.Contains(out.String(), "current /x  v9") {
+		t.Fatal(rc, out.String())
+	}
+	d.Swap = func(context.Context, distkit.Config) (distkit.Result, error) {
+		return distkit.Result{}, errors.New("eacces")
+	}
+	errb.Reset()
+	if rc := Update([]string{"-binary", "/x"}, "v9", nil, io.Discard, &errb, d); rc != 1 || !strings.Contains(errb.String(), "eacces") {
+		t.Fatal(rc, errb.String())
+	}
+}
+
+// An unwritable binary that a RUNNING relay executes is a failure.
+func TestUpdateStuckRunningBinaryFails(t *testing.T) {
+	f := linuxHost()
+	f.runs["/opt/za/zulip-acp -version"] = "v1.0.0"
+	f.readonly = map[string]bool{"/opt/za": true}
+	d, sw := deps(f, "v1.1.0", nil)
+	var errb bytes.Buffer
+	if rc := Update([]string{"-y", "-no-reload"}, "v1", nil, io.Discard, &errb, d); rc != 1 || len(*sw) != 0 ||
+		!strings.Contains(errb.String(), "process pid 200 runs /opt/za/zulip-acp, which this user cannot replace") {
+		t.Fatalf("rc=%d %v %s", rc, *sw, errb.String())
 	}
 }

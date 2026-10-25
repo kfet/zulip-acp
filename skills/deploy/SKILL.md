@@ -96,7 +96,10 @@ ssh <host> 'brew install kfet/ai/zulip-acp'
 a fleet host with a fleet registry spec — never another hand-placed
 binary.** See the `update` skill; it owns the upgrade order. Converge runs on
 the target host itself — it uses no ssh when the spec names the machine it
-runs on.
+runs on. Converge swaps the binary with `zulip-acp update --binary
+<path> --no-reload`, then does ONE recycle per unit (`reload`; `restart` only
+when the unit file changed) and verifies the running image. A reload re-execs
+with the OLD argv and environment, so a unit change always needs a restart.
 
 Add the host to the fleet registry while you are here (the spec holds only
 what differs from `distro.json`): a spec plus `dist.lock` is what

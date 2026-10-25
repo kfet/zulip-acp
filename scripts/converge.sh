@@ -1,56 +1,35 @@
 #!/usr/bin/env bash
 # converge.sh — the only sanctioned way to change a zulip-acp bot host.
 #
-# Reads distro.json <- $BOTS_DIR/<bot>.json (deep-merged; shared ~/sync/shared/fleet/bots, relay=zulip-acp) + dist.lock and makes the target host match. Version
-# moves go through the lock, never through a hand-typed command on a host.
+# Reads distro.json <- $BOTS_DIR/<bot>.json (deep-merged; relay=zulip-acp)
+# plus dist.lock, and makes each target host match. Version moves go through
+# the lock, never through a hand-typed command on a host.
+#
+# OWNERSHIP — the one rule this script is built on:
+#   the Go binary owns the FILE SWAP (`zulip-acp update --binary B --no-reload`:
+#   checksum-verified, atomic, ETXTBSY-safe); converge owns RENDERING, ONE
+#   recycle per unit, and VERIFICATION. Nothing reloads twice.
+# See docs/converge-design.md.
 #
 # Usage:
-#   converge.sh <bot>                          dry-run (default): show what would change
-#   converge.sh <bot> --apply                  actually converge the host
-#   converge.sh <bot> --local                  act on THIS machine directly (no ssh);
-#                                              refuses unless the spec host is us
-#   converge.sh <bot> --target-root DIR        act on a local fake host rooted at DIR
-#                                              (no ssh; for testing). DIR/proc stands in
-#                                              for /proc so a test can model a running image
-#   converge.sh --tot                          resolve the newest release that
-#                                              satisfies EVERY spec's `require`
-#                                              block and rewrite dist.lock;
-#                                              NEVER converges
-#   converge.sh render <bot> <artefact>        render one artefact to stdout
-#                                              artefact: config | execstart | unit
-#   converge.sh plan-recycle <unit_changed> <running> <version> <has_reload>
-#                                              print the recycle mechanism that state
-#                                              selects (test hook)
-#   converge.sh plan-stale <running> <want> <running_ver>
-#                                              print whether the RUNNING image is stale
-#                                              w.r.t. want (test hook)
-#   converge.sh semver-cmp <a> <b>             print -1|0|1 (test hook)
-#   converge.sh semver-sat <version> <constraint>
-#                                              print yes/no, exit 0/1 (test hook)
-#   converge.sh resolve <component> <ver...>   print the newest given version that
-#                                              satisfies every spec's require for
-#                                              <component> (test hook)
-#   converge.sh self-host <host>               print whether <host> is THIS machine,
-#                                              exit 0/1 (test hook)
+#   converge.sh <bot>... [--apply] [--local]   plan (default) or apply
+#   converge.sh --all [--apply]                every managed bot of this relay
+#   converge.sh --tot                          resolve dist.lock; NEVER converges
+#   converge.sh render <bot> <artefact>        config | execstart | unit
+#   converge.sh recycle-action <unit_changed> <active_state> <running> <want> <files_changed>
+#   converge.sh semver-cmp <a> <b> | semver-sat <ver> <constraint>
+#   converge.sh resolve <component> <ver...> | self-host <host>   (test hooks)
 #
-# Spec vs lock: a bot spec declares REQUIREMENTS (`require`), dist.lock records
-# the RESOLUTION. --tot is the only resolver; --apply is a reader that refuses
-# to move a host to a locked version its own spec forbids.
+# Bots are grouped by .host: the binary, fir and fir extensions are updated
+# ONCE per host; config, unit and the recycle are per bot. --apply prints the
+# whole plan for every host before it writes anything.
 #
-# Conventions:
-#   - a spec.service key that is absent (or false/null) emits no flag at all;
-#     present-and-true booleans emit a bare flag
-#   - spec paths use ~/...; rendered as %h/... in systemd units and
-#     "$HOME"/... over the wire
-#   - rendering is canonical: flag order and dash style are normalised
-#     (--flag, fixed order). The first --apply on a host may rewrite its unit
-#     into canonical form with identical semantics.
+# Transport: ssh by spec host alias; a host that is certainly THIS machine
+# (or every host, with --local) runs through a local login bash, because a
+# relay host usually cannot ssh to itself. CONVERGE_RSH=<prog> replaces the
+# transport (`<prog> <host> <script>`) — the offline test harness uses it.
 #
-# Only systemd user services are supported. zulip-acp dials out — there is no
-# listener, no funnel and no port — so a host is just a binary, a config, a
-# secret and a unit. launchd is deliberately absent: no macOS zulip host
-# exists, and the graceful reload cannot be verified without /proc (see
-# recycle_plan). Add it when there is a host to test it against.
+# Only systemd user services are supported.
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -109,22 +88,12 @@ trap 'rm -rf "$TMPD"' EXIT
 ZULIP_ACP_REPO=kfet/zulip-acp
 FIR_DIST_REPO="https://github.com/kfet/fir-dist"
 
-# The release that first shipped `zulip-acp update`. At or above it the host
-# updates ITSELF (checksum-verified, ETXTBSY-safe atomic swap); below it there
-# is no self-update to call and converge fetches the asset itself.
+# The release that first shipped `zulip-acp update`. Below it the host cannot
+# update itself, and converge refuses (bootstrap once with install.sh).
 SELFUPDATE_MIN=0.19.0
-# From 0.55.0 `update` discovers every install and asks "proceed? [y/N]";
-# converge has no tty to answer it, so it must pass -y. Older builds reject -y.
-SELFUPDATE_YES_MIN=0.55.0
-# The release that first shipped the SIGHUP graceful reload. Below it a SIGHUP
-# just kills the relay, so the first cutover must be a hard restart.
-GRACEFUL_MIN=0.12.0
-# How long (seconds) to wait for a reload's re-exec after the SIGHUP is
-# accepted. The relay drains in-flight turns first (-reload-drain-deadline,
-# 30m), so a timeout here is "still draining", not a failure. Overridable
-# from the environment for a host that is known to be mid-turn.
-RELOAD_WAIT=${RELOAD_WAIT:-60}
-case "$RELOAD_WAIT" in ''|*[!0-9]*) echo "converge: error: RELOAD_WAIT must be a whole number of seconds" >&2; exit 1 ;; esac
+# How long (seconds) to wait for the recycled unit to run the wanted image.
+VERIFY_WAIT=${VERIFY_WAIT:-30}
+case "$VERIFY_WAIT" in ''|*[!0-9]*) echo "converge: error: VERIFY_WAIT must be a whole number of seconds" >&2; exit 1 ;; esac
 
 die()  { echo "converge: error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
@@ -495,15 +464,6 @@ WantedBy=default.target
 EOF
 }
 
-# ---------------------------------------------------------------------------
-# Remote execution (ssh by host alias, or a local fake root for testing)
-# ---------------------------------------------------------------------------
-HOST=""
-TARGET_ROOT=""
-LOCAL=0
-FORCE_LOCAL=0
-PROC_ROOT=/proc
-
 # host_is_self <spec-host> — is the spec's host THIS machine?
 #
 # Converge must not need ssh to reach the box it already runs on. A relay host
@@ -553,40 +513,46 @@ host_is_self() {
   fi
   return 1
 }
+# ---------------------------------------------------------------------------
+# Transport
+# ---------------------------------------------------------------------------
+HOST=""
+FORCE_LOCAL=0
+LOCAL_HOSTS=" " # hosts reached through a local bash, space-delimited
 
-rsh() { # run a shell command on the target; stdin is forwarded
-  if [ "$LOCAL" = 1 ]; then
-    # We ARE the target. Run through a LOGIN bash so PATH matches what the ssh
-    # path would produce — otherwise a perfectly installed `fir` in
-    # ~/.local/bin probes as "not found". Unlike --target-root this does NOT
-    # rewrite HOME: local mode is a transport swap, not a test harness.
-    bash -lc "$1"
-  elif [ -n "$TARGET_ROOT" ]; then
-    # A real target is reached through a LOGIN shell, so ~/.local/bin is on
-    # PATH. Mirror that for the fake root — it is also how a test supplies a
-    # stub `systemctl` for the recycle path.
-    HOME="$TARGET_ROOT" PATH="$TARGET_ROOT/.local/bin:$PATH" bash -c "$1"
-  else
-    # Force a LOGIN BASH on the far side: `ssh host cmd` otherwise runs the
-    # account's default shell, non-login, so ~/.local/bin is off PATH and the
-    # bash-written payload may be handed to zsh. Single-quote the payload with
-    # sed (bash 5.3 changed backslash handling in ${x//} replacements, which
-    # double-escapes and dies with "unmatched '" on the far side).
-    local esc
-    esc=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
-    # BatchMode + ConnectTimeout: converge runs unattended (often from an
-    # agent turn), and an ssh that stops to ask for a passphrase or an
-    # unknown host key would hang forever instead of failing.
-    # shellcheck disable=SC2029  # remote-side expansion is intended
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "bash -lc '$esc'"
+# pick_transport <host> — decide, once, how to reach host.
+pick_transport() {
+  [ -n "${CONVERGE_RSH:-}" ] && return 0
+  if [ "$FORCE_LOCAL" = 1 ]; then
+    LOCAL_HOSTS+="$1 "; echo "== $1: --local — this machine, no ssh"
+  elif host_is_self "$1"; then
+    LOCAL_HOSTS+="$1 "; echo "== $1: local target ($SELF_WHY) — no ssh"
   fi
+  return 0
+}
+
+rsh() { # <script> — run on $HOST; stdin is forwarded
+  if [ -n "${CONVERGE_RSH:-}" ]; then
+    "$CONVERGE_RSH" "$HOST" "$1"; return
+  fi
+  case "$LOCAL_HOSTS" in
+    # A LOGIN bash, so PATH matches what the ssh path gives.
+    *" $HOST "*) bash -lc "$1"; return ;;
+  esac
+  # Force a LOGIN BASH on the far side, single-quoting the payload with sed
+  # (bash 5.3 changed backslash handling in ${x//} replacements). BatchMode +
+  # ConnectTimeout: converge runs unattended and must fail, not hang.
+  local esc
+  esc=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  # shellcheck disable=SC2029  # remote-side expansion is intended
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "bash -lc '$esc'"
 }
 
 # rcat <spec-path> — print remote file; empty if missing; die on transport error
 rcat() {
   local rc=0
   rsh "p=\"$(p_home "$1")\"; if [ -f \"\$p\" ]; then cat \"\$p\"; else exit 42; fi" || rc=$?
-  case "$rc" in 0|42) : ;; *) die "failed reading $1 (rc=$rc — ssh/transport error?)" ;; esac
+  case "$rc" in 0|42) : ;; *) die "failed reading $1 on $HOST (rc=$rc — ssh/transport error?)" ;; esac
 }
 
 # rwrite <spec-path> <local-content-file> — backup + write
@@ -595,462 +561,295 @@ rwrite() {
        [ -f \"\$p\" ] && cp -p \"\$p\" \"\$p.bak-$STAMP\"; cat > \"\$p\"" <"$2"
 }
 
-# diff_artifact <label> <spec-path> <desired-content-file>
-# Prints a diff if different. 0 if identical, 1 if different.
+# diff_artifact <label> <spec-path> <desired-file> — 0 identical, 1 differs (diff printed)
 diff_artifact() {
-  local label=$1 rpath=$2 want=$3 have
+  local have
   have=$(mktemp "$TMPD/have.XXXXXX")
-  rcat "$rpath" >"$have"
-  if diff -u --label "$label (current)" --label "$label (desired)" "$have" "$want"; then
-    rm -f "$have"; return 0
-  fi
-  rm -f "$have"; return 1
+  rcat "$2" >"$have"
+  diff -u --label "$1 (current)" --label "$1 (desired)" "$have" "$3"
 }
 
 # ---------------------------------------------------------------------------
-# Recycle mechanism selection
+# Recycle: ONE action per unit
 #
-# zulip-acp has no master/worker supervisor and needs none: it is a long-poll
-# CLIENT, and while it is not polling the Zulip event queue buffers
-# server-side (docs/graceful-reload.md). A SIGHUP therefore makes the ONE
-# tracked process stop polling without deleting its queue, drain in-flight
-# turns, and re-exec the new binary IN PLACE — same PID, same queue cursor.
-#
-#   unit changed                 -> hard (systemd needs daemon-reload+restart)
-#   service not running          -> hard (nothing to signal)
-#   unit has no ExecReload       -> hard (reload would fail)
-#   running image < GRACEFUL_MIN -> hard (no SIGHUP handler; a HUP would kill it)
-#   running version unreadable   -> hard (cannot prove the live image can reload)
-#   otherwise                    -> graceful reload (SIGHUP)
-#
-# The decision is made on the RUNNING image, never the on-disk binary: what
-# matters is what the live process can do.
+# A SIGHUP reload drains and re-execs the new binary in place with the SAME
+# argv and environment, so it picks up a new binary and a new config.json —
+# but never a changed unit (ExecStart flags, EnvironmentFile, PATH). Hence:
+#   not active            -> start   (daemon-reload, enable --now)
+#   unit changed          -> restart (daemon-reload, restart; drops turns)
+#   reloading             -> pending (a SIGHUP is already draining)
+#   files changed, or the running image is not the wanted one
+#                         -> reload
+#   otherwise             -> none
 # ---------------------------------------------------------------------------
-
-# Basename of the tracked binary (spec `.binary`), used to be sure a pid is
-# really running our image before executing it. Set per-bot in converge().
-ZA_EXE=zulip-acp
-
-ver_ge() { # <a> <b> — true if version a >= b
-  [ -n "$1" ] || return 1
-  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+recycle_action() { # <unit_changed> <active_state> <running_ver> <want> <files_changed>
+  case "$2" in active|reloading) : ;; *) echo start; return 0 ;; esac
+  if [ "$1" = 1 ]; then echo restart; return 0; fi
+  if [ "$2" = reloading ]; then echo pending; return 0; fi
+  if [ "$5" = 1 ] || [ "$3" != "$4" ]; then echo reload; return 0; fi
+  echo none
 }
 
-# exe_name_snippet — remote shell defining `exe_name <pid>`: the BASENAME of
-# the image that pid is EXECUTING, empty if unknowable. $proc/<pid>/exe is the
-# in-memory inode, still correct after the on-disk file was replaced or
-# unlinked (hence stripping a " (deleted)" suffix). A binary moved aside as
-# `zulip-acp.running-<ver>` still counts as ours, so match the name exactly or
-# followed by a dot.
-exe_name_snippet() {
-  cat <<'EOS'
-exe_name() {
-  _e=$(readlink "$proc/$1/exe" 2>/dev/null || true)
-  _e=${_e% (deleted)}
-  printf '%s\n' "${_e##*/}"
-}
-is_ours() {
-  case "$1" in "$zaname"|"$zaname".*) return 0 ;; esac
-  return 1
-}
-EOS
-}
-
-# running_version_snippet — sets `ver` to the version of the image pid is
-# EXECUTING (Linux only: it execs $proc/<pid>/exe, never the on-disk file).
-running_version_snippet() {
-  cat <<'EOS'
-ver=''
-if is_ours "$(exe_name "$pid")"; then
-  ver=$("$proc/$pid/exe" --version 2>/dev/null | head -1 || true)
-fi
-EOS
-}
-
-# probe_state <unit> — prints "<running>|<pid>|<version>|<has_reload>"
-#   running     1 if the service is active with a pid
-#   pid         MainPID, 0 if unknown
-#   version     version of the RUNNING image; empty if unreadable
-#   has_reload  how many ExecReload lines the loaded unit defines (0 = none;
-#               >1 means a drop-in duplicates it)
-probe_state() {
-  local unit=$1 script
-  # A fake root has no supervisor unless the test stubs one; never probe the
-  # REAL local systemd from --target-root mode.
-  if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/systemctl" ]; then
-    echo '0|0||0'; return 0
-  fi
-  script="u='$unit'; zaname='$ZA_EXE'; proc='$PROC_ROOT'
-$(exe_name_snippet)
+# probe_unit <unit> — "<active_state>|<running_version>|<self>". The running
+# version is read from <proc>/<MainPID>/exe: the in-memory image, not the
+# file on disk. self=1 when this very script runs inside that unit (its
+# cgroup), i.e. converge was started by the relay it is about to recycle.
+probe_unit() {
+  rsh "u='$1'; P=\${CONVERGE_PROC:-/proc}
 $(cat <<'EOS'
-pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null || echo 0)
+st=$(systemctl --user show -p ActiveState --value "$u" 2>/dev/null || true)
+pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null || true)
 case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
-# `reloading` is what systemd reports while ExecReload runs — a state the
-# graceful path passes through by definition, not a stopped service.
-act=$(systemctl --user is-active "$u" 2>/dev/null || true)
-rel=$(systemctl --user show -p ExecReload --value "$u" 2>/dev/null || true)
-run=0
-case "$act" in active|reloading) [ "$pid" -gt 0 ] && run=1 ;; esac
-ver=''
+run=''
+[ "$pid" -gt 0 ] && run=$("$P/$pid/exe" --version 2>/dev/null | head -1 || true)
+self=0
+grep -qs "/$u\$" "$P/self/cgroup" && self=1
+printf '%s|%s|%s\n' "${st:-unknown}" "$run" "$self"
 EOS
-)
-if [ \"\$run\" = 1 ]; then
-$(running_version_snippet)
-$(cat <<'EOS'
-fi
-hr=0; [ -n "$rel" ] && hr=$(printf '%s\n' "$rel" | grep -c '[^[:space:]]')
-printf '%s|%s|%s|%s\n' "$run" "$pid" "$ver" "$hr"
-EOS
-)"
-  rsh "$script"
+)" || die "cannot probe $1 on $HOST"
 }
 
-# stale_decision <running> <want> <running_ver>
-# Answers "is this host still SERVING an old image?" from the running state
-# alone, so a host whose FILES already match is not called converged while the
-# live process executes the previous release (the normal state after a binary
-# swap that was never recycled). Prints "stale|<why>" or "current|<why>".
-# A version we could not read is never evidence of staleness: silence must not
-# manufacture a restart. Exposed as `plan-stale` for tests.
-stale_decision() {
-  local running=$1 want=$2 ver=$3
-  if [ "$running" != 1 ]; then echo "current|not running"; return 0; fi
-  if [ -z "$ver" ]; then echo "current|running version unreadable"; return 0; fi
-  if [ "$ver" = "$want" ]; then echo "current|running image is $want"; return 0; fi
-  echo "stale|running image is $ver, wanted $want"
-}
-
-# recycle_plan <unit_changed> <running> <version> <has_reload>
-# Prints "<graceful|hard>|<reason>". Pure: no I/O, unit-testable via
-# `plan-recycle`.
-recycle_plan() {
-  local unit_changed=$1 running=$2 version=$3 has_reload=$4
-  if [ "$unit_changed" = 1 ]; then echo "hard|unit changed"; return 0; fi
-  if [ "$running" != 1 ]; then echo "hard|service not running"; return 0; fi
-  if [ "${has_reload:-0}" -lt 1 ]; then echo "hard|unit defines no ExecReload"; return 0; fi
-  if [ -z "$version" ]; then
-    echo "hard|running version unreadable — cannot prove the live image handles SIGHUP"; return 0
-  fi
-  ver_ge "$version" "$GRACEFUL_MIN" \
-    || { echo "hard|running image $version < $GRACEFUL_MIN (no SIGHUP handler)"; return 0; }
-  echo "graceful|running image $version >= $GRACEFUL_MIN"
-}
-
-mech_label() { # <mech>
-  case "$1" in
-    graceful) echo "graceful reload (SIGHUP: drain, then re-exec in place)" ;;
-    hard)     echo "hard restart (daemon-reload + restart)" ;;
-  esac
+# verify_unit <unit> <want> — the unit must run the wanted image within
+# VERIFY_WAIT seconds. A timeout is a failure.
+verify_unit() {
+  local u=$1 want=$2 i st run pr
+  for i in $(seq 1 "$VERIFY_WAIT"); do
+    pr=$(probe_unit "$u")
+    IFS='|' read -r st run _ <<<"$pr"
+    if [ "$st" = active ] && [ "$run" = "$want" ]; then
+      note "$u: running $want ✓"; return 0
+    fi
+    [ "$i" = "$VERIFY_WAIT" ] || sleep 1
+  done
+  echo "converge: error: $HOST $u: state ${st:-?}, running ${run:-unreadable} after ${VERIFY_WAIT}s, wanted $want. Last journal lines:" >&2
+  rsh "journalctl --user -u '$u' -n 20 --no-pager 2>&1 || true" >&2 || true
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
-# Binary installation
+# Plan, then apply
 #
-# The self-update subcommand is the canonical mechanism and the host runs it
-# itself: it resolves the release over the GitHub API (which works on a
-# PRIVATE repo with a token, where the plain download URL and `brew install`
-# both 404), verifies the sha256, and swaps the file atomically under the
-# running process. converge only falls back to fetching the asset when the
-# installed binary is too old to have `update` at all.
+# Phase 1 probes every host and records what must change; nothing is
+# written. Phase 2 (--apply) performs exactly that plan.
 # ---------------------------------------------------------------------------
-install_binary() { # <binary-spec-path> <current-version> <want-version> <platform>
-  local binary=$1 cur=$2 want=$3 platform=$4 os arch b
-  b=$(p_home "$binary")
-  if ver_ge "$cur" "$SELFUPDATE_MIN"; then
-    local yes=""
-    ver_ge "$cur" "$SELFUPDATE_YES_MIN" && yes=" -y"
-    note "self-update: $b update --version v$want$yes"
-    rsh "\"$b\" update --version v$want$yes" || die "self-update failed on $HOST"
-    return 0
-  fi
-  os=${platform%%/*}; arch=${platform##*/}
-  if rsh "command -v gh >/dev/null 2>&1"; then
-    note "fetching zulip-acp-$os-$arch v$want with gh (no self-update in $cur)"
-    rsh "set -e; b=\"$b\"; t=\$(mktemp); \
-         gh release download v$want --repo $ZULIP_ACP_REPO \
-            --pattern 'zulip-acp-$os-$arch' --output \"\$t\" --clobber; \
-         chmod +x \"\$t\"; [ -f \"\$b\" ] && cp -p \"\$b\" \"\$b.bak-$STAMP\"; mv \"\$t\" \"\$b\""
-    return 0
-  fi
-  die "no way to install v$want on $HOST: the installed binary (${cur:-missing}) predates \`zulip-acp update\` (>= $SELFUPDATE_MIN) and there is no \`gh\` on the host. Install gh, or bootstrap once with install.sh (\`curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want sh\`) and let it self-update from then on."
-}
+declare -A B_SPEC B_HOST B_UNIT B_CFG B_ACT B_SELF B_FILES
+declare -A K_ZA K_NEW H_FIR H_EXT H_DR
+HOSTS=() BOTS=() KEYS=()
+CHANGES=0
 
-# ---------------------------------------------------------------------------
-# Converge
-# ---------------------------------------------------------------------------
-converge() {
-  local bot=$1 apply=$2 changes=0 unit_changed=0
-  local want_za want_fir want_ext cur host supervisor binary
+want_za="" want_fir="" want_ext=""
 
+load_lock() {
   [ -f "$LOCK" ] || die "missing $LOCK"
   want_za=$(jq -r '.zulip_acp' "$LOCK")
   want_fir=$(jq -r '.fir' "$LOCK")
   want_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
+}
 
-  host=$(jqs '.host')
-  supervisor=$(jqs '.supervisor')
-  binary=$(jqs '.binary')
-  ZA_EXE=${binary##*/}
-  HOST="$host"
+fir_version() { rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true"; }
+ext_path() { rsh "fir packages list 2>/dev/null | awk -v s=\"$1\" 'index(\$1, s) {print \$NF}' || true"; }
+ext_rev() { rsh "git -C \"$(p_home "$1")\" rev-parse HEAD 2>/dev/null || true"; }
 
-  [ "$supervisor" = systemd-user ] \
-    || die "unsupported supervisor: $supervisor (only systemd-user; see the header)"
-
-  echo "== converge $bot (host=$host supervisor=$supervisor)$([ -n "$TARGET_ROOT" ] && echo " [fake root: $TARGET_ROOT]")$([ "$LOCAL" = 1 ] && echo " [local]")"
-  [ "$apply" = 1 ] || echo "== DRY RUN — no changes will be made (use --apply)"
-
-  # The lock must be ACCEPTABLE to this spec before anything is copied. This
-  # is deterministic and offline: a hand-edited or stale lock that would
-  # silently downgrade the host stops here, in dry run as well as --apply.
-  enforce_require "$bot" "$host" zulip_acp "$want_za"
-  if [ "$(jqs '.agent.kind')" = "fir" ]; then
-    enforce_require "$bot" "$host" fir "$want_fir"
-  fi
-
-  [ "$LOCAL" = 1 ] && [ -n "$TARGET_ROOT" ] && die "--local and --target-root are mutually exclusive"
-
-  # --local is a loaded gun: it points every write at THIS machine while the
-  # spec still names some other host. Refuse unless the spec's host really is
-  # us.
-  if [ "$LOCAL" = 1 ] && [ "$FORCE_LOCAL" != 1 ]; then
-    if host_is_self "$host"; then
-      echo "== --local: confirmed $SELF_WHY"
-    else
-      die "--local refused: cannot confirm spec host '$host' is this machine. Re-run with --force-local if you are certain."
-    fi
-  fi
-
-  # Localhost needs no ssh. When the spec names THIS machine, converge uses
-  # the local transport by itself — a relay host usually cannot ssh to itself
-  # (no alias, no key in its own authorized_keys), and that must not stop a
-  # converge it could do directly. The test is the same one --local passes;
-  # only a certain yes switches the transport.
-  if [ "$LOCAL" != 1 ] && [ -z "$TARGET_ROOT" ] && host_is_self "$host"; then
-    LOCAL=1
-    echo "== local target: $SELF_WHY — no ssh"
-  fi
-
-  # Preflight: fail loudly on an unreachable target rather than mistaking
-  # transport failure for missing files.
-  rsh true || die "cannot reach target ($host)"
-
-  # A unit whose EnvironmentFile is missing starts and dies with nothing in
-  # the journal that names the cause. Check before writing anything, so a
-  # host that was never provisioned aborts untouched.
-  if [ "$apply" = 1 ] && [ -z "$(rcat "$(jqs '.credentials.env_file')")" ]; then
-    die "$(jqs '.credentials.env_file') is missing or empty on $host — create it first (see the deploy skill, 'Install config + secret'); the unit will not start without ZULIP_API_KEY"
-  fi
-
-  # -- 1. zulip-acp version -------------------------------------------------
-  cur=$(rsh "\"$(p_home "$binary")\" --version 2>/dev/null || true")
+# plan_binary <host> <binary> — once per (host, binary).
+plan_binary() {
+  local key="$1|$2" cur b
+  [ -n "${K_ZA[$key]+x}" ] && return 0
+  KEYS+=("$key")
+  b=$(p_home "$2")
+  cur=$(rsh "\"$b\" --version 2>/dev/null | head -1 || true")
   if [ "$cur" = "$want_za" ]; then
-    note "zulip-acp $cur ✓"
-  else
-    changes=$((changes + 1))
-    note "zulip-acp: ${cur:-missing} → $want_za"
-    if [ "$apply" = 1 ]; then
-      if [ -n "$TARGET_ROOT" ]; then
-        note "skipping zulip-acp install (fake root)"
-      else
-        install_binary "$binary" "$cur" "$want_za" "$(jqs '.platform')"
-        cur=$(rsh "\"$(p_home "$binary")\" --version")
-        [ "$cur" = "$want_za" ] || die "zulip-acp still $cur after install (wanted $want_za)"
-        note "zulip-acp now $cur ✓"
-      fi
-    fi
+    K_ZA[$key]=""; note "zulip-acp $2 $cur ✓"; return 0
   fi
-
-  # -- 2. fir version -------------------------------------------------------
-  if [ "$(jqs '.agent.kind')" = "fir" ]; then
-    cur=$(rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true")
-    if [ "$cur" = "$want_fir" ]; then
-      note "fir $cur ✓"
-    else
-      changes=$((changes + 1))
-      note "fir: ${cur:-missing} → $want_fir"
-      if [ "$apply" = 1 ]; then
-        if [ -n "$TARGET_ROOT" ]; then
-          note "skipping fir update (fake root)"
-        else
-          rsh "fir update" || true
-          cur=$(rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true")
-          [ "$cur" = "$want_fir" ] || die "fir is $cur after 'fir update', lock wants $want_fir — releases moved past the lock? Re-run --tot, or fetch v$want_fir from $FIR_DIST_REPO/releases manually"
-          note "fir now $cur ✓"
-        fi
-      fi
-    fi
-
-    # -- 3. fir extensions at the locked rev --------------------------------
-    local ext rev pkg_path
-    for ext in $(jqs '.fir.exts[]? // empty'); do
-      # SOURCE column may be the bare slug or the full install URL — substring.
-      pkg_path=$(rsh "fir packages list 2>/dev/null | awk -v s=\"$ext\" 'index(\$1, s) {print \$NF}' || true")
-      if [ -z "$pkg_path" ]; then
-        changes=$((changes + 1))
-        note "ext $ext: not installed → install @ ${want_ext:0:12}"
-        if [ "$apply" = 1 ] && [ -z "$TARGET_ROOT" ]; then
-          rsh "fir install \"https://$ext\""
-          pkg_path=$(rsh "fir packages list 2>/dev/null | awk -v s=\"$ext\" 'index(\$1, s) {print \$NF}' || true")
-        fi
-      fi
-      if [ -n "$pkg_path" ]; then
-        rev=$(rsh "git -C \"$(p_home "$pkg_path")\" rev-parse HEAD 2>/dev/null || true")
-        if [ "$rev" = "$want_ext" ]; then
-          note "ext $ext @ ${rev:0:12} ✓"
-        elif [ -z "$rev" ]; then
-          note "WARN: ext $ext installed at $pkg_path but rev unreadable — verify manually"
-        else
-          changes=$((changes + 1))
-          note "ext $ext: ${rev:0:12} → ${want_ext:0:12}"
-          if [ "$apply" = 1 ] && [ -z "$TARGET_ROOT" ]; then
-            rsh "fir packages update \"$ext\""
-            rev=$(rsh "git -C \"$(p_home "$pkg_path")\" rev-parse HEAD 2>/dev/null || true")
-            if [ "$rev" != "$want_ext" ]; then
-              note "WARN: ext $ext is at ${rev:0:12} after update, lock wants ${want_ext:0:12} (fir cannot pin an arbitrary rev; re-run --tot if upstream moved)"
-            fi
-          fi
-        fi
-      fi
-    done
+  if [ -z "$cur" ] || ! is_release_version "$cur" || [ "$(ver_cmp "$cur" "$SELFUPDATE_MIN")" -lt 0 ]; then
+    die "$1: $2 is ${cur:-missing}, which cannot update itself (needs >= $SELFUPDATE_MIN). Bootstrap once: curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want_za sh"
   fi
+  # Capability probe, not a version guess: does this binary know --binary?
+  # Older ones get `update --version vX` with no tty and no -y, which is the
+  # same single-binary swap (no discovery, no reload).
+  K_NEW[$key]=0
+  rsh "\"$b\" update -h 2>&1 | grep -qE -- '-binary( |$)'" && K_NEW[$key]=1
+  K_ZA[$key]=$cur; CHANGES=$((CHANGES + 1))
+  note "PLAN zulip-acp $2: $cur → $want_za"
+}
 
-  # -- 4. config.json -------------------------------------------------------
-  local cfg_path want_file
-  cfg_path=$(skey config_path)
+# plan_fir <host> <spec> — fir and its extensions, once per host.
+plan_fir() {
+  local h=$1 cur ext p rev
+  if [ -z "${H_FIR[$h]+x}" ]; then
+    cur=$(fir_version)
+    if [ "$cur" = "$want_fir" ]; then H_FIR[$h]=""; note "fir $cur ✓"
+    else H_FIR[$h]=${cur:-missing}; CHANGES=$((CHANGES + 1)); note "PLAN fir: ${cur:-missing} → $want_fir"; fi
+  fi
+  for ext in $(jq -r '.fir.exts[]? // empty' "$2"); do
+    [ -n "${H_EXT[$h|$ext]+x}" ] && continue
+    p=$(ext_path "$ext")
+    if [ -z "$p" ]; then
+      H_EXT[$h|$ext]=install; CHANGES=$((CHANGES + 1)); note "PLAN ext $ext: install @ ${want_ext:0:12}"; continue
+    fi
+    rev=$(ext_rev "$p")
+    if [ "$rev" = "$want_ext" ]; then H_EXT[$h|$ext]=""; note "ext $ext @ ${rev:0:12} ✓"
+    elif [ -z "$rev" ]; then H_EXT[$h|$ext]=""; note "WARN: ext $ext at $p: rev unreadable — verify by hand"
+    else H_EXT[$h|$ext]=update; CHANGES=$((CHANGES + 1)); note "PLAN ext $ext: ${rev:0:12} → ${want_ext:0:12}"; fi
+  done
+}
+
+# host_changed <host> <binary> — did a host-wide component move?
+host_changed() {
+  local k
+  [ -n "${K_ZA[$1|$2]}" ] && return 0
+  [ -n "${H_FIR[$1]:-}" ] && return 0
+  for k in "${!H_EXT[@]}"; do
+    case "$k" in "$1|"*) [ -n "${H_EXT[$k]}" ] && return 0 ;; esac
+  done
+  return 1
+}
+
+plan_bot() { # <bot>
+  local bot=$1 h binary cfg unit uc=0 fc=0 st run self act pr
+  SPEC=${B_SPEC[$bot]}; SPEC_SRC="$BOTS_DIR/$bot.json"
+  h=${B_HOST[$bot]}; HOST=$h
+  binary=$(jqs '.binary'); unit="$(jqs '.unit').service"; B_UNIT[$bot]=$unit
+  echo "-- $bot ($unit)"
+  [ "$APPLY" = 1 ] && [ -z "$(rcat "$(jqs '.credentials.env_file')")" ] && \
+    die "$h: $(jqs '.credentials.env_file') is missing or empty — create it first (see the deploy skill, 'Install config + secret'); the unit will not start without ZULIP_API_KEY. Nothing was changed."
+
+  cfg=$(skey config_path)
   # shellcheck disable=SC2088  # spec-style path; expanded later via p_home
-  [ -n "$cfg_path" ] || cfg_path="~/.config/zulip-acp/config.json"
-  want_file=$(mktemp "$TMPD/want.XXXXXX")
-  render_config >"$want_file"
-  fill_quick_models "$want_file" "$cfg_path"
-  if diff_artifact "config.json" "$cfg_path" "$want_file"; then
-    note "config $cfg_path ✓"
-  else
-    changes=$((changes + 1))
-    if [ "$apply" = 1 ]; then
-      rwrite "$cfg_path" "$want_file"
-      note "config written (backup: $cfg_path.bak-$STAMP)"
-    fi
-  fi
-  rm -f "$want_file"
+  [ -n "$cfg" ] || cfg="~/.config/zulip-acp/config.json"
+  B_CFG[$bot]=$cfg
+  render_config >"$TMPD/$bot.config"
+  fill_quick_models "$TMPD/$bot.config" "$cfg"
+  if diff_artifact "config.json" "$cfg" "$TMPD/$bot.config"; then note "config $cfg ✓"
+  else fc=1; CHANGES=$((CHANGES + 1)); note "PLAN write $cfg"; fi
 
-  # -- 5. unit --------------------------------------------------------------
-  local unit_path unit
-  unit="$(jqs '.unit').service"
-  # shellcheck disable=SC2088  # spec-style path; expanded later via p_home
-  unit_path="~/.config/systemd/user/$unit"
-  want_file=$(mktemp "$TMPD/want.XXXXXX"); render_unit >"$want_file"
-  if diff_artifact "systemd unit" "$unit_path" "$want_file"; then
-    note "unit $unit_path ✓"
-  else
-    changes=$((changes + 1)); unit_changed=1
-    if [ "$apply" = 1 ]; then
-      rwrite "$unit_path" "$want_file"
-      note "unit written (backup: $unit_path.bak-$STAMP)"
-    fi
-  fi
-  rm -f "$want_file"
+  render_unit >"$TMPD/$bot.unit"
+  # shellcheck disable=SC2088
+  if diff_artifact "systemd unit" "~/.config/systemd/user/$unit" "$TMPD/$bot.unit"; then note "unit $unit ✓"
+  else uc=1; CHANGES=$((CHANGES + 1)); H_DR[$h]=1; note "PLAN write unit $unit"; fi
 
-  # -- 6. recycle + verify --------------------------------------------------
-  # Probe what is RUNNING (not what is on disk) BEFORE concluding there is
-  # nothing to do: a binary swapped on disk without a recycle leaves the files
-  # converged while the live process still executes the old image.
-  local state run_before pid_before ver_before has_reload plan mech reason stale
-  state=$(probe_state "$unit")
-  IFS='|' read -r run_before pid_before ver_before has_reload <<<"$state"
+  host_changed "$h" "$binary" && fc=1
+  B_FILES[$bot]="$fc$uc"
+  pr=$(probe_unit "$unit")
+  IFS='|' read -r st run self <<<"$pr"
+  B_SELF[$bot]=$self
+  act=$(recycle_action "$uc" "$st" "$run" "$want_za" "$fc")
+  [ "$act" = start ] && H_DR[$h]=1
+  B_ACT[$bot]=$act
+  case "$act" in
+    none)    note "$unit: running ${run:-?} ✓" ;;
+    pending) note "$unit: a reload is already draining (running ${run:-?}); nothing to signal" ;;
+    restart) CHANGES=$((CHANGES + 1))
+             note "PLAN restart $unit (unit changed) — WARNING: drops in-flight turns and messages posted before the fresh event queue registers"
+             if [ "$self" = 1 ]; then note "WARNING: converge runs inside $unit; --apply writes the files, then refuses this restart"; fi ;;
+    *)       CHANGES=$((CHANGES + 1)); note "PLAN $act $unit (state $st, running ${run:-?})" ;;
+  esac
+}
 
-  if [ "${has_reload:-0}" -gt 1 ]; then
-    note "WARNING: the loaded unit defines $has_reload ExecReload lines (a drop-in repeats it) — one reload fires $has_reload SIGHUPs"
-  fi
-  stale=$(stale_decision "$run_before" "$want_za" "$ver_before")
-  if [ "${stale%%|*}" = stale ]; then
-    note "running: ${stale#*|} — recycle needed despite matching files"
-  fi
-
-  if [ "$changes" = 0 ] && [ "${stale%%|*}" != stale ]; then
-    echo "== $bot: already converged, nothing to do${ver_before:+ (running $ver_before)}"
-    return 0
-  fi
-
-  plan=$(recycle_plan "$unit_changed" "$run_before" "$ver_before" "$has_reload")
-  mech=${plan%%|*}; reason=${plan#*|}
-  note "recycle: $(mech_label "$mech") — $reason"
-  if [ "$mech" = hard ]; then
-    note "WARNING: a hard restart drops every in-flight turn AND every message posted before the fresh event queue registers. An agent hosted by this relay does not survive it — run this from outside the relay."
-  fi
-
-  if [ "$apply" != 1 ]; then
-    echo "== $bot: $changes change(s) pending, would $(mech_label "$mech") (dry run; re-run with --apply)"
-    return 0
-  fi
-  # A fake root has no real service. Recycle/verify only runs there when the
-  # test supplies a systemctl STUB — never against the host's real systemd.
-  if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/systemctl" ]; then
-    echo "== $bot: applied to fake root; no systemctl stub, skipping recycle/verify"
-    return 0
-  fi
-
-  local i st run pid ver hr
-  if [ "$mech" = graceful ]; then
-    rsh "systemctl --user reload $unit"
-    # The re-exec happens AFTER the drain, so poll for the running image to
-    # become the wanted one. The PID must never move: if it does, something
-    # restarted the service and in-flight turns were dropped.
-    #
-    # Only a VERSION move is observable. When the running image is already the
-    # wanted one — a config-only change — there is nothing to poll for, so the
-    # accepted reload is the whole report.
-    local swapped=0 config_only=0
-    if [ "$ver_before" = "$want_za" ]; then
-      swapped=1; config_only=1; pid=$pid_before; ver=$ver_before
-    fi
-    for i in $(seq 1 "$RELOAD_WAIT"); do
-      [ "$swapped" = 1 ] && break
-      st=$(probe_state "$unit")
-      IFS='|' read -r run pid ver hr <<<"$st"
-      [ "$run" = 1 ] || die "$unit stopped during a graceful reload"
-      [ "$pid" = "$pid_before" ] \
-        || die "$unit: pid moved $pid_before → $pid during a graceful reload — that was a restart, and messages in the window were dropped"
-      if [ "$ver" = "$want_za" ]; then swapped=1; break; fi
-      sleep 1
-    done
-    if [ "$config_only" = 1 ]; then
-      note "$unit: reload accepted (pid $pid_before, running $ver) — nothing observable to verify: the image is already $want_za, so the change takes effect when the drain completes"
-    elif [ "$swapped" = 1 ]; then
-      note "$unit: graceful reload ✓ (pid $pid_before held, running ${ver:-unreadable})"
+apply_host() { # <host>
+  local h=$1 key b cur k ext bot rc=0
+  HOST=$h
+  echo "== apply $h"
+  for key in "${KEYS[@]}"; do
+    case "$key" in "$h|"*) : ;; *) continue ;; esac
+    cur=${K_ZA[$key]}; [ -n "$cur" ] || continue
+    b=$(p_home "${key#*|}")
+    if [ "${K_NEW[$key]}" = 1 ]; then
+      note "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y"
+      rsh "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y" || die "$h: update failed"
     else
-      # Not a failure: the relay waits for every in-flight turn to finish
-      # posting (up to -reload-drain-deadline, 30m) before it re-execs.
-      note "$unit: reload accepted; still draining an in-flight turn after ${RELOAD_WAIT}s — the re-exec happens when it finishes (pid $pid_before, running $ver)"
-      echo "== $bot: converged ($changes change(s) applied; re-exec pending drain)"
-      return 0
+      note "\"$b\" update --version v$want_za (no --binary yet: no tty, no -y = this binary only)"
+      rsh "\"$b\" update --version v$want_za </dev/null" || die "$h: update failed"
     fi
-  else
-    if [ "$unit_changed" = 1 ]; then
-      rsh "systemctl --user daemon-reload && systemctl --user restart $unit"
-    else
-      rsh "systemctl --user restart $unit"
-    fi
-    # Services need a moment after a restart.
-    local up=0
-    for i in 1 2 3 4 5; do
-      rsh "systemctl --user is-active $unit" >/dev/null 2>&1 && { up=1; break; }
-      sleep 1
-    done
-    [ "$up" = 1 ] || die "$unit not active after restart"
-    st=$(probe_state "$unit")
-    IFS='|' read -r run pid ver hr <<<"$st"
-    [ "$run" = 1 ] || die "$unit not running after hard restart"
-    if [ "$run_before" = 1 ] && [ "$pid" = "$pid_before" ]; then
-      die "$unit: pid $pid_before did not move across a hard restart"
-    fi
-    if [ -n "$ver" ] && [ "$ver" != "$want_za" ]; then
-      die "$unit: restarted service runs $ver, wanted $want_za"
-    fi
-    note "$unit: $(mech_label hard) ✓ ($reason; pid ${pid_before} → ${pid})"
+    cur=$(rsh "\"$b\" --version 2>/dev/null | head -1 || true")
+    [ "$cur" = "$want_za" ] || die "$h: ${key#*|} is ${cur:-unreadable} after update, wanted $want_za"
+    note "zulip-acp now $cur ✓"
+  done
+  if [ -n "${H_FIR[$h]:-}" ]; then
+    rsh "fir update" || true
+    cur=$(fir_version)
+    [ "$cur" = "$want_fir" ] || die "$h: fir is ${cur:-missing} after 'fir update', lock wants $want_fir — re-run --tot, or fetch v$want_fir from $FIR_DIST_REPO/releases"
+    note "fir now $cur ✓"
   fi
-  cur=$(rsh "\"$(p_home "$binary")\" --version")
-  [ "$cur" = "$want_za" ] || die "post-recycle version check failed: $cur != $want_za"
-  echo "== $bot: converged ($changes change(s) applied)"
+  for k in "${!H_EXT[@]}"; do
+    case "$k" in "$h|"*) : ;; *) continue ;; esac
+    ext=${k#*|}
+    case "${H_EXT[$k]}" in
+      install) rsh "fir install \"https://$ext\"" || die "$h: fir install $ext failed" ;;
+      update)  rsh "fir packages update \"$ext\"" || die "$h: fir packages update $ext failed" ;;
+      *) continue ;;
+    esac
+    note "ext $ext: ${H_EXT[$k]} done"
+  done
+  for bot in "${BOTS[@]}"; do
+    [ "${B_HOST[$bot]}" = "$h" ] || continue
+    case "${B_FILES[$bot]}" in 1?) rwrite "${B_CFG[$bot]}" "$TMPD/$bot.config"; note "config written (backup: ${B_CFG[$bot]}.bak-$STAMP)" ;; esac
+    # shellcheck disable=SC2088
+    case "${B_FILES[$bot]}" in ?1) rwrite "~/.config/systemd/user/${B_UNIT[$bot]}" "$TMPD/$bot.unit"; note "unit ${B_UNIT[$bot]} written" ;; esac
+  done
+  if [ -n "${H_DR[$h]:-}" ]; then rsh "systemctl --user daemon-reload" || die "$h: daemon-reload failed"; fi
+  for bot in "${BOTS[@]}"; do
+    [ "${B_HOST[$bot]}" = "$h" ] || continue
+    local u=${B_UNIT[$bot]} self=${B_SELF[$bot]}
+    case "${B_ACT[$bot]}" in
+      none) continue ;;
+      pending) note "reload pending: $u re-execs when its current drain ends"; continue ;;
+      start) rsh "systemctl --user enable --now '$u'" || die "$h: cannot start $u" ;;
+      restart)
+        if [ "$self" = 1 ]; then
+          echo "converge: error: $h $u: the unit changed, and this converge runs inside that relay. The files are written; run \`systemctl --user restart $u\` from outside the relay." >&2
+          rc=1; continue
+        fi
+        rsh "systemctl --user restart '$u'" || die "$h: cannot restart $u" ;;
+      reload) rsh "systemctl --user reload '$u'" || die "$h: reload of $u failed" ;;
+    esac
+    if [ "$self" = 1 ]; then
+      note "reload pending: this relay reloads when the current turn ends"; continue
+    fi
+    verify_unit "$u" "$want_za"
+  done
+  [ "$rc" = 0 ] || exit "$rc"
+  return 0
+}
+
+converge() { # <bot>...
+  local bot spec h
+  load_lock
+  for bot in "$@"; do
+    spec=$(bot_spec "$bot")
+    SPEC=$spec; SPEC_SRC="$BOTS_DIR/$bot.json"
+    validate_spec
+    [ "$(jqs '.supervisor')" = systemd-user ] || die "$bot: unsupported supervisor $(jqs '.supervisor') (only systemd-user)"
+    h=$(jqs '.host')
+    # The lock must be acceptable to the spec before any host is touched.
+    enforce_require "$bot" "$h" zulip_acp "$want_za"
+    [ "$(jqs '.agent.kind')" = fir ] && enforce_require "$bot" "$h" fir "$want_fir"
+    B_SPEC[$bot]=$spec; B_HOST[$bot]=$h; BOTS+=("$bot")
+    case " ${HOSTS[*]} " in *" $h "*) : ;; *) HOSTS+=("$h") ;; esac
+  done
+  [ "$FORCE_LOCAL" = 1 ] && [ "${#HOSTS[@]}" -gt 1 ] && die "--local names ONE host (this machine), got: ${HOSTS[*]}"
+
+  [ "$APPLY" = 1 ] || echo "== DRY RUN — nothing is changed (use --apply)"
+  for h in "${HOSTS[@]}"; do
+    HOST=$h
+    echo "== plan $h"
+    pick_transport "$h"
+    rsh true || die "cannot reach $h"
+    for bot in "${BOTS[@]}"; do
+      [ "${B_HOST[$bot]}" = "$h" ] || continue
+      SPEC=${B_SPEC[$bot]}
+      plan_binary "$h" "$(jqs '.binary')"
+      [ "$(jqs '.agent.kind')" = fir ] && plan_fir "$h" "$SPEC"
+      plan_bot "$bot"
+    done
+  done
+  if [ "$CHANGES" = 0 ]; then
+    echo "== converged: nothing to do"; return 0
+  fi
+  if [ "$APPLY" != 1 ]; then
+    echo "== $CHANGES change(s) planned (dry run; re-run with --apply)"; return 0
+  fi
+  for h in "${HOSTS[@]}"; do apply_host "$h"; done
+  echo "== converged ($CHANGES change(s) applied)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1154,47 +953,29 @@ tot() {
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{zulip_acp: $za, fir: $fir, exts: {"github.com/kfet/fir-exts": $ext}, resolved_at: $at}' \
     >"$LOCK"
-  echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
+  echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge the fleet:"
   echo "   git diff dist.lock"
-  local f
-  for f in $(bot_specs); do
-    echo "   scripts/converge.sh $(basename "$f" .json) --apply"
-  done
+  echo "   scripts/converge.sh --all --apply"
 }
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 usage() {
-  cat >&2 <<'EOF'
-usage:
-  converge.sh <bot>                     dry-run (default): show what would change
-  converge.sh <bot> --apply             actually converge the host
-  converge.sh <bot> --dry-run           the default; stated explicitly
-  converge.sh <bot> --local             act on THIS machine directly (no ssh)
-  converge.sh <bot> --force-local       --local without the "is this host us" check
-  converge.sh <bot> --target-root DIR   act on a local fake host rooted at DIR (no ssh)
-  converge.sh --tot                     resolve the newest releases satisfying every
-                                        spec's require and rewrite dist.lock;
-                                        NEVER converges
-  converge.sh render <bot> <artefact>   render one artefact: config | execstart | unit
-  converge.sh plan-recycle <unit_changed> <running> <version> <has_reload>
-                                        print the recycle mechanism that state selects
-  converge.sh plan-stale <running> <want> <running_ver>
-                                        print whether the running image is stale
-  converge.sh semver-cmp <a> <b>        print -1 | 0 | 1
-  converge.sh semver-sat <ver> <constraint>
-                                        print yes/no (exit 0/1)
-  converge.sh resolve <component> <ver...>
-                                        print the newest version satisfying every
-                                        spec's require.<component>
-  converge.sh self-host <host>          print whether <host> is this machine (exit 0/1)
-EOF
+  sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 1
 }
 
-[ $# -ge 1 ] || usage
+# all_managed — every bot of this relay that converge owns (not managed=false).
+all_managed() {
+  local f
+  for f in $(bot_specs); do
+    [ "$(jq -r '.managed // true' "$f")" = false ] || basename "$f" .json
+  done
+}
 
+[ $# -ge 1 ] || usage
+APPLY=0
 case "$1" in
   --tot)
     [ $# -eq 1 ] || die "--tot takes no other arguments (tot never converges)"
@@ -1209,12 +990,9 @@ case "$1" in
       unit)      render_unit ;;
       *)         usage ;;
     esac ;;
-  plan-recycle)
-    [ $# -eq 5 ] || usage
-    recycle_plan "$2" "$3" "$4" "$5" ;;
-  plan-stale)
-    [ $# -eq 4 ] || usage
-    stale_decision "$2" "$3" "$4" ;;
+  recycle-action)
+    [ $# -eq 6 ] || usage
+    recycle_action "$2" "$3" "$4" "$5" "$6" ;;
   semver-cmp)
     [ $# -eq 3 ] || usage
     ver_cmp "$2" "$3" ;;
@@ -1228,23 +1006,19 @@ case "$1" in
     [ $# -ge 2 ] || usage
     COMP=$2; shift 2
     resolve_component "$COMP" "$COMP" "$@" ;;
-  -*) usage ;;
   *)
-    BOT=$1; shift
-    SPEC=$(bot_spec "$BOT"); SPEC_SRC="$BOTS_DIR/$BOT.json"
-    validate_spec
-    APPLY=0
+    TARGETS=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        --apply) APPLY=1; shift ;;
-        --dry-run) APPLY=0; shift ;;
-        --target-root)
-          TARGET_ROOT=$(cd "$2" && pwd) || die "bad --target-root"
-          PROC_ROOT="$TARGET_ROOT/proc"; shift 2 ;;
-        --local) LOCAL=1; shift ;;
-        --force-local) LOCAL=1; FORCE_LOCAL=1; shift ;;
-        *) usage ;;
+        --apply) APPLY=1 ;;
+        --dry-run) APPLY=0 ;;
+        --local) FORCE_LOCAL=1 ;;
+        --all) mapfile -t -O "${#TARGETS[@]}" TARGETS < <(all_managed) ;;
+        -*) usage ;;
+        *) TARGETS+=("$1") ;;
       esac
+      shift
     done
-    converge "$BOT" "$APPLY" ;;
+    [ "${#TARGETS[@]}" -gt 0 ] || usage
+    converge "${TARGETS[@]}" ;;
 esac
