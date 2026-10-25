@@ -124,12 +124,12 @@ func TestArchiveConfirmedDuringEchoWaitIsNotPreReacted(t *testing.T) {
 	var fire chan time.Time
 	hh, own := archiveHarness(t, func(c *Config) { fire = echoTimer(c) })
 	conv := archiveConv(t, hh)
-	hh.tap(humanID, own)
+	hh.h.Handle(context.Background(), reactionEvent(humanID, own, archiveEmoji, zulipproto.ReactionAdd))
 	prompt, ok := hh.armed(conv.ID)
 	if !ok {
 		t.Fatal("nothing armed")
 	}
-	hh.tap(humanID, prompt)
+	hh.h.Handle(context.Background(), reactionEvent(humanID, prompt, archiveEmoji, zulipproto.ReactionAdd))
 	if _, still := hh.armed(conv.ID); still {
 		t.Fatal("confirmation did not consume the arm")
 	}

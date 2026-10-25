@@ -63,6 +63,7 @@ func archiveConv(t *testing.T, hh *harness) journal.Conv {
 // decided — the archive path is fully synchronous on the event loop.
 func (hh *harness) tap(user, msgID int64) {
 	hh.h.Handle(context.Background(), reactionEvent(user, msgID, archiveEmoji, zulipproto.ReactionAdd))
+	hh.h.echoWG.Wait()
 }
 
 // armed reports whether a conversation currently has an armed
@@ -780,6 +781,7 @@ func TestArchiveLapsedWarningIsNotAFreshCycle(t *testing.T) {
 	conv := archiveConv(t, hh)
 	hh.tap(humanID, own)
 	prompt, _ := hh.armed(conv.ID)
+	hh.h.echoWG.Wait()
 	now = now.Add(archiveConfirmTTL + time.Second)
 	// Something else posts after the warning, so it is no longer last.
 	hh.deliver(t, "t", mention("still here?"))
