@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.2] - 2026-10-26
+
 ### Fixed
 
 - `converge.sh` probes a legacy binary (no `--binary`) for `-y` and `--no-reload` and passes each one it knows. Before, a prompting binary such as 0.60.2 read EOF as "no", changed nothing, and converge stopped with "update failed".
