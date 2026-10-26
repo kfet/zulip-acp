@@ -109,8 +109,10 @@ func (h *Handler) echoAfter(d time.Duration) <-chan time.Time {
 func (h *Handler) reactWhenVisible(ctx context.Context, msgID int64, what string, ok func() bool, emojis ...string) {
 	ctx = context.WithoutCancel(ctx)
 	h.echoWG.Add(1)
+	h.reacting.add()
 	go func() {
 		defer h.echoWG.Done()
+		defer h.reacting.done()
 		h.awaitEcho(msgID)
 		if ok != nil && !ok() {
 			return
@@ -121,4 +123,58 @@ func (h *Handler) reactWhenVisible(ctx context.Context, msgID int64, what string
 			}
 		}
 	}()
+}
+
+// reactWait bounds how long settleStatus waits for pre-added reactions.
+const reactWait = reactEchoTimeout + 5*time.Second
+
+// inflightReacts counts reactWhenVisible goroutines that have not yet
+// added their reactions.
+//
+// The topic status mark moves the whole topic. The macOS client applies
+// that move from its cached copy of a message, and a reaction that
+// arrives around the move is lost there until a reload. settleStatus
+// waits on this so the reactions land before the topic moves.
+type inflightReacts struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n is 0; nil means idle
+}
+
+func (r *inflightReacts) add() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.n == 0 {
+		r.idle = make(chan struct{})
+	}
+	r.n++
+}
+
+func (r *inflightReacts) done() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.n--
+	if r.n == 0 {
+		close(r.idle)
+		r.idle = nil
+	}
+}
+
+// wait blocks until no reactions are in flight, or until d elapses.
+// It reports whether it ended idle.
+func (r *inflightReacts) wait(d time.Duration) bool {
+	r.mu.Lock()
+	ch := r.idle
+	r.mu.Unlock()
+	if ch == nil {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-t.C:
+		return false
+	}
 }

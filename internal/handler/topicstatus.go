@@ -131,6 +131,10 @@ func (h *Handler) settleStatus(convID string, anchor int64) {
 	if !ok || !h.statusApplies(c) {
 		return
 	}
+	// Pre-added reactions first, then the move (see inflightReacts).
+	if !h.reacting.wait(reactWait) {
+		h.cfg.Logf("handler: reactions still in flight after %s; moving topic %q anyway", reactWait, c.Topic)
+	}
 	defer h.statusLock(c.Key)()
 	cur, ok := h.cfg.Journal.LookupID(convID)
 	if !ok || cur.Retired || h.isInflight(convID) {

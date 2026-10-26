@@ -165,3 +165,24 @@ func TestReactToWaitsForAFreshOwnMessage(t *testing.T) {
 		t.Fatalf("reaction = %q, want %q", got, want)
 	}
 }
+
+func TestInflightReactsWait(t *testing.T) {
+	var r inflightReacts
+	if !r.wait(time.Millisecond) {
+		t.Fatal("idle tracker must not block")
+	}
+	r.add()
+	r.add()
+	if r.wait(10 * time.Millisecond) {
+		t.Fatal("wait returned idle with reactions in flight")
+	}
+	go func() { r.done(); r.done() }()
+	if !r.wait(time.Second) {
+		t.Fatal("wait did not see the tracker go idle")
+	}
+	r.add() // re-arms after idle
+	if r.wait(10 * time.Millisecond) {
+		t.Fatal("re-armed tracker reported idle")
+	}
+	r.done()
+}

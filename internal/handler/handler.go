@@ -563,6 +563,10 @@ type Handler struct {
 	ownEcho *ownEcho
 	echoWG  sync.WaitGroup
 
+	// reacting lets settleStatus move a topic only after pre-added
+	// reactions have landed (see inflightReacts).
+	reacting inflightReacts
+
 	// catchups tracks the goroutine that starts catch-up turns.
 	catchups sync.WaitGroup
 
