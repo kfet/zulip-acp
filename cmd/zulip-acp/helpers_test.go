@@ -46,6 +46,9 @@ func TestBuildSkillsCatalog(t *testing.T) {
 	if !strings.Contains(cat, "update") {
 		t.Fatalf("builtin update skill missing: %s", cat)
 	}
+	if !strings.Contains(cat, "promise") {
+		t.Fatalf("builtin promise skill missing: %s", cat)
+	}
 
 	// A host skill is merged in.
 	writeSkill(t, dir, "extra", "host one")

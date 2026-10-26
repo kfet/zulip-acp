@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The `promise` skill ships in the binary as a builtin. Every session gets it: before the agent says it will do something later, it makes a wake mechanism (doer notifies, schedule, or `watcher_add` if available).
+
 ## [0.61.3] - 2026-10-26
 
 ### Fixed

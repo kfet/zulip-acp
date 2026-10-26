@@ -415,6 +415,10 @@ system prompt, alongside `system_prompt`. Two layers are merged:
   A host skill whose `name` matches a builtin **replaces** it; that is also how
   you disable a builtin (shadow it with a stub).
 
+The builtins are `notes` (persistent scratch), `update` (update and reload
+the relay) and `promise` (make a real wake mechanism before the agent says it
+will do something later).
+
 The host layer is rescanned on every session create/resume, so a skill dropped
 into the host dir is picked up **without restarting the relay**. Builtins are
 extracted once per process. A missing or malformed skill dir is logged and
