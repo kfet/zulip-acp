@@ -30,11 +30,13 @@ package handler
 import (
 	"context"
 	"fmt"
-	acp "github.com/coder/acp-go-sdk"
-	"github.com/kfet/acp-kit/convo"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/convo"
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
@@ -496,6 +498,7 @@ func (h *Handler) newConvo() (*convo.Manager, error) {
 		cfg.Commands.AddHelp(update.HelpLine)
 	}
 	return convo.New(convo.Config{
+		Store:      &convo.FileStore{Path: filepath.Join(cfg.Sessions.StateDir(), "model_overrides.json")},
 		Agent:      zulipAgent{h},
 		Sessions:   sessionsLen{cfg.Sessions, cfg.Journal},
 		Broker:     cfg.Commands,

@@ -351,6 +351,7 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 		return journal.Conv{}, "", fmt.Errorf("I opened %s but could not start a conversation there (%v). Send a message in it to try again.", link, err)
 	}
 	h.rememberOwn(conv.ID, seed)
+	h.inheritModel(p.Origin, conv.ID)
 	forked := h.forkBranch(bctx, p.Origin, p.Parent.MessageID, conv)
 
 	// The pointer line in the ORIGIN topic. Posted after the branch is

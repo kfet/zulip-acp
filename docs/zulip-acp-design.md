@@ -429,6 +429,16 @@ which forks at the parent's leaf. If the agent cannot
 fork, or the fork fails, the relay logs it and the first turn opens a fresh
 session. The parent pointer and `history(origin: true)` do not change.
 
+The branch also receives an independent copy of the parent's provider/model
+choice. A pending `!model` choice takes priority over the parent's live session
+model. The relay copies this choice before it tries to fork, so a fresh-session
+fallback uses the same choice. Later changes in either topic do not change the
+other topic. The shared `convo.FileStore` saves the choices as
+`model_overrides.json` in the relay state directory. Relay restarts reload the
+choices and apply them to each session again. A store read error stops startup
+instead of silently selecting the service default. A write error is logged;
+the choice still applies in memory for the running relay.
+
 #### Context is pulled, never pushed
 
 The relay writes **no summary of the origin**. It records a parent pointer,

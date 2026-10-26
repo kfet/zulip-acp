@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep each conversation's full provider/model choice across relay restarts and copy it to branches, even when the parent has a pending change or the session fork fails.
+
 ## [0.61.2] - 2026-10-26
 
 ### Fixed

@@ -755,7 +755,11 @@ func New(cfg Config) (*Handler, error) {
 	// Wiring the Controller here rather than in the caller keeps the
 	// broker↔handler construction cycle out of main, and guarantees it
 	// happens before any event can arrive. convo.New does the wiring.
-	h.convo = mustConvo(h.newConvo())
+	m, err := h.newConvo()
+	if err != nil {
+		return nil, fmt.Errorf("handler: convo manager: %w", err)
+	}
+	h.convo = m
 	h.convo.Active().OnWait = cfg.OnWaitForConv
 	return h, nil
 }
