@@ -633,7 +633,7 @@ verify_unit() {
 # written. Phase 2 (--apply) performs exactly that plan.
 # ---------------------------------------------------------------------------
 declare -A B_SPEC B_HOST B_UNIT B_CFG B_ACT B_SELF B_FILES
-declare -A K_ZA K_NEW H_FIR H_EXT H_DR
+declare -A K_ZA K_NEW K_Y K_NR H_FIR H_EXT H_DR
 HOSTS=() BOTS=() KEYS=()
 CHANGES=0
 
@@ -663,11 +663,16 @@ plan_binary() {
   if [ -z "$cur" ] || ! is_release_version "$cur" || [ "$(ver_cmp "$cur" "$SELFUPDATE_MIN")" -lt 0 ]; then
     die "$1: $2 is ${cur:-missing}, which cannot update itself (needs >= $SELFUPDATE_MIN). Bootstrap once: curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want_za sh"
   fi
-  # Capability probe, not a version guess: does this binary know --binary?
-  # Older ones get `update --version vX`; 0.55-0.60 also need -y (they prompt
-  # even with no tty, and then discover + reload by themselves).
-  K_NEW[$key]=0
-  rsh "\"$b\" update -h 2>&1 | grep -qE -- '-binary( |$)'" && K_NEW[$key]=1
+  # Capability probes, not version guesses. A binary that knows --binary
+  # gets the single-file swap. An older one gets `update --version vX`, plus
+  # -y if it knows -y (it prompts even with no tty and reads EOF as "no"),
+  # plus --no-reload if it knows that (converge recycles the units itself).
+  local help
+  help=$(rsh "\"$b\" update -h 2>&1 || true")
+  K_NEW[$key]=0; K_Y[$key]=0; K_NR[$key]=0
+  grep -qE -- '-binary([[:space:]]|$)' <<<"$help" && K_NEW[$key]=1
+  grep -qE -- '(^|[[:space:]])-y([[:space:]]|$)' <<<"$help" && K_Y[$key]=1
+  grep -qE -- '-no-reload([[:space:]]|$)' <<<"$help" && K_NR[$key]=1
   K_ZA[$key]=$cur; CHANGES=$((CHANGES + 1))
   note "PLAN zulip-acp $2: $cur → $want_za"
 }
@@ -757,8 +762,9 @@ apply_host() { # <host>
       note "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y"
       rsh "\"$b\" update --binary \"$b\" --version v$want_za --no-reload -y" || die "$h: update failed"
     else
-      # 0.55-0.60 prompt and refuse without -y; older ones have no -y.
-      local y=""; [ "$(ver_cmp "${K_ZA[$key]}" 0.55.0)" -ge 0 ] && y=" -y"
+      local y=""
+      [ "${K_NR[$key]}" = 1 ] && y=" --no-reload"
+      [ "${K_Y[$key]}" = 1 ] && y="$y -y"
       note "\"$b\" update --version v$want_za$y (no --binary yet: legacy update)"
       rsh "\"$b\" update --version v$want_za$y </dev/null" || die "$h: update failed"
     fi

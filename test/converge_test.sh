@@ -47,10 +47,16 @@ cat >"$W/stubs/za" <<'EOF'
 s=$HOME/st
 case "$1" in
   --version) cat "$s/za" ;;
-  update) if [ "${2:-}" = -h ]; then
-            case "$(cat "$s/za")" in 0.40.0|0.59.0) : ;; *) false ;; esac || echo "  -binary string"; exit 0
+  update) v=$(cat "$s/za")
+          if [ "${2:-}" = -h ]; then
+            case "$v" in 0.40.0) : ;; 0.59.0) echo "  -y	assume yes" ;;
+              0.60.2) echo "  -y	assume yes"; echo "  -no-reload	skip reload" ;;
+              *) echo "  -binary string"; echo "  -y" ;; esac; exit 0
           fi
           echo "$FAKEHOST zulip-acp $*" >>"$CALLS"
+          case "$v" in 0.59.0|0.60.2) case " $* " in *" -y "*) : ;; *)
+            printf 'plan: swap\nproceed? [y/N] '; read -r a || a=""
+            [ "$a" = y ] || { echo "aborted"; exit 0; } ;; esac ;; esac
           [ -f "$s/warn" ] && echo "warn:   /usr/local/bin/zulip-acp is 0.1.0 but its directory is not writable"
           while [ $# -gt 0 ]; do [ "$1" = --version ] && echo "${2#v}" >"$s/za"; shift; done ;;
 esac
@@ -205,7 +211,15 @@ host-b systemctl reload zulip-acp.service"
 echo "== 0.55-0.60 binary without --binary: legacy update needs -y"
 echo 0.59.0 >"$W/hosts/host-b/st/za"
 run bot-b --apply
-has "update --version v$WANT -y" "legacy 0.55+ passes -y"
+seq_is "legacy -y call" "host-b zulip-acp update --version v$WANT -y
+host-b systemctl reload zulip-acp.service"
+
+echo "== legacy binary with -y and --no-reload: pass both, converge reloads once"
+echo 0.60.2 >"$W/hosts/host-b/st/za"
+run bot-b --apply
+[ "$rc" = 0 ] && ok "a prompting binary updates" || { bad "rc=$rc"; echo "$out"; }
+seq_is "legacy -y --no-reload call" "host-b zulip-acp update --version v$WANT --no-reload -y
+host-b systemctl reload zulip-acp.service"
 
 echo "== below SELFUPDATE_MIN: refuse with the install.sh line, touch nothing"
 echo 0.18.0 >"$W/hosts/host-b/st/za"
