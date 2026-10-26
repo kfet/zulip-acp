@@ -325,7 +325,7 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 	// because they are still reading the origin topic — on a phone the
 	// mention is the only thing that surfaces the new one.
 	newKey := journal.Channel(p.Dest, title)
-	seed, err := (&convPoster{client: h.cfg.Client, key: newKey}).Post(bctx, branchSeed(p.Actor, h.describe(p.Origin)))
+	seed, err := (&convPoster{client: h.cfg.Client, key: newKey}).Post(bctx, branchSeed(p.Actor, h.originLink(p.Parent.Key, p.Parent.MessageID)))
 	if err != nil {
 		h.cfg.Logf("handler: branching %s into #%s: the opening message failed (%v) — nothing was created", h.describe(p.Origin), p.Channel, err)
 		return journal.Conv{}, "", fmt.Errorf("I could not open a topic in #%s (%v). Nothing was created.", p.Channel, err)
@@ -700,16 +700,7 @@ func mentionOf(m *zulipproto.Message) string {
 // string; this is documentation, and the journal is truth.
 func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 	m, parent, text := p.Actor, p.Parent, p.Text
-	var origin string
-	if parent.Key.IsDM() {
-		origin = "a direct message"
-	} else {
-		originChannel, ok := h.cfg.Channels.Name(parent.Key.StreamID)
-		if !ok {
-			originChannel = strconv.FormatInt(parent.Key.StreamID, 10)
-		}
-		origin = fmt.Sprintf("#**%s>%s@%d**", originChannel, parent.Key.Topic, parent.MessageID)
-	}
+	origin := h.originLink(parent.Key, parent.MessageID)
 	prompt := fmt.Sprintf("[%s] [branched from %s]%s\n%s", senderName(m), origin, h.branchAttribution(p), text)
 	if h.cfg.Loopback != nil {
 		if forked {
@@ -750,4 +741,21 @@ func (h *Handler) branchAttribution(p branchPlan) string {
 		return fmt.Sprintf(" [the text below is an earlier message of your own, which %s asked to spin out]", senderName(p.Actor))
 	}
 	return fmt.Sprintf(" [the text below was written by %s, not by %s]", p.Author, senderName(p.Actor))
+}
+
+// originLink renders the place a branch came from as a Zulip message
+// link, `#**channel>topic@id**`. Zulip renders it as a link to that
+// message, and the link follows the message when the topic is renamed
+// or moved (for example to the archive channel). A DM origin has no
+// such link, so it is named in words. A channel that is no longer
+// served is named by its id.
+func (h *Handler) originLink(k journal.Key, msgID int64) string {
+	if k.IsDM() {
+		return "a direct message"
+	}
+	name, ok := h.cfg.Channels.Name(k.StreamID)
+	if !ok {
+		name = strconv.FormatInt(k.StreamID, 10)
+	}
+	return fmt.Sprintf("#**%s>%s@%d**", name, k.Topic, msgID)
 }

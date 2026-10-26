@@ -211,6 +211,11 @@ func TestBranchOpensATopicAndRecordsItsOrigin(t *testing.T) {
 	if !strings.Contains(seed, "@_**Kfet|8**") {
 		t.Fatalf("the seed message does not mention the branching user, so a phone never surfaces it: %q", seed)
 	}
+	// The seed links back to the exact message it was branched from,
+	// so a reader can click from the new topic to the origin.
+	if want := fmt.Sprintf("#**fleet>planning@%d**", conv.Parent.MessageID); !strings.Contains(seed, want) {
+		t.Fatalf("the seed message does not link to the origin message %s: %q", want, seed)
+	}
 	if !strings.Contains(pointer, "branched → #**fleet>rework the rollover splitter**") {
 		t.Fatalf("origin pointer = %q", pointer)
 	}

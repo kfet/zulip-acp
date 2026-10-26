@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The opening message of a branched topic now links to the message it was branched from (`#**channel>topic@id**`). Before, it named the origin topic in plain text. The link follows the message when the origin topic is renamed or archived.
+
 ## [0.62.0] - 2026-10-26
 
 ### Added
