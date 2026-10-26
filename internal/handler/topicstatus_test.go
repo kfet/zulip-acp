@@ -351,3 +351,20 @@ func TestSettleChecksItsAnchorToo(t *testing.T) {
 		t.Fatalf("moves %v", m)
 	}
 }
+
+// TestSettleWaitsForReactions: the topic moves only after pre-added
+// reactions land, and a stuck reaction does not hold the mark forever.
+func TestSettleWaitsForReactions(t *testing.T) {
+	old := reactWait
+	reactWait = 20 * time.Millisecond
+	t.Cleanup(func() { reactWait = old })
+	lh := statusHarness(t)
+	c, _ := lh.j.Ensure(journal.Channel(4, "work"))
+	lh.h.rememberOwn(c.ID, 7)
+	lh.h.reacting.add()
+	lh.h.settleStatus(c.ID, 0)
+	lh.h.reacting.done()
+	if m := lh.z.moved(); !slices.Equal(m, []string{"7:✔ work:change_all"}) {
+		t.Fatalf("moves %v", m)
+	}
+}

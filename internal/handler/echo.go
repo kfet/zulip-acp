@@ -126,7 +126,7 @@ func (h *Handler) reactWhenVisible(ctx context.Context, msgID int64, what string
 }
 
 // reactWait bounds how long settleStatus waits for pre-added reactions.
-const reactWait = reactEchoTimeout + 5*time.Second
+var reactWait = reactEchoTimeout + 5*time.Second
 
 // inflightReacts counts reactWhenVisible goroutines that have not yet
 // added their reactions.

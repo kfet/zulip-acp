@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.2] - 2026-10-26
+
+### Fixed
+
+- A topic is now marked resolved (✔) only after the relay has added its own pre-set reactions, for example the :wastebasket: and :fire: on the archive warning. Before, the topic move could reach a client at the same time as the reactions, and the macOS client then showed no reactions until a reload.
+
 ## [0.62.1] - 2026-10-26
 
 ### Changed
