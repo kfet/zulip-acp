@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-27
+
 ### Added
 - New config key `react_settle_ms` (default 200, 0 disables): the pause before the relay pre-adds reactions to its own message.
 
