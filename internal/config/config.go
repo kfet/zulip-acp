@@ -57,6 +57,9 @@ const (
 	// while the agent has produced nothing yet. Same reasoning as
 	// DefaultEditInterval: readability, not a rate limit.
 	DefaultSpinnerInterval = 900 * time.Millisecond
+
+	// DefaultReactSettle is the pause before pre-added reactions.
+	DefaultReactSettle = 200 * time.Millisecond
 	// DefaultSilentSentinel matches slack-acp and poe-acp so one fir
 	// agent can serve every relay.
 	DefaultSilentSentinel = "<<SILENT>>"
@@ -295,6 +298,14 @@ type Config struct {
 	// It is a pointer so "unset" and an explicit 0 stay
 	// distinguishable, exactly like AckEmoji.
 	SpinnerIntervalMs *int `json:"spinner_interval_ms,omitempty"`
+
+	// ReactSettleMs is the pause between the echo of the relay's own
+	// message and the first reaction the relay pre-adds to it. The echo
+	// proves the server fanned the message out, not that a client
+	// rendered it: the macOS client drops a reaction that arrives a few
+	// ms after the message, until a reload. Unset = 200ms; 0 = no pause.
+	// It is a pointer so "unset" and an explicit 0 stay distinguishable.
+	ReactSettleMs *int `json:"react_settle_ms,omitempty"`
 
 	// AckEmoji names the Zulip emoji reaction the relay adds to a
 	// message it has accepted, and removes when the turn ends.
@@ -553,6 +564,9 @@ func (c *Config) Validate() error {
 	if c.EditIntervalMs < 0 {
 		return fmt.Errorf("edit_interval_ms must be >= 0")
 	}
+	if c.ReactSettleMs != nil && *c.ReactSettleMs < 0 {
+		return fmt.Errorf("react_settle_ms must be >= 0")
+	}
 	if c.SpinnerIntervalMs != nil && *c.SpinnerIntervalMs < 0 {
 		return fmt.Errorf("spinner_interval_ms must be >= 0")
 	}
@@ -735,6 +749,15 @@ func (c *Config) SpinnerInterval() time.Duration {
 		return DefaultSpinnerInterval
 	}
 	return time.Duration(*c.SpinnerIntervalMs) * time.Millisecond
+}
+
+// ReactSettle returns the pause before the relay pre-adds reactions to
+// its own message: DefaultReactSettle when unset, 0 for none.
+func (c *Config) ReactSettle() time.Duration {
+	if c.ReactSettleMs == nil {
+		return DefaultReactSettle
+	}
+	return time.Duration(*c.ReactSettleMs) * time.Millisecond
 }
 
 // MinScheduleInterval returns the configured repeat floor, or 0 to let

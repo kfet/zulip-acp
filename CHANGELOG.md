@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New config key `react_settle_ms` (default 200, 0 disables): the pause before the relay pre-adds reactions to its own message.
+
+### Fixed
+- The macOS client no longer drops the reactions the relay pre-adds to its own message. The echo proves the server fanned the message out, not that a client rendered it; the client dropped a reaction that arrived a few ms later, until a reload. The relay now waits `react_settle_ms` after the echo.
+
+### Removed
+- The v0.62.2 wait for pre-added reactions before the topic status move. It did not fix the lost reactions; the settle pause does.
+
 ## [0.62.2] - 2026-10-26
 
 ### Fixed

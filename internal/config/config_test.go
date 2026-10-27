@@ -862,3 +862,18 @@ func TestMCPApps(t *testing.T) {
 		}
 	}
 }
+
+func TestReactSettle(t *testing.T) {
+	if d := (&Config{}).ReactSettle(); d != DefaultReactSettle {
+		t.Fatalf("unset = %v", d)
+	}
+	if d := (&Config{ReactSettleMs: intPtr(0)}).ReactSettle(); d != 0 {
+		t.Fatalf("0 = %v", d)
+	}
+	if d := (&Config{ReactSettleMs: intPtr(50)}).ReactSettle(); d != 50*time.Millisecond {
+		t.Fatalf("50 = %v", d)
+	}
+	if err := (&Config{ReactSettleMs: intPtr(-1)}).Validate(); err == nil {
+		t.Fatal("negative accepted")
+	}
+}

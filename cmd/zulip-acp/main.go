@@ -651,6 +651,7 @@ func main() {
 		BatchEdits:         !cfg.GetStreamEdits(),
 		TopicStatus:        cfg.GetTopicStatus(),
 		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
+		ReactSettle:        cfg.ReactSettle(),
 		TypingInterval:     typingInterval,
 		Budget:             cfg.Budget(),
 		SealMarker:         cfg.SealMarker,

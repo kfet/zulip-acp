@@ -432,6 +432,10 @@ type Config struct {
 	// does not also have to feed the echo wait.
 	EchoAfter func(d time.Duration) <-chan time.Time
 
+	// ReactSettle is the pause after the echo before reactWhenVisible
+	// adds the first reaction. 0 = no pause. It waits on EchoAfter.
+	ReactSettle time.Duration
+
 	// OnReactionBatch, if set, is called with a conversation's
 	// coalesced reaction burst at the instant the conversation has
 	// been claimed for it and the buffer emptied — i.e. the one moment
@@ -562,10 +566,6 @@ type Handler struct {
 	// ownEcho and echoWG serve reactWhenVisible.
 	ownEcho *ownEcho
 	echoWG  sync.WaitGroup
-
-	// reacting lets settleStatus move a topic only after pre-added
-	// reactions have landed (see inflightReacts).
-	reacting inflightReacts
 
 	// catchups tracks the goroutine that starts catch-up turns.
 	catchups sync.WaitGroup

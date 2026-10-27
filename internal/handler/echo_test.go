@@ -166,23 +166,32 @@ func TestReactToWaitsForAFreshOwnMessage(t *testing.T) {
 	}
 }
 
-func TestInflightReactsWait(t *testing.T) {
-	var r inflightReacts
-	if !r.wait(time.Millisecond) {
-		t.Fatal("idle tracker must not block")
+// TestReactWhenVisibleSettles: after the echo, no reaction is added
+// until the settle timer fires.
+func TestReactWhenVisibleSettles(t *testing.T) {
+	settle := make(chan time.Time)
+	asked := make(chan time.Duration, 1)
+	hh := newHarness(t, newAgent("hello"), func(c *Config) {
+		c.ReactSettle = 7 * time.Millisecond
+		c.EchoAfter = func(d time.Duration) <-chan time.Time {
+			if d == reactEchoTimeout {
+				return make(chan time.Time)
+			}
+			asked <- d
+			return settle
+		}
+	})
+	hh.h.reactWhenVisible(context.Background(), 3, "test", nil, "one")
+	hh.echo(3)
+	if d := <-asked; d != 7*time.Millisecond {
+		t.Fatalf("settle of %s", d)
 	}
-	r.add()
-	r.add()
-	if r.wait(10 * time.Millisecond) {
-		t.Fatal("wait returned idle with reactions in flight")
+	if added, _ := hh.z.reactions(); len(added) != 0 {
+		t.Fatalf("added before the settle: %v", added)
 	}
-	go func() { r.done(); r.done() }()
-	if !r.wait(time.Second) {
-		t.Fatal("wait did not see the tracker go idle")
+	settle <- time.Time{}
+	hh.h.echoWG.Wait()
+	if added, _ := hh.z.reactions(); !slices.Equal(added, []string{"3:one"}) {
+		t.Fatalf("added %v", added)
 	}
-	r.add() // re-arms after idle
-	if r.wait(10 * time.Millisecond) {
-		t.Fatal("re-armed tracker reported idle")
-	}
-	r.done()
 }
