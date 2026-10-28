@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -332,4 +333,49 @@ func firCmdFor(bin string, agentArgv []string) []string {
 		}
 	}
 	return out
+}
+
+// deleteBot is what the `delete` block's second client must do: prove
+// its key at startup, then delete topics.
+type deleteBot interface {
+	Me(ctx context.Context) (zulipproto.User, error)
+	handler.TopicDeleter
+}
+
+// newDeleteBot builds the `delete` block's client. A seam for tests.
+var newDeleteBot = func(site, email, key string) (deleteBot, error) {
+	return zulipproto.New(zulipproto.Config{Site: site, Email: email, APIKey: key})
+}
+
+// resolveDeleter decides who performs the :fire: delete, and whether
+// the relay may offer it.
+//
+// With a `delete` block, a second client built from its key file does
+// the delete. The key stays in this process: it is not in the config,
+// the agent's environment or any log line. Without the block, the
+// relay bot tries itself, and the relay offers :fire: only when the
+// bot is an administrator.
+func resolveDeleter(ctx context.Context, cfg *config.Config, me zulipproto.User) (handler.TopicDeleter, bool, error) {
+	d := cfg.Delete
+	if d == nil {
+		admin := me.Role > 0 && me.Role <= zulipproto.RoleAdministrator
+		if !admin {
+			log.Printf("zulip-acp: topic delete (:fire:) is not offered: there is no \"delete\" config block and this bot is not an administrator")
+		}
+		return nil, admin, nil
+	}
+	key, err := d.ReadDeleteKey()
+	if err != nil {
+		return nil, false, err
+	}
+	bot, err := newDeleteBot(cfg.Site, d.BotEmail, key)
+	if err != nil {
+		return nil, false, fmt.Errorf("delete: %w", err)
+	}
+	who, err := bot.Me(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("delete: cannot authenticate as %s: %w", d.BotEmail, err)
+	}
+	log.Printf("zulip-acp: topic delete (:fire:) is on: %s (user %d) performs it; owners only: %t", who.Email, who.UserID, d.GetOwnersOnly())
+	return bot, true, nil
 }

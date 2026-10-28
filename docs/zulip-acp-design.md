@@ -607,9 +607,15 @@ pre-adds both to the warning, so the user confirms with one tap:
 reaction. The relay's own pre-reactions come from the bot user and are dropped
 before any trigger runs. A delete uses the same arm, expiry and identity rules,
 and the same order — end the session, retire the conversation, then delete —
-so a streaming turn cannot re-create the topic. `delete_topic` is org-admin
-only: a bot without the role gets a refusal, which the relay reports in the
-topic (the conversation is already ended; nothing is deleted). Both entry
+so a streaming turn cannot re-create the topic. Zulip lets only users in
+`can_delete_any_message_group` call `delete_topic`. The optional `delete` config
+block names a second bot in that group; the relay builds a second client from
+its key file and uses it for this one call only, so the relay bot need not be
+an administrator. Without the block the relay bot tries itself. `:fire:` is
+pre-added only when a delete can succeed (block set, or relay bot is admin). A
+refusal is reported in the topic and names the fix (the conversation is
+already ended; nothing is deleted). With `owners_only` (the default) a `:fire:`
+from anyone but `update_owner_ids` deletes nothing and leaves the arm. Both entry
 points arm the same state and run the same code — there is one destructive
 path, not two.
 
@@ -617,7 +623,7 @@ path, not two.
 
 Archiving is `PATCH /messages/{id}` with `stream_id` and
 `propagate_mode=change_all`: one request, the whole topic, every message intact.
-The alternatives were both worse. `delete_topic` is org-admin only, and a relay
+The alternatives were both worse. `delete_topic` destroys content, and a relay
 bot must not hold realm admin for a convenience feature. Per-message deletion is
 O(n) API calls with a partial-failure state in the middle, and it destroys
 content the user only asked to *file away*.

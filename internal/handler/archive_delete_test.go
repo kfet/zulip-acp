@@ -22,7 +22,7 @@ func (hh *harness) fireTap(user, msgID int64) {
 // own warning, so the user confirms with one tap — and the echo of
 // those reactions, from the bot user, confirms nothing.
 func TestArchiveWarningIsPreReacted(t *testing.T) {
-	hh, own := archiveHarness(t, nil)
+	hh, own := archiveHarness(t, func(c *Config) { c.DeleteReady = true })
 	conv := archiveConv(t, hh)
 	hh.tap(humanID, own)
 	prompt, ok := hh.armed(conv.ID)
@@ -38,7 +38,7 @@ func TestArchiveWarningIsPreReacted(t *testing.T) {
 			t.Fatalf("no :%s: pre-reaction on %d: %v", e, prompt, added)
 		}
 	}
-	if body := hh.z.body(prompt); !strings.Contains(body, ":"+deleteEmoji+":") || !strings.Contains(body, "delete the topic") {
+	if body := hh.z.body(prompt); !strings.Contains(body, ":"+deleteEmoji+":") || !strings.Contains(body, "delete the topic") || strings.Contains(body, "config block") {
 		t.Fatalf("warning does not offer the delete: %q", body)
 	}
 	// The bot's own reactions echo back; neither may act.
@@ -149,7 +149,7 @@ func TestDeleteFailures(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"refused: no admin role", &zulipproto.APIError{Status: 400, Msg: "Must be an organization administrator"}, "organisation administrator"},
+		{"refused: no delete block", &zulipproto.APIError{Status: 400, Msg: "Must be an organization administrator"}, "`delete` config block"},
 		{"transport failure", errors.New("boom"), "deleting the topic failed"},
 	}
 	for _, tc := range cases {
@@ -165,7 +165,7 @@ func TestDeleteFailures(t *testing.T) {
 			if got := hh.z.lastBody(); !strings.Contains(got, tc.want) {
 				t.Fatalf("reply = %q", got)
 			}
-			if !hh.logged("delete_topic failed") {
+			if !hh.logged("failed (") {
 				t.Fatalf("logs = %v", hh.logs)
 			}
 		})
@@ -194,7 +194,7 @@ func TestDeleteFailures(t *testing.T) {
 		}
 		// A key nobody holds: Retire reports it did not exist.
 		gone := journal.Conv{ID: conv.ID, Key: journal.Channel(4, "nobody-here")}
-		hh.h.deleteConversation(context.Background(), gone, "nobody-here", "someone")
+		hh.h.deleteConversation(context.Background(), gone, "nobody-here", "someone", humanID, 1)
 		if len(hh.z.deletedTopics()) != 0 {
 			t.Fatalf("deleted a topic it no longer held: %v", hh.z.deletedTopics())
 		}
@@ -215,5 +215,103 @@ func TestTopicOf(t *testing.T) {
 	}
 	if got := topicOf(k, &zulipproto.Message{Topic: "✔ t"}); got != "✔ t" {
 		t.Fatalf("message topic: %q", got)
+	}
+}
+
+// fakeDeleter is the second client of the `delete` config block.
+type fakeDeleter struct {
+	got []string
+	err error
+}
+
+func (d *fakeDeleter) DeleteTopic(_ context.Context, streamID int64, topic string) error {
+	if d.err != nil {
+		return d.err
+	}
+	d.got = append(d.got, fmt.Sprintf("%d:%s", streamID, topic))
+	return nil
+}
+
+// TestFireNotOfferedWhenDeleteCannotWork: without a delete client or
+// an admin relay bot, the warning carries :wastebasket: only.
+func TestFireNotOfferedWhenDeleteCannotWork(t *testing.T) {
+	hh, own := archiveHarness(t, nil)
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	prompt, _ := hh.armed(conv.ID)
+	hh.h.echoWG.Wait()
+	hh.z.mu.Lock()
+	added := slices.Clone(hh.z.reactAdd)
+	hh.z.mu.Unlock()
+	if slices.Contains(added, fmt.Sprintf("%d:%s", prompt, deleteEmoji)) {
+		t.Fatalf(":fire: pre-added with no way to delete: %v", added)
+	}
+	if !slices.Contains(added, fmt.Sprintf("%d:%s", prompt, archiveEmoji)) {
+		t.Fatalf("no :wastebasket: pre-added: %v", added)
+	}
+	if body := hh.z.body(prompt); !strings.Contains(body, "`delete` config block") {
+		t.Fatalf("warning does not say what the delete needs: %q", body)
+	}
+}
+
+// TestDeleteUsesTheDeleteClient: with the `delete` block, the second
+// client deletes and the relay bot does not.
+func TestDeleteUsesTheDeleteClient(t *testing.T) {
+	d := &fakeDeleter{}
+	hh, own := archiveHarness(t, func(c *Config) { c.Deleter = d; c.DeleteReady = true })
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	prompt, _ := hh.armed(conv.ID)
+	hh.fireTap(humanID, prompt)
+	if len(d.got) != 1 || d.got[0] != "4:t" {
+		t.Fatalf("delete client calls = %v", d.got)
+	}
+	if len(hh.z.deletedTopics()) != 0 {
+		t.Fatalf("the relay bot deleted: %v", hh.z.deletedTopics())
+	}
+	if !hh.logged(fmt.Sprintf("warning %d", prompt)) {
+		t.Fatalf("delete not logged with its warning id: %v", hh.logs)
+	}
+}
+
+// TestDeleteClientRefused: a refusal of the configured delete bot
+// names the realm setting it is missing.
+func TestDeleteClientRefused(t *testing.T) {
+	d := &fakeDeleter{err: &zulipproto.APIError{Status: 400, Msg: "Insufficient permission"}}
+	hh, own := archiveHarness(t, func(c *Config) { c.Deleter = d; c.DeleteReady = true })
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	prompt, _ := hh.armed(conv.ID)
+	hh.fireTap(humanID, prompt)
+	if got := hh.z.lastBody(); !strings.Contains(got, "can_delete_any_message_group") {
+		t.Fatalf("reply = %q", got)
+	}
+}
+
+// TestDeleteOwnersOnly: a non-owner's :fire: deletes nothing and
+// leaves the arm for an owner; an owner's deletes.
+func TestDeleteOwnersOnly(t *testing.T) {
+	d := &fakeDeleter{}
+	const owner = 777
+	hh, own := archiveHarness(t, func(c *Config) {
+		c.Deleter, c.DeleteReady, c.DeleteOwnersOnly = d, true, true
+		c.OpsOwners = []int64{owner}
+	})
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	prompt, _ := hh.armed(conv.ID)
+	hh.fireTap(humanID, prompt)
+	if len(d.got) != 0 {
+		t.Fatalf("a non-owner deleted: %v", d.got)
+	}
+	if got := hh.z.lastBody(); !strings.Contains(got, "Only an owner") {
+		t.Fatalf("reply = %q", got)
+	}
+	if _, still := hh.armed(conv.ID); !still {
+		t.Fatal("a refused :fire: consumed the arm")
+	}
+	hh.fireTap(owner, prompt)
+	if len(d.got) != 1 {
+		t.Fatalf("the owner could not delete: %v", d.got)
 	}
 }

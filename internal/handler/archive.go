@@ -43,9 +43,10 @@
 // adds :wastebasket: and :fire: to that warning so the user confirms
 // with one tap. The ONLY confirmations are reactions on that warning
 // message: :wastebasket: archives, :fire: DELETES the topic instead
-// (POST /streams/{id}/delete_topic, organisation-admin only — a bot
-// without the role gets a clear refusal in the topic, and the
-// conversation is already ended). :fire: never arms anything. The
+// (POST /streams/{id}/delete_topic, sent by the separate delete bot of
+// the `delete` config block when one is set, else by the relay bot; a
+// refusal is reported in the topic, and the conversation is already
+// ended). :fire: is pre-added only when a delete can succeed. :fire: never arms anything. The
 // relay's own pre-reactions are never a trigger: handleReaction drops
 // every reaction from the bot user before this file sees it. An expired arm is never
 // carried forward: a later tap starts a fresh cycle with a fresh
@@ -64,6 +65,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,6 +156,14 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 			return false
 		}
 		who, _ := h.reactor(ctx, ev.UserID)
+		if h.cfg.DeleteOwnersOnly && !slices.Contains(h.cfg.OpsOwners, ev.UserID) {
+			// The arm stands: an owner may still confirm, and the
+			// wastebasket still archives.
+			h.cfg.Logf("handler: refusing a :%s: on %s from %s (user %d): only update_owner_ids may delete a topic",
+				deleteEmoji, h.describe(conv.Key), who, ev.UserID)
+			h.reply(ctx, conv.Key, fmt.Sprintf("Only an owner of this relay may delete a topic. Nothing was deleted; react :%s: to the warning to archive instead.", archiveEmoji))
+			return true
+		}
 		if h.takeArchiveConfirm(conv.ID, ev.MessageID) {
 			// The live name, read back from the warning itself: a
 			// delete_topic on a stale name (a resolve since) succeeds
@@ -162,7 +172,7 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 			if live, err := h.cfg.Client.GetMessage(ctx, ev.MessageID); err == nil && live.Topic != "" {
 				topic = live.Topic
 			}
-			h.deleteConversation(ctx, conv, topic, who)
+			h.deleteConversation(ctx, conv, topic, who, ev.UserID, ev.MessageID)
 		}
 		return true
 	}
@@ -258,7 +268,7 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 		return
 	}
 	post := &convPoster{client: h.cfg.Client, key: conv.Key}
-	id, err := post.Post(ctx, archiveWarning(who, h.cfg.ArchiveChannel))
+	id, err := post.Post(ctx, archiveWarning(who, h.cfg.ArchiveChannel, h.cfg.DeleteReady))
 	if err != nil {
 		h.cfg.Logf("handler: could not post the archive confirmation in %s: %v", h.describe(conv.Key), err)
 		return
@@ -279,8 +289,17 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	h.reactWhenVisible(ctx, id, "the archive confirmation", func() bool {
 		cur, live := h.liveArm(conv.ID)
 		return live && cur == id
-	}, archiveEmoji, deleteEmoji)
+	}, h.warningEmojis()...)
 	go h.expireArchive(conv.ID, id)
+}
+
+// warningEmojis are the answers the relay pre-adds to its warning.
+// :fire: is offered only when a delete can succeed.
+func (h *Handler) warningEmojis() []string {
+	if h.cfg.DeleteReady {
+		return []string{archiveEmoji, deleteEmoji}
+	}
+	return []string{archiveEmoji}
 }
 
 // expireArchive forgets an arm that was never confirmed.
@@ -519,7 +538,7 @@ func topicOf(key journal.Key, m *zulipproto.Message) string {
 // The order is the archive's: end and retire FIRST, so a turn still
 // streaming cannot re-create the topic after it is gone, and only then
 // the delete.
-func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, topic, who string) {
+func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, topic, who string, userID, warningID int64) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
 	defer cancel()
 	h.endSession(ctx, conv.ID)
@@ -533,21 +552,31 @@ func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, top
 		h.cfg.Logf("handler: not deleting %s: it is no longer the conversation in %s", conv.ID, h.describe(conv.Key))
 		return
 	}
-	if err := h.cfg.Client.DeleteTopic(ctx, conv.Key.StreamID, topic); err != nil {
-		h.cfg.Logf("handler: deleting %s: delete_topic failed (%v) — the conversation is ended but the topic stays", prev.ID, err)
-		h.reply(ctx, conv.Key, deleteFailed(err))
+	deleter := h.cfg.Deleter
+	if deleter == nil {
+		deleter = h.cfg.Client
+	}
+	if err := deleter.DeleteTopic(ctx, conv.Key.StreamID, topic); err != nil {
+		h.cfg.Logf("handler: deleting %s: delete_topic of stream %d topic %q (warning %d, confirmed by %s, user %d) failed (%v) — the conversation is ended but the topic stays",
+			prev.ID, conv.Key.StreamID, topic, warningID, who, userID, err)
+		h.reply(ctx, conv.Key, deleteFailed(err, h.cfg.Deleter != nil))
 		return
 	}
-	h.cfg.Logf("handler: %s deleted %s (%s): the topic is gone and the session ended; %s is untouched on disk",
-		who, h.describe(conv.Key), prev.ID, prev.ID)
+	h.cfg.Logf("handler: %s (user %d) deleted stream %d topic %q (%s, warning %d): the topic is gone and the session ended; %s is untouched on disk",
+		who, userID, conv.Key.StreamID, topic, prev.ID, warningID, prev.ID)
 }
 
 // deleteFailed tells the topic why a confirmed delete did not happen.
-// A server refusal is almost always the missing admin role, so it says
-// so; anything else is reported as it is.
-func deleteFailed(err error) string {
+// A server refusal is almost always a missing permission, so it says
+// which one and where to fix it; anything else is reported as it is.
+// configured says whether the `delete` block supplied the deleter.
+func deleteFailed(err error, configured bool) string {
 	if zulipproto.RejectedByServer(err) {
-		return fmt.Sprintf("I ended this conversation, but Zulip refused to delete the topic (%v). Deleting a topic needs the **organisation administrator** role, and this bot does not have it. Nothing was deleted; delete the topic by hand, or react :%s: to archive instead next time.", err, archiveEmoji)
+		fix := "Set up the `delete` config block: a second bot that the organisation lets delete messages (can_delete_any_message_group)."
+		if configured {
+			fix = "The delete bot from the `delete` config block is not allowed to: add it to the organisation's can_delete_any_message_group."
+		}
+		return fmt.Sprintf("I ended this conversation, but Zulip refused to delete the topic (%v). %s Nothing was deleted; delete the topic by hand, or react :%s: to archive instead next time.", err, fix, archiveEmoji)
 	}
 	return fmt.Sprintf("I ended this conversation, but deleting the topic failed (%v). Nothing was deleted; delete the topic by hand, or leave it — the next message starts a fresh conversation.", err)
 }
@@ -586,12 +615,16 @@ func senderName(m *zulipproto.Message) string {
 // (delete) must land on to confirm. It says what will happen, what will NOT happen (nothing is
 // deleted), and how to walk away — a destructive prompt that does not
 // explain how to decline is a trap.
-func archiveWarning(who, channel string) string {
+func archiveWarning(who, channel string, deleteReady bool) string {
+	needs := ""
+	if !deleteReady {
+		needs = " (needs the relay's `delete` config block)"
+	}
 	return fmt.Sprintf("⚠️ **Archive this topic?** — %s asked to end this conversation and move the whole topic to **#%s**, a channel I do not serve.\n\n"+
 		"React :%s: **to this message** within %s to confirm. Nothing is deleted: every message travels with the topic, and the session's files stay on disk.\n\n"+
-		"React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered (needs this bot to be an organisation administrator).\n\n"+
+		"React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered%s.\n\n"+
 		"Ignore this message to cancel.",
-		who, channel, archiveEmoji, archiveConfirmTTL, deleteEmoji)
+		who, channel, archiveEmoji, archiveConfirmTTL, deleteEmoji, needs)
 }
 
 // archiveNotice is the last thing said in the topic before it moves,

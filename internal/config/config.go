@@ -464,6 +464,11 @@ type Config struct {
 	// the relay serves. Off unless mcp_apps.public_url is set. See
 	// docs/mcp-apps-design.md.
 	MCPApps *MCPApps `json:"mcp_apps,omitempty"`
+
+	// Delete names a second Zulip bot that performs the :fire: topic
+	// delete, so the relay bot need not be an administrator. Absent =
+	// the relay bot tries itself. See Delete and docs/zulip-acp-design.md.
+	Delete *Delete `json:"delete,omitempty"`
 }
 
 // DefaultMCPAppsListen is the loopback address the MCP Apps listener
@@ -626,6 +631,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateMCPApps(); err != nil {
+		return err
+	}
+	if err := c.validateDelete(); err != nil {
 		return err
 	}
 	// A splitter built from these markers must still be constructible;

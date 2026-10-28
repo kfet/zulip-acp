@@ -382,6 +382,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `catchup_max_age_seconds` | `86400` | after a cold start, answer messages posted while the relay was down, one collapsed turn per topic; older ones get a one-line notice. `0` = off |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
+| `delete` | none | a second bot that performs the `:fire:` topic delete, so the relay bot need not be admin. See [Deleting without an admin relay bot](#deleting-without-an-admin-relay-bot-delete) |
 | `quick_models` | none | the **emoji model switcher**: up to 5 `{"emoji","model","label"}` entries. See below |
 | `quick_models_menu_emoji` | `gear` | reaction that opens the switcher menu |
 | `quick_models_sweep_emoji` | `www` | reaction on a switch confirmation that applies it to all sessions |
@@ -751,9 +752,53 @@ A finished conversation can be got out of the way with one gesture: react
 `:wastebasket:` to the relay's **last** message in the topic — or type
 `!archive` (`!arch`) — and the relay posts a warning. React `:wastebasket:` **to
 that warning** and the topic is moved, whole, to `archive_channel`. The relay
-adds `:wastebasket:` and `:fire:` to the warning itself, so one tap confirms.
-React `:fire:` instead to **delete** the topic for good; this needs the bot to be
-an organisation administrator, and the relay says so in the topic when it is not.
+adds `:wastebasket:` to the warning itself, so one tap confirms.
+React `:fire:` instead to **delete** the topic for good. The relay pre-adds
+`:fire:` only when a delete can succeed: a `delete` block is configured (below),
+or the relay bot is an organisation administrator. Without either, a `:fire:`
+still tries, and the relay names the `delete` block in the topic when Zulip
+refuses.
+
+#### Deleting without an admin relay bot (`delete`)
+
+The relay bot does not need to be an administrator. Give the delete to a second
+bot whose only extra power is to delete messages:
+
+1. Create a second bot (for example `del-bot@example.com`) and download its API key.
+2. Create a user group that holds only that bot.
+3. Set the organisation setting **who can delete any message**
+   (`can_delete_any_message_group`, Zulip 10+) to include that group.
+4. Put the key in a file with mode `0600`: `install -m 600 /dev/null ~/.config/zulip-acp/delete.key`, then write the key into it.
+5. Add the block to the config:
+
+```json
+"delete": {
+  "bot_email": "del-bot@example.com",
+  "key_file": "/home/relay/.config/zulip-acp/delete.key",
+  "scope": "topic",
+  "owners_only": true
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `bot_email` | required | the delete bot's e-mail |
+| `key_file` | required | absolute path of the file that holds its API key; must not be readable by group or others |
+| `scope` | `topic` | what a delete may remove; `topic` is the only value |
+| `owners_only` | `true` | only `update_owner_ids` may confirm a delete (needs at least one owner) |
+
+The relay reads the key once at startup and checks it with `GET /users/me`. The
+key is never put in the agent's environment, the system prompt, the state
+directory or a log. The relay uses it ONLY for `delete_topic` on the `:fire:`
+confirmation, with the same arm, expiry and identity rules as an archive. The
+agent has no tool for it. Every delete is logged: who, user id, channel, topic
+and the warning message id.
+
+**Residual risk.** The agent runs as the same unix user as the relay, so it can
+read the key file. The key can only delete messages, not administer the realm.
+A self-hosted Zulip keeps deleted messages restorable for
+`ARCHIVED_DATA_VACUUMING_DAYS` (default 30), so a delete that should not have
+happened can be undone by a server administrator in that window.
 
 An archive deletes nothing. The messages travel with the topic, and the conversation's
 `state/convs/<id>/` working directory stays exactly where it is. What ends is the

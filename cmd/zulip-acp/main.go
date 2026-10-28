@@ -387,6 +387,10 @@ func main() {
 	// taps :wastebasket: would mean a warning posted for an action the
 	// relay cannot perform.
 	archiveID, archiveName, archiveLimit := resolveArchive(ctx, cfg, zc, streams, served, me)
+	deleter, deleteReady, err := resolveDeleter(ctx, cfg, me)
+	if err != nil {
+		log.Fatalf("zulip-acp: %v", err)
+	}
 
 	// The typing indicator (every quiet-mode turn, every reaction
 	// turn) has a cadence that must stay inside the realm's expiry
@@ -664,6 +668,9 @@ func main() {
 		ArchiveStreamID:    archiveID,
 		ArchiveChannel:     archiveName,
 		ArchiveMoveLimit:   archiveLimit,
+		Deleter:            deleter,
+		DeleteReady:        deleteReady,
+		DeleteOwnersOnly:   cfg.Delete != nil && cfg.Delete.GetOwnersOnly(),
 
 		Site:                    cfg.Site,
 		SiteAliases:             cfg.SiteAliases,

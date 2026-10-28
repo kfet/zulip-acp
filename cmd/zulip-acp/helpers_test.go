@@ -393,3 +393,76 @@ func TestFirCmdFor(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+type fakeDeleteBot struct {
+	meErr error
+}
+
+func (b fakeDeleteBot) Me(context.Context) (zulipproto.User, error) {
+	return zulipproto.User{UserID: 9, Email: "del-bot@example.com"}, b.meErr
+}
+
+func (fakeDeleteBot) DeleteTopic(context.Context, int64, string) error { return nil }
+
+func TestResolveDeleter(t *testing.T) {
+	ctx := context.Background()
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	block := &config.Delete{BotEmail: "del-bot@example.com", KeyFile: keyFile}
+	swap := func(b deleteBot, err error) {
+		old := newDeleteBot
+		t.Cleanup(func() { newDeleteBot = old })
+		newDeleteBot = func(_, _, key string) (deleteBot, error) {
+			if key != "k" {
+				t.Fatalf("key = %q", key)
+			}
+			return b, err
+		}
+	}
+
+	t.Run("no block, member", func(t *testing.T) {
+		d, ready, err := resolveDeleter(ctx, &config.Config{}, zulipproto.User{Role: zulipproto.RoleMember})
+		if d != nil || ready || err != nil {
+			t.Fatalf("%v %v %v", d, ready, err)
+		}
+	})
+	t.Run("no block, admin", func(t *testing.T) {
+		_, ready, _ := resolveDeleter(ctx, &config.Config{}, zulipproto.User{Role: zulipproto.RoleAdministrator})
+		if !ready {
+			t.Fatal("an admin bot is not delete-ready")
+		}
+	})
+	t.Run("block ok", func(t *testing.T) {
+		swap(fakeDeleteBot{}, nil)
+		d, ready, err := resolveDeleter(ctx, &config.Config{Delete: block}, zulipproto.User{})
+		if d == nil || !ready || err != nil {
+			t.Fatalf("%v %v %v", d, ready, err)
+		}
+	})
+	t.Run("bad key file", func(t *testing.T) {
+		bad := &config.Delete{BotEmail: "x@example.com", KeyFile: filepath.Join(t.TempDir(), "none")}
+		if _, _, err := resolveDeleter(ctx, &config.Config{Delete: bad}, zulipproto.User{}); err == nil {
+			t.Fatal("no error")
+		}
+	})
+	t.Run("client error", func(t *testing.T) {
+		swap(nil, errors.New("boom"))
+		if _, _, err := resolveDeleter(ctx, &config.Config{Delete: block}, zulipproto.User{}); err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("auth error", func(t *testing.T) {
+		swap(fakeDeleteBot{meErr: errors.New("401")}, nil)
+		if _, _, err := resolveDeleter(ctx, &config.Config{Delete: block}, zulipproto.User{}); err == nil || !strings.Contains(err.Error(), "authenticate") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestNewDeleteBot(t *testing.T) {
+	if _, err := newDeleteBot("https://zulip.example.com", "d@example.com", "k"); err != nil {
+		t.Fatal(err)
+	}
+}

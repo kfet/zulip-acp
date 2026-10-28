@@ -143,6 +143,14 @@ type ChannelSet interface {
 	Autotopic(streamID int64) bool
 }
 
+// TopicDeleter deletes a whole topic for good. Only the :fire:
+// confirmation of the archive control uses it. Zulip lets only users
+// in the realm's can_delete_any_message_group do it, so the caller
+// reports a refusal.
+type TopicDeleter interface {
+	DeleteTopic(ctx context.Context, streamID int64, topic string) error
+}
+
 // Poster is the Zulip surface the handler writes to.
 type Poster interface {
 	SendMessage(ctx context.Context, streamID int64, topic, content string) (int64, error)
@@ -162,10 +170,7 @@ type Poster interface {
 	// and only after startup has established that realm policy allows
 	// it; see archive.go.
 	MoveMessageToChannel(ctx context.Context, id, streamID int64, topic, propagateMode string) error
-	// DeleteTopic deletes a whole topic for good. Only the delete
-	// confirmation of the archive control uses it; it needs the bot to
-	// be an organisation administrator, so the caller reports a refusal.
-	DeleteTopic(ctx context.Context, streamID int64, topic string) error
+	TopicDeleter
 	// DeleteMessage removes a message the bot posted. Used to retire a
 	// superseded `!opts` panel, which cannot be edited when it carries
 	// a widget, and to retract the placeholder-seeded streaming chain
@@ -417,6 +422,23 @@ type Config struct {
 	// attached to it. Knowing the limit lets the archive settle the
 	// question before it touches anything; see Handler.movable.
 	ArchiveMoveLimit time.Duration
+
+	// Deleter performs the :fire: delete_topic call. It is the second
+	// Zulip client built from the `delete` config block — a bot whose
+	// only extra power is message deletion — so the relay bot itself
+	// need not be an administrator. Nil means the relay bot (Client)
+	// tries, and a refusal names the `delete` block.
+	Deleter TopicDeleter
+
+	// DeleteReady reports that a delete can succeed: a Deleter is
+	// configured, or the relay bot is an administrator. Only then does
+	// the relay pre-add :fire: to the archive warning — offering a
+	// one-tap answer that will be refused is a trap.
+	DeleteReady bool
+
+	// DeleteOwnersOnly restricts the :fire: confirmation to OpsOwners
+	// (update_owner_ids). Any other user's :fire: deletes nothing.
+	DeleteOwnersOnly bool
 
 	// After is the timer the reaction debounce waits on. Defaults to
 	// time.After.
