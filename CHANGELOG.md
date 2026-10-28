@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-28
+
 ### Added
 
 - Optional `delete` config block: a second bot, with its key in a `0600` file, performs the :fire: topic delete, so the relay bot need not be an organisation administrator. `owners_only` (default true) limits the delete to `update_owner_ids`. Every delete is logged.
