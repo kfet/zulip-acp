@@ -8,12 +8,12 @@ import (
 	"strings"
 )
 
-// DeleteScopeTopic is the only delete scope: a :fire: confirmation
+// DeleteScopeTopic is the only delete scope: a delete confirmation
 // deletes the one topic of the archive warning.
 const DeleteScopeTopic = "topic"
 
 // Delete is the `delete` config block: a second bot whose only use is
-// the :fire: delete_topic call.
+// the delete_topic call that the delete emoji confirms.
 //
 // The key is read from KeyFile at startup and kept in the relay
 // process only. It is never put in the agent's environment, the
@@ -29,6 +29,22 @@ type Delete struct {
 	// OwnersOnly lets only update_owner_ids confirm a delete.
 	// Unset = true.
 	OwnersOnly *bool `json:"owners_only,omitempty"`
+	// Emoji is the bare Zulip emoji name that confirms a delete on the
+	// archive warning. Unset = DefaultDeleteEmoji.
+	Emoji string `json:"emoji,omitempty"`
+}
+
+// DefaultDeleteEmoji confirms a delete when delete.emoji is unset or
+// the delete block is absent.
+const DefaultDeleteEmoji = "fire"
+
+// DeleteEmoji returns the emoji that confirms a delete:
+// delete.emoji, or DefaultDeleteEmoji.
+func (c *Config) DeleteEmoji() string {
+	if c.Delete == nil || c.Delete.Emoji == "" {
+		return DefaultDeleteEmoji
+	}
+	return c.Delete.Emoji
 }
 
 // GetOwnersOnly reports owners_only, true when unset.
@@ -51,7 +67,40 @@ func (c *Config) validateDelete() error {
 	if d.GetOwnersOnly() && len(c.UpdateOwnerIDs) == 0 {
 		return fmt.Errorf("delete.owners_only needs update_owner_ids: with no owner, nobody could delete")
 	}
+	return c.validateDeleteEmoji()
+}
+
+// validateDeleteEmoji refuses a delete.emoji that is not a bare emoji
+// name or that already means something else on a relay message.
+// A collision with a quick_models emoji is caught by
+// validateQuickModels, which reserves the delete emoji.
+func (c *Config) validateDeleteEmoji() error {
+	e := c.Delete.Emoji
+	if e == "" {
+		return nil
+	}
+	if !validEmojiName(e) {
+		return fmt.Errorf("delete.emoji %q must be a bare Zulip emoji name, e.g. \"bomb\"", e)
+	}
+	taken := append([]string{c.GetQuickModelsMenuEmoji(), c.GetQuickModelsSweepEmoji(), c.GetAckEmoji()}, reservedQuickEmojis...)
+	for _, r := range taken {
+		if e == r {
+			return fmt.Errorf("delete.emoji :%s: is reserved for another relay control", e)
+		}
+	}
 	return nil
+}
+
+// validEmojiName reports that s holds only the characters of a Zulip
+// emoji name: lower-case letters, digits, '_', '-' and '+'.
+func validEmojiName(s string) bool {
+	for _, r := range s {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '+'
+		if !ok {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // ReadDeleteKey reads the delete bot's API key from delete.key_file.

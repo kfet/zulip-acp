@@ -40,13 +40,13 @@
 //   - COMMAND: `!archive` (or `!arch`).
 //
 // Either ARMS a confirmation and posts a warning, and the relay itself
-// adds :wastebasket: and :fire: to that warning so the user confirms
+// adds :wastebasket: and the delete emoji to that warning so the user confirms
 // with one tap. The ONLY confirmations are reactions on that warning
-// message: :wastebasket: archives, :fire: DELETES the topic instead
+// message: :wastebasket: archives, the delete emoji DELETES the topic instead
 // (POST /streams/{id}/delete_topic, sent by the separate delete bot of
 // the `delete` config block when one is set, else by the relay bot; a
 // refusal is reported in the topic, and the conversation is already
-// ended). :fire: is pre-added only when a delete can succeed. :fire: never arms anything. The
+// ended). The delete emoji is pre-added only when a delete can succeed. It never arms anything. The
 // relay's own pre-reactions are never a trigger: handleReaction drops
 // every reaction from the bot user before this file sees it. An expired arm is never
 // carried forward: a later tap starts a fresh cycle with a fresh
@@ -80,10 +80,11 @@ const (
 	// gesture learnable: tap it, read the warning, tap it again.
 	archiveEmoji = "wastebasket"
 
-	// deleteEmoji confirms DELETING the topic instead of archiving it.
-	// It only confirms: on any message other than an armed warning it
-	// is an ordinary reaction.
-	deleteEmoji = "fire"
+	// defaultDeleteEmoji confirms DELETING the topic instead of
+	// archiving it when Config.DeleteEmoji is unset. The delete emoji
+	// only confirms: on any message other than an armed warning it is
+	// an ordinary reaction.
+	defaultDeleteEmoji = "fire"
 
 	// archiveVerb and archiveAlias are the typed forms. `!purge` is
 	// deliberately NOT among them: the action is an archive — nothing
@@ -91,7 +92,6 @@ const (
 	// move would be a lie in the direction that matters.
 	archiveVerb  = "archive"
 	archiveAlias = "arch"
-	archiveHelp  = "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (confirm with :" + archiveEmoji + ":, or :" + deleteEmoji + ": to delete it)\n"
 
 	// archiveConfirmTTL is how long an armed confirmation lives.
 	//
@@ -134,7 +134,7 @@ func (h *Handler) archiveEnabled() bool { return h.cfg.ArchiveStreamID != 0 }
 // and still serves. What is left is this file's own policy — the right
 // emoji, an add rather than a remove, and the right message.
 func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zulipproto.Event, m *zulipproto.Message) bool {
-	if !h.archiveEnabled() || (ev.EmojiName != archiveEmoji && ev.EmojiName != deleteEmoji) {
+	if !h.archiveEnabled() || (ev.EmojiName != archiveEmoji && ev.EmojiName != h.deleteEmoji()) {
 		return false
 	}
 	// Un-reacting is not an action. Retracting a :wastebasket: must
@@ -149,8 +149,8 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 		return false
 	}
 	confirm := h.armedFor(conv.ID, ev.MessageID)
-	if ev.EmojiName == deleteEmoji {
-		// :fire: only confirms. On anything but the armed warning it is
+	if ev.EmojiName == h.deleteEmoji() {
+		// The delete emoji only confirms. On anything but the armed warning it is
 		// ordinary signal for the agent.
 		if !confirm {
 			return false
@@ -160,7 +160,7 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 			// The arm stands: an owner may still confirm, and the
 			// wastebasket still archives.
 			h.cfg.Logf("handler: refusing a :%s: on %s from %s (user %d): only update_owner_ids may delete a topic",
-				deleteEmoji, h.describe(conv.Key), who, ev.UserID)
+				h.deleteEmoji(), h.describe(conv.Key), who, ev.UserID)
 			h.reply(ctx, conv.Key, fmt.Sprintf("Only an owner of this relay may delete a topic. Nothing was deleted; react :%s: to the warning to archive instead.", archiveEmoji))
 			return true
 		}
@@ -256,7 +256,7 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	// confirmation is bound to, and each re-arm would park another
 	// expiry timer.
 	if id, live := h.liveArm(conv.ID); live {
-		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: (archive) or :%s: (delete) to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, deleteEmoji, id))
+		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: (archive) or :%s: (delete) to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, h.deleteEmoji(), id))
 		return
 	}
 	// Preflight BEFORE the warning. A warning that invites a
@@ -268,7 +268,7 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 		return
 	}
 	post := &convPoster{client: h.cfg.Client, key: conv.Key}
-	id, err := post.Post(ctx, archiveWarning(who, h.cfg.ArchiveChannel, h.cfg.DeleteReady))
+	id, err := post.Post(ctx, archiveWarning(who, h.cfg.ArchiveChannel, h.deleteEmoji(), h.cfg.DeleteReady))
 	if err != nil {
 		h.cfg.Logf("handler: could not post the archive confirmation in %s: %v", h.describe(conv.Key), err)
 		return
@@ -293,11 +293,25 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	go h.expireArchive(conv.ID, id)
 }
 
+// archiveHelp is the !help line for !archive.
+func archiveHelp(del string) string {
+	return "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (confirm with :" + archiveEmoji + ":, or :" + del + ": to delete it)\n"
+}
+
+// deleteEmoji is the emoji that confirms a delete: Config.DeleteEmoji,
+// or defaultDeleteEmoji.
+func (h *Handler) deleteEmoji() string {
+	if h.cfg.DeleteEmoji == "" {
+		return defaultDeleteEmoji
+	}
+	return h.cfg.DeleteEmoji
+}
+
 // warningEmojis are the answers the relay pre-adds to its warning.
-// :fire: is offered only when a delete can succeed.
+// The delete emoji is offered only when a delete can succeed.
 func (h *Handler) warningEmojis() []string {
 	if h.cfg.DeleteReady {
-		return []string{archiveEmoji, deleteEmoji}
+		return []string{archiveEmoji, h.deleteEmoji()}
 	}
 	return []string{archiveEmoji}
 }
@@ -611,11 +625,11 @@ func senderName(m *zulipproto.Message) string {
 	return m.SenderName
 }
 
-// archiveWarning is the message a :wastebasket: (archive) or :fire:
+// archiveWarning is the message a :wastebasket: (archive) or the delete emoji
 // (delete) must land on to confirm. It says what will happen, what will NOT happen (nothing is
 // deleted), and how to walk away — a destructive prompt that does not
 // explain how to decline is a trap.
-func archiveWarning(who, channel string, deleteReady bool) string {
+func archiveWarning(who, channel, del string, deleteReady bool) string {
 	needs := ""
 	if !deleteReady {
 		needs = " (needs the relay's `delete` config block)"
@@ -624,7 +638,7 @@ func archiveWarning(who, channel string, deleteReady bool) string {
 		"React :%s: **to this message** within %s to confirm. Nothing is deleted: every message travels with the topic, and the session's files stay on disk.\n\n"+
 		"React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered%s.\n\n"+
 		"Ignore this message to cancel.",
-		who, channel, archiveEmoji, archiveConfirmTTL, deleteEmoji, needs)
+		who, channel, archiveEmoji, archiveConfirmTTL, del, needs)
 }
 
 // archiveNotice is the last thing said in the topic before it moves,

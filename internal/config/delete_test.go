@@ -21,6 +21,12 @@ func TestValidateDelete(t *testing.T) {
 		{"relative key", &Delete{BotEmail: "d@example.com", KeyFile: "k"}, []int64{1}, "absolute"},
 		{"bad scope", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Scope: "realm"}, []int64{1}, "scope"},
 		{"owners only, no owners", &Delete{BotEmail: "d@example.com", KeyFile: "/k"}, nil, "update_owner_ids"},
+		{"custom emoji", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: "bomb"}, []int64{1}, ""},
+		{"emoji with colons", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: ":bomb:"}, []int64{1}, "bare Zulip emoji"},
+		{"emoji upper case", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: "Bomb"}, []int64{1}, "bare Zulip emoji"},
+		{"emoji is archive", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: "wastebasket"}, []int64{1}, "reserved"},
+		{"emoji is branch", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: "fork_and_knife"}, []int64{1}, "reserved"},
+		{"emoji is menu", &Delete{BotEmail: "d@example.com", KeyFile: "/k", Emoji: "gear"}, []int64{1}, "reserved"},
 		{"anyone, no owners", &Delete{BotEmail: "d@example.com", KeyFile: "/k", OwnersOnly: &f}, nil, ""},
 	}
 	for _, tc := range cases {
@@ -91,4 +97,33 @@ func mkdir(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestDeleteEmoji(t *testing.T) {
+	if got := (&Config{}).DeleteEmoji(); got != "fire" {
+		t.Fatalf("absent block: %q", got)
+	}
+	if got := (&Config{Delete: &Delete{}}).DeleteEmoji(); got != "fire" {
+		t.Fatalf("unset emoji: %q", got)
+	}
+	if got := (&Config{Delete: &Delete{Emoji: "bomb"}}).DeleteEmoji(); got != "bomb" {
+		t.Fatalf("custom: %q", got)
+	}
+}
+
+func TestDeleteEmojiReservedFromQuickModels(t *testing.T) {
+	c := &Config{QuickModels: []QuickModel{{Emoji: "bomb", Model: "m"}}, Delete: &Delete{Emoji: "bomb"}}
+	if err := c.validateQuickModels(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("err = %v", err)
+	}
+	// With the default delete emoji, :fire: is reserved; with a custom
+	// one it is free for a quick model.
+	c = &Config{QuickModels: []QuickModel{{Emoji: "fire", Model: "m"}}}
+	if err := c.validateQuickModels(); err == nil {
+		t.Fatal(":fire: accepted while it confirms a delete")
+	}
+	c.Delete = &Delete{Emoji: "bomb"}
+	if err := c.validateQuickModels(); err != nil {
+		t.Fatal(err)
+	}
 }

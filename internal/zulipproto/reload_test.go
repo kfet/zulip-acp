@@ -61,9 +61,11 @@ func TestRunHandoffDuringShutdownStillDeletesTheQueue(t *testing.T) {
 	ss := newScript(t,
 		registerOK("q-doomed", 1),
 		func(*http.Request) (int, string) {
+			// Cancel first: closing handoff first lets Run see the
+			// handoff before the cancel lands, which is a reload.
 			once.Do(func() {
-				close(handoff)
 				cancel()
+				close(handoff)
 			})
 			return 200, `{"result":"success","msg":"","events":[]}`
 		},

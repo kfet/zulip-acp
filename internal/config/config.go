@@ -100,7 +100,8 @@ type QuickModel struct {
 // reservedQuickEmojis are emojis that already mean something on a relay
 // message. A shortlist entry may not take one.
 // The !opts chips, the !opts tick and the schedule mark are included.
-var reservedQuickEmojis = []string{"wastebasket", "fire", "fork_and_knife", "gear", "www",
+// The delete emoji is configurable; validateQuickModels adds it.
+var reservedQuickEmojis = []string{"wastebasket", "fork_and_knife", "gear", "www",
 	"new", "octagonal_sign", "bar_chart", "check", "alarm_clock"}
 
 // Config is the operator-facing JSON config.
@@ -465,7 +466,7 @@ type Config struct {
 	// docs/mcp-apps-design.md.
 	MCPApps *MCPApps `json:"mcp_apps,omitempty"`
 
-	// Delete names a second Zulip bot that performs the :fire: topic
+	// Delete names a second Zulip bot that performs the delete-emoji topic
 	// delete, so the relay bot need not be an administrator. Absent =
 	// the relay bot tries itself. See Delete and docs/zulip-acp-design.md.
 	Delete *Delete `json:"delete,omitempty"`
@@ -821,7 +822,7 @@ func (c *Config) validateQuickModels() error {
 	if menu == sweep {
 		return fmt.Errorf("quick_models_menu_emoji and quick_models_sweep_emoji are both %q", menu)
 	}
-	reserved := map[string]bool{menu: true, sweep: true}
+	reserved := map[string]bool{menu: true, sweep: true, c.DeleteEmoji(): true}
 	for _, e := range reservedQuickEmojis {
 		reserved[e] = true
 	}

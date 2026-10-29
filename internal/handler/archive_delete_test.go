@@ -15,7 +15,7 @@ import (
 
 // fireTap feeds one :fire: reaction.
 func (hh *harness) fireTap(user, msgID int64) {
-	hh.h.Handle(context.Background(), reactionEvent(user, msgID, deleteEmoji, zulipproto.ReactionAdd))
+	hh.h.Handle(context.Background(), reactionEvent(user, msgID, defaultDeleteEmoji, zulipproto.ReactionAdd))
 }
 
 // TestArchiveWarningIsPreReacted: the relay adds both answers to its
@@ -33,12 +33,12 @@ func TestArchiveWarningIsPreReacted(t *testing.T) {
 	hh.z.mu.Lock()
 	added := slices.Clone(hh.z.reactAdd)
 	hh.z.mu.Unlock()
-	for _, e := range []string{archiveEmoji, deleteEmoji} {
+	for _, e := range []string{archiveEmoji, defaultDeleteEmoji} {
 		if !slices.Contains(added, fmt.Sprintf("%d:%s", prompt, e)) {
 			t.Fatalf("no :%s: pre-reaction on %d: %v", e, prompt, added)
 		}
 	}
-	if body := hh.z.body(prompt); !strings.Contains(body, ":"+deleteEmoji+":") || !strings.Contains(body, "delete the topic") || strings.Contains(body, "config block") {
+	if body := hh.z.body(prompt); !strings.Contains(body, ":"+defaultDeleteEmoji+":") || !strings.Contains(body, "delete the topic") || strings.Contains(body, "config block") {
 		t.Fatalf("warning does not offer the delete: %q", body)
 	}
 	// The bot's own reactions echo back; neither may act.
@@ -89,6 +89,36 @@ func TestDeleteConfirm(t *testing.T) {
 	}
 	if !hh.logged("deleted") {
 		t.Fatalf("logs = %v", hh.logs)
+	}
+}
+
+// TestDeleteConfirmCustomEmoji: a configured delete emoji replaces
+// :fire: in the pre-reaction, the warning and the confirm matcher.
+func TestDeleteConfirmCustomEmoji(t *testing.T) {
+	hh, _ := archiveHarness(t, func(c *Config) { c.DeleteReady = true; c.DeleteEmoji = "bomb" })
+	conv := archiveConv(t, hh)
+	hh.deliver(t, "t", "!archive")
+	prompt, _ := hh.armed(conv.ID)
+	hh.h.echoWG.Wait()
+	hh.z.mu.Lock()
+	added := slices.Clone(hh.z.reactAdd)
+	hh.z.mu.Unlock()
+	if !slices.Contains(added, fmt.Sprintf("%d:bomb", prompt)) || slices.Contains(added, fmt.Sprintf("%d:fire", prompt)) {
+		t.Fatalf("pre-reactions = %v", added)
+	}
+	if body := hh.z.body(prompt); !strings.Contains(body, ":bomb:") || strings.Contains(body, ":fire:") {
+		t.Fatalf("warning = %q", body)
+	}
+	if !strings.Contains(archiveHelp(hh.h.deleteEmoji()), ":bomb:") {
+		t.Fatal("help does not name :bomb:")
+	}
+	hh.fireTap(humanID, prompt)
+	if len(hh.z.deletedTopics()) != 0 {
+		t.Fatal(":fire: deleted with a custom delete emoji")
+	}
+	hh.h.Handle(context.Background(), reactionEvent(humanID, prompt, "bomb", zulipproto.ReactionAdd))
+	if got := hh.z.deletedTopics(); len(got) != 1 {
+		t.Fatalf("deletes = %v", got)
 	}
 }
 
@@ -243,7 +273,7 @@ func TestFireNotOfferedWhenDeleteCannotWork(t *testing.T) {
 	hh.z.mu.Lock()
 	added := slices.Clone(hh.z.reactAdd)
 	hh.z.mu.Unlock()
-	if slices.Contains(added, fmt.Sprintf("%d:%s", prompt, deleteEmoji)) {
+	if slices.Contains(added, fmt.Sprintf("%d:%s", prompt, defaultDeleteEmoji)) {
 		t.Fatalf(":fire: pre-added with no way to delete: %v", added)
 	}
 	if !slices.Contains(added, fmt.Sprintf("%d:%s", prompt, archiveEmoji)) {

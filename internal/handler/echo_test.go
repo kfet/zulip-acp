@@ -136,7 +136,7 @@ func TestArchiveConfirmedDuringEchoWaitIsNotPreReacted(t *testing.T) {
 	fire <- time.Time{}
 	hh.h.echoWG.Wait()
 	added, _ := hh.z.reactions()
-	for _, e := range []string{archiveEmoji, deleteEmoji} {
+	for _, e := range []string{archiveEmoji, defaultDeleteEmoji} {
 		if slices.Contains(added, fmt.Sprintf("%d:%s", prompt, e)) {
 			t.Fatalf("pre-added :%s: to a spent arm: %v", e, added)
 		}

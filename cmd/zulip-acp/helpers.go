@@ -161,7 +161,7 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 		// this relay actually arms, so the agent knows the window
 		// before it picks a poll interval.
 		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
-			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions()),
+			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji()),
 			kit.LivenessNote(cfg.NoProgressTimeout()), "")
 	}
 }
@@ -347,20 +347,20 @@ var newDeleteBot = func(site, email, key string) (deleteBot, error) {
 	return zulipproto.New(zulipproto.Config{Site: site, Email: email, APIKey: key})
 }
 
-// resolveDeleter decides who performs the :fire: delete, and whether
+// resolveDeleter decides who performs the delete-emoji delete, and whether
 // the relay may offer it.
 //
 // With a `delete` block, a second client built from its key file does
 // the delete. The key stays in this process: it is not in the config,
 // the agent's environment or any log line. Without the block, the
-// relay bot tries itself, and the relay offers :fire: only when the
+// relay bot tries itself, and the relay offers the delete emoji only when the
 // bot is an administrator.
 func resolveDeleter(ctx context.Context, cfg *config.Config, me zulipproto.User) (handler.TopicDeleter, bool, error) {
 	d := cfg.Delete
 	if d == nil {
 		admin := me.Role > 0 && me.Role <= zulipproto.RoleAdministrator
 		if !admin {
-			log.Printf("zulip-acp: topic delete (:fire:) is not offered: there is no \"delete\" config block and this bot is not an administrator")
+			log.Printf("zulip-acp: topic delete (:%s:) is not offered: there is no \"delete\" config block and this bot is not an administrator", cfg.DeleteEmoji())
 		}
 		return nil, admin, nil
 	}
@@ -376,6 +376,6 @@ func resolveDeleter(ctx context.Context, cfg *config.Config, me zulipproto.User)
 	if err != nil {
 		return nil, false, fmt.Errorf("delete: cannot authenticate as %s: %w", d.BotEmail, err)
 	}
-	log.Printf("zulip-acp: topic delete (:fire:) is on: %s (user %d) performs it; owners only: %t", who.Email, who.UserID, d.GetOwnersOnly())
+	log.Printf("zulip-acp: topic delete (:%s:) is on: %s (user %d) performs it; owners only: %t", cfg.DeleteEmoji(), who.Email, who.UserID, d.GetOwnersOnly())
 	return bot, true, nil
 }

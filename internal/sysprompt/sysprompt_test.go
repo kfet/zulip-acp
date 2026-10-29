@@ -6,7 +6,7 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	got := Resolve("", false, "", "", false)
+	got := Resolve("", false, "", "", false, "")
 	if !strings.Contains(got, "Zulip") {
 		t.Fatalf("built-in block missing: %q", got)
 	}
@@ -28,34 +28,34 @@ func TestResolve(t *testing.T) {
 		t.Fatal("system prompt must document the inbox convention")
 	}
 
-	withExtra := Resolve("You are the ops bot.", false, "", "", false)
+	withExtra := Resolve("You are the ops bot.", false, "", "", false, "")
 	if !strings.Contains(withExtra, "You are the ops bot.") || !strings.Contains(withExtra, "Zulip") {
 		t.Fatalf("extra text not composed: %q", withExtra)
 	}
-	if Resolve("anything", true, "", "", false) != "" {
+	if Resolve("anything", true, "", "", false, "") != "" {
 		t.Fatal("disabled injection must produce nothing")
 	}
-	withCatalog := Resolve("", false, "<available_skills>x</available_skills>", "", false)
+	withCatalog := Resolve("", false, "<available_skills>x</available_skills>", "", false, "")
 	if !strings.Contains(withCatalog, "available_skills") {
 		t.Fatalf("catalog not composed: %q", withCatalog)
 	}
 }
 
 func TestSentinelInstruction(t *testing.T) {
-	if got := Resolve("", false, "", "", false); strings.Contains(got, "ambiently") {
+	if got := Resolve("", false, "", "", false, ""); strings.Contains(got, "ambiently") {
 		t.Fatalf("no sentinel must produce no abstain instruction: %q", got)
 	}
-	got := Resolve("", false, "", "<<SILENT>>", false)
+	got := Resolve("", false, "", "<<SILENT>>", false, "")
 	if !strings.Contains(got, "<<SILENT>>") || !strings.Contains(got, "ambiently") {
 		t.Fatalf("instruction = %q", got)
 	}
 }
 
 func TestReactionInstruction(t *testing.T) {
-	if got := Resolve("", false, "", "<<SILENT>>", false); strings.Contains(got, "[reaction]") {
+	if got := Resolve("", false, "", "<<SILENT>>", false, ""); strings.Contains(got, "[reaction]") {
 		t.Fatalf("reactions off must produce no reaction note: %q", got)
 	}
-	got := Resolve("", false, "", "<<SILENT>>", true)
+	got := Resolve("", false, "", "<<SILENT>>", true, "")
 	// The wire shape, so the agent recognises a reaction turn at all.
 	for _, want := range []string{
 		"Emoji reactions:",
@@ -90,7 +90,7 @@ func TestReactionInstruction(t *testing.T) {
 	// With no sentinel the agent cannot decline, so the instruction
 	// must not tell it to emit one — it must ask for the smallest
 	// possible reply instead.
-	noSentinel := Resolve("", false, "", "", true)
+	noSentinel := Resolve("", false, "", "", true, "")
 	if !strings.Contains(noSentinel, "no way to suppress a reply") ||
 		!strings.Contains(noSentinel, "single short line") {
 		t.Fatalf("sentinel-less guidance = %q", noSentinel)
@@ -116,5 +116,15 @@ func TestBaseLinkRule(t *testing.T) {
 		if !strings.Contains(Base, want) {
 			t.Errorf("Base lacks %q", want)
 		}
+	}
+}
+
+func TestResolveDeleteEmoji(t *testing.T) {
+	if got := Resolve("", false, "", "", false, ""); !strings.Contains(got, ":fire:") {
+		t.Fatal("default prompt must name :fire:")
+	}
+	got := Resolve("", false, "", "", false, "bomb")
+	if strings.Contains(got, ":fire:") || !strings.Contains(got, ":bomb: on that same warning") {
+		t.Fatalf("custom delete emoji not rendered:\n%s", got)
 	}
 }

@@ -6,7 +6,11 @@
 // system_prompt, which is appended to this.
 package sysprompt
 
-import kit "github.com/kfet/acp-kit/sysprompt"
+import (
+	"strings"
+
+	kit "github.com/kfet/acp-kit/sysprompt"
+)
 
 // Base is the built-in Zulip block.
 //
@@ -112,6 +116,17 @@ func reactionInstruction(reactions bool, sentinel string) string {
 // block, the abstain instruction for the configured sentinel, the
 // reaction note, the operator's extra text, and the skills catalog.
 // Returns "" when the operator disabled injection entirely.
-func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool) string {
-	return kit.Resolve(Base+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel), extra, disabled, catalog)
+// deleteEmoji is the emoji that confirms a topic delete; "" means the
+// default :fire: that Base names.
+func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji string) string {
+	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel), extra, disabled, catalog)
+}
+
+// withDeleteEmoji returns Base with the configured delete emoji in
+// place of :fire:. Base names :fire: only for the delete confirmation.
+func withDeleteEmoji(e string) string {
+	if e == "" {
+		return Base
+	}
+	return strings.ReplaceAll(Base, ":fire:", ":"+e+":")
 }

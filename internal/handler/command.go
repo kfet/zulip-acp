@@ -352,7 +352,7 @@ func (h *Handler) decorate(text, out string) string {
 		// Advertised only when it can actually work: a help entry for
 		// a command that answers "not configured here" teaches the
 		// wrong thing.
-		extra += archiveHelp
+		extra += archiveHelp(h.deleteEmoji())
 	}
 	if h.CanSchedule() {
 		extra += schedHelp

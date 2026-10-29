@@ -382,7 +382,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `catchup_max_age_seconds` | `86400` | after a cold start, answer messages posted while the relay was down, one collapsed turn per topic; older ones get a one-line notice. `0` = off |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
-| `delete` | none | a second bot that performs the `:fire:` topic delete, so the relay bot need not be admin. See [Deleting without an admin relay bot](#deleting-without-an-admin-relay-bot-delete) |
+| `delete` | none | a second bot that performs the topic delete confirmed by `:fire:` (or `delete.emoji`), so the relay bot need not be admin. See [Deleting without an admin relay bot](#deleting-without-an-admin-relay-bot-delete) |
 | `quick_models` | none | the **emoji model switcher**: up to 5 `{"emoji","model","label"}` entries. See below |
 | `quick_models_menu_emoji` | `gear` | reaction that opens the switcher menu |
 | `quick_models_sweep_emoji` | `www` | reaction on a switch confirmation that applies it to all sessions |
@@ -753,7 +753,7 @@ A finished conversation can be got out of the way with one gesture: react
 `!archive` (`!arch`) — and the relay posts a warning. React `:wastebasket:` **to
 that warning** and the topic is moved, whole, to `archive_channel`. The relay
 adds `:wastebasket:` to the warning itself, so one tap confirms.
-React `:fire:` instead to **delete** the topic for good. The relay pre-adds
+React `:fire:` (or the `delete.emoji` you configure) instead to **delete** the topic for good. The relay pre-adds
 `:fire:` only when a delete can succeed: a `delete` block is configured (below),
 or the relay bot is an organisation administrator. Without either, a `:fire:`
 still tries, and the relay names the `delete` block in the topic when Zulip
@@ -786,6 +786,7 @@ bot whose only extra power is to delete messages:
 | `key_file` | required | absolute path of the file that holds its API key; must not be readable by group or others |
 | `scope` | `topic` | what a delete may remove; `topic` is the only value |
 | `owners_only` | `true` | only `update_owner_ids` may confirm a delete (needs at least one owner) |
+| `emoji` | `fire` | bare Zulip emoji name that confirms a delete. It must not be `wastebasket`, a `quick_models` emoji or another relay control emoji |
 
 The relay reads the key once at startup and checks it with `GET /users/me`. The
 key is never put in the agent's environment, the system prompt, the state

@@ -671,6 +671,7 @@ func main() {
 		Deleter:            deleter,
 		DeleteReady:        deleteReady,
 		DeleteOwnersOnly:   cfg.Delete != nil && cfg.Delete.GetOwnersOnly(),
+		DeleteEmoji:        cfg.DeleteEmoji(),
 
 		Site:                    cfg.Site,
 		SiteAliases:             cfg.SiteAliases,

@@ -143,7 +143,7 @@ type ChannelSet interface {
 	Autotopic(streamID int64) bool
 }
 
-// TopicDeleter deletes a whole topic for good. Only the :fire:
+// TopicDeleter deletes a whole topic for good. Only the delete emoji
 // confirmation of the archive control uses it. Zulip lets only users
 // in the realm's can_delete_any_message_group do it, so the caller
 // reports a refusal.
@@ -423,7 +423,7 @@ type Config struct {
 	// question before it touches anything; see Handler.movable.
 	ArchiveMoveLimit time.Duration
 
-	// Deleter performs the :fire: delete_topic call. It is the second
+	// Deleter performs the delete emoji delete_topic call. It is the second
 	// Zulip client built from the `delete` config block — a bot whose
 	// only extra power is message deletion — so the relay bot itself
 	// need not be an administrator. Nil means the relay bot (Client)
@@ -432,13 +432,17 @@ type Config struct {
 
 	// DeleteReady reports that a delete can succeed: a Deleter is
 	// configured, or the relay bot is an administrator. Only then does
-	// the relay pre-add :fire: to the archive warning — offering a
+	// the relay pre-add the delete emoji to the archive warning — offering a
 	// one-tap answer that will be refused is a trap.
 	DeleteReady bool
 
-	// DeleteOwnersOnly restricts the :fire: confirmation to OpsOwners
-	// (update_owner_ids). Any other user's :fire: deletes nothing.
+	// DeleteOwnersOnly restricts the delete emoji confirmation to OpsOwners
+	// (update_owner_ids). Any other user's delete emoji deletes nothing.
 	DeleteOwnersOnly bool
+
+	// DeleteEmoji is the bare emoji name that confirms a delete on
+	// the archive warning. Empty = "fire".
+	DeleteEmoji string
 
 	// After is the timer the reaction debounce waits on. Defaults to
 	// time.After.
