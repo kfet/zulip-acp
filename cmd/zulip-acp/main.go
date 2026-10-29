@@ -515,6 +515,7 @@ func main() {
 		StateDir:             cfg.StateDir,
 		IdleTimeout:          cfg.IdleTimeout(),
 		SystemPromptProvider: systemPromptProvider(*configPath, cfg),
+		CwdFor:               cwdFor(cfg),
 	})
 	if err != nil {
 		log.Fatalf("state: %v", err)
@@ -662,6 +663,8 @@ func main() {
 		ContinuationMarker: cfg.ContinuationMarker,
 		SilentSentinel:     cfg.GetSilentSentinel(),
 		HideThinking:       cfg.HideThinking,
+		PerUserSessions:    cfg.PerUserSessions(),
+		AgentCwd:           cfg.AgentCwd(),
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Reactions:          cfg.GetReactions(),

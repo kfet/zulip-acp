@@ -230,8 +230,8 @@ func TestZulipWidgetsAreNeverEaten(t *testing.T) {
 			if len(hh.a.prompts) != 1 {
 				t.Fatalf("widget was eaten: %q", hh.a.prompts)
 			}
-			if got := hh.a.prompts[0]; got != "[Kfet] "+text {
-				t.Fatalf("prompt = %q, want %q", got, "[Kfet] "+text)
+			if got := hh.a.prompts[0]; got != literalSlash(text) {
+				t.Fatalf("prompt = %q, want %q", got, literalSlash(text))
 			}
 		})
 	}
@@ -303,8 +303,8 @@ func TestProseStartingWithBangReachesTheAgentUnchanged(t *testing.T) {
 			if rest, ok := strings.CutPrefix(text, "!!"); ok {
 				want = "!" + rest
 			}
-			if got := hh.a.prompts[0]; got != "[Kfet] "+want {
-				t.Fatalf("prompt = %q, want %q", got, "[Kfet] "+want)
+			if got := hh.a.prompts[0]; got != want {
+				t.Fatalf("prompt = %q, want %q", got, want)
 			}
 		})
 	}
@@ -349,14 +349,15 @@ func TestAgentCommandPassthrough(t *testing.T) {
 }
 
 // TestLiteralSlashIsProse: a user who types "/reload" themselves is not
-// a passthrough; it keeps the sender attribution like any message.
+// a passthrough; it reaches the agent marked as prose, so the agent
+// does not run it as a slash command.
 func TestLiteralSlashIsProse(t *testing.T) {
 	agent := newAgent("x")
 	agent.agentCmds = []client.CommandInfo{{Name: "reload"}}
 	hh := dmCmdHarness(t, agent, nil)
 	hh.deliverDM(t, humanID, "/reload", humanID, botID)
-	if len(hh.a.prompts) != 1 || strings.HasPrefix(hh.a.prompts[0], "/") {
-		t.Fatalf("prompts = %q, want an attributed prose prompt", hh.a.prompts)
+	if len(hh.a.prompts) != 1 || hh.a.prompts[0] != literalSlash("/reload") {
+		t.Fatalf("prompts = %q, want a marked prose prompt", hh.a.prompts)
 	}
 }
 

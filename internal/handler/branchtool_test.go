@@ -79,7 +79,7 @@ func TestBranchToolSeedsFromTheBranchPoint(t *testing.T) {
 		t.Fatalf("audit record = %+v", p)
 	}
 	prompt := hh.lastPrompt()
-	if !strings.Contains(prompt, "and the eviction policy") || !strings.Contains(prompt, "written by Grace Hopper") {
+	if !strings.Contains(prompt, "and the eviction policy") || !strings.Contains(prompt, "written by somebody other than the user") {
 		t.Fatalf("prompt = %q", prompt)
 	}
 	notes := hh.postedIn("planning")

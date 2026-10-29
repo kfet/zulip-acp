@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"github.com/kfet/acp-kit/origin"
 	"strings"
 	"time"
 
@@ -55,6 +56,8 @@ type catchupTopic struct {
 	first     int64 // timestamp of the first message
 	lastID    int64
 	addressed bool
+	// origin is the newest message's origin _meta, which the turn sends.
+	origin origin.Origin
 }
 
 // catchupText decides what a missed message contributes. A relay
@@ -97,13 +100,15 @@ func (h *Handler) CatchUp(ctx context.Context, msgs []zulipproto.Message, maxAge
 		if !ok {
 			continue
 		}
-		t := topics[r.conv.ID]
+		sk := r.conv.SessionKey()
+		t := topics[sk]
 		if t == nil {
 			t = &catchupTopic{conv: r.conv, first: m.Timestamp}
-			topics[r.conv.ID] = t
-			order = append(order, r.conv.ID)
+			topics[sk] = t
+			order = append(order, sk)
 		}
 		t.prompts = append(t.prompts, r.prompt)
+		t.origin = r.origin
 		t.lastID = m.ID
 		t.addressed = t.addressed || r.addressed
 	}
@@ -140,7 +145,7 @@ func (h *Handler) startCatchups(ctx context.Context, turns []*catchupTopic) {
 			h.cfg.Logf("handler: WARN shutting down; %d catch-up turn(s) not started", len(turns)-i)
 			return
 		}
-		if live, ok := h.liveTurns.Load(t.conv.ID); ok && live.(int64) > t.lastID {
+		if live, ok := h.liveTurns.Load(t.conv.SessionKey()); ok && live.(int64) > t.lastID {
 			// A live message started a turn here while this one waited.
 			// Starting now would supersede, and so cancel, that newer
 			// turn.
@@ -149,7 +154,7 @@ func (h *Handler) startCatchups(ctx context.Context, turns []*catchupTopic) {
 			continue
 		}
 		h.cfg.Logf("handler: catch-up turn in %s for %d message(s)", h.describe(t.conv.Key), len(t.prompts))
-		h.startTurnThen(ctx, t.conv, catchupPrompt(t), t.addressed, t.lastID, t.lastID, func() { <-slots })
+		h.startTurnThen(origin.With(ctx, t.origin), t.conv, catchupPrompt(t), t.addressed, t.lastID, t.lastID, func() { <-slots })
 	}
 }
 

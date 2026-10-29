@@ -203,6 +203,16 @@ type Config struct {
 	// idle GC. Default $XDG_STATE_HOME/zulip-acp.
 	StateDir string `json:"state_dir,omitempty"`
 
+	// SessionScope picks what one agent session serves: "thread"
+	// (default) = one session per topic or DM; "thread_user" = one
+	// session per (topic, sender). See SessionScopeThreadUser.
+	SessionScope string `json:"session_scope,omitempty"`
+	// CwdMode picks the cwd the relay sends to the agent: "local"
+	// (default) = a directory under StateDir on this host; "agent" =
+	// an opaque placeholder (AgentCwdPlaceholder), and the agent side
+	// picks the real directory. See CwdModeAgent.
+	CwdMode string `json:"cwd_mode,omitempty"`
+
 	// SessionIdleTimeoutSeconds GCs idle sessions. 0 = 30 minutes.
 	SessionIdleTimeoutSeconds int `json:"session_idle_timeout_seconds,omitempty"`
 	// NoProgressTimeoutSeconds cuts a turn that has gone silent: no
@@ -635,6 +645,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateDelete(); err != nil {
+		return err
+	}
+	if err := c.validateScope(); err != nil {
 		return err
 	}
 	// A splitter built from these markers must still be constructible;
@@ -1123,3 +1136,33 @@ func DefaultStateDir() string {
 	}
 	return filepath.Join(os.TempDir(), "zulip-acp")
 }
+
+// Values of session_scope and cwd_mode.
+const (
+	SessionScopeThread     = "thread"
+	SessionScopeThreadUser = "thread_user"
+	CwdModeLocal           = "local"
+	CwdModeAgent           = "agent"
+)
+
+// validateScope rejects an unknown session_scope or cwd_mode. Empty
+// is the default and is valid.
+func (c *Config) validateScope() error {
+	switch c.SessionScope {
+	case "", SessionScopeThread, SessionScopeThreadUser:
+	default:
+		return fmt.Errorf("session_scope: %q is not %q or %q", c.SessionScope, SessionScopeThread, SessionScopeThreadUser)
+	}
+	switch c.CwdMode {
+	case "", CwdModeLocal, CwdModeAgent:
+	default:
+		return fmt.Errorf("cwd_mode: %q is not %q or %q", c.CwdMode, CwdModeLocal, CwdModeAgent)
+	}
+	return nil
+}
+
+// PerUserSessions reports whether session_scope is "thread_user".
+func (c *Config) PerUserSessions() bool { return c.SessionScope == SessionScopeThreadUser }
+
+// AgentCwd reports whether cwd_mode is "agent".
+func (c *Config) AgentCwd() bool { return c.CwdMode == CwdModeAgent }

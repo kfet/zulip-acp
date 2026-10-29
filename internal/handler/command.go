@@ -115,6 +115,7 @@ func metaOf(in *convo.In) dispatchMeta { return in.Meta.(dispatchMeta) }
 // whose order is load-bearing and documented there.
 func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journal.Key, text string) (prompt string, handled bool) {
 	tok := key.Token()
+	ctx = h.withOriginOf(ctx, m, key)
 	res := h.convo.Dispatch(ctx, convo.In{Conv: tok, Token: tok, Text: text, Meta: dispatchMeta{m: m, key: key}})
 	return res.Prompt, res.Handled
 }
@@ -151,6 +152,7 @@ func (h *Handler) beforeFilters() []convo.Filter {
 			}
 			return convo.Pass
 		},
+		h.loginScope,
 		// `!opts` is this relay's own: it renders controls that already
 		// exist onto a surface only Zulip has (see opts.go), so the shared
 		// broker neither knows nor should know about it. Checked before
@@ -679,4 +681,35 @@ const updateAckEmoji = "hourglass_flowing_sand"
 func dropLine(s, prefix string) string {
 	lines := strings.SplitAfter(s, "\n")
 	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, prefix) }), "")
+}
+
+// loginScope routes a login to the SENDER in cwd_mode "agent".
+//
+// There the agent side, not this host, owns where a session runs, and
+// so whose credentials it uses. A login is then a user's own act: it
+// runs under a broker token of its own per (conversation, sender), so
+// one user's pending login never eats another user's message as a
+// pasted redirect URL. The command still answers in the conversation,
+// and its context carries the sender as origin (see dispatch).
+//
+// In cwd_mode "local" it does nothing: a login is the conversation's.
+func (h *Handler) loginScope(_ context.Context, in *convo.In) convo.Verdict {
+	if !h.cfg.AgentCwd {
+		return convo.Pass
+	}
+	md := metaOf(in)
+	if md.m == nil || md.m.SenderID == 0 {
+		return convo.Pass
+	}
+	tok := loginToken(in.Token, md.m.SenderID)
+	if command.IsLoginCommand(in.Text) || h.cfg.Commands.HasPending(tok) {
+		in.Token = tok
+	}
+	return convo.Pass
+}
+
+// loginToken is the broker token of one sender's login in the
+// conversation with token tok.
+func loginToken(tok string, sender int64) string {
+	return tok + "~u" + strconv.FormatInt(sender, 10)
 }

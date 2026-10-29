@@ -81,7 +81,7 @@ func TestCatchUpCollapsesTopic(t *testing.T) {
 	first := catchupNow.Add(-time.Hour).UTC().Format(time.RFC3339)
 	for _, want := range []string{
 		"[catch-up] 3 messages arrived while the relay was offline (first at " + first + ")",
-		"[Kfet] first", "[Kfet] !bang", "[Kfet] second",
+		"\n\nfirst\n\n!bang\n\nsecond",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("prompt %q lacks %q", got, want)

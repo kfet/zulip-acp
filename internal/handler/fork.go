@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+
 	"path/filepath"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -44,13 +44,16 @@ func (h *Handler) forkBranch(ctx context.Context, origin journal.Key, msgID int6
 		h.cfg.Logf("handler: branch %s: agent cannot list and resume sessions, so a fork would be lost; starting a fresh session", child.ID)
 		return false
 	}
-	sid, err := h.originSession(ctx, parent.ID)
+	// A per-user branch forks the brancher's own session in the
+	// origin into their own session in the child.
+	parent.User = child.User
+	sid, err := h.originSession(ctx, parent.SessionKey())
 	if err != nil {
 		h.cfg.Logf("handler: branch %s: %v; starting a fresh session", child.ID, err)
 		return false
 	}
-	cwd := h.convDir(child.ID)
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	cwd, err := h.makeSessionCwd(child.SessionKey())
+	if err != nil {
 		h.cfg.Logf("handler: branch %s: %v; starting a fresh session", child.ID, err)
 		return false
 	}
@@ -86,7 +89,7 @@ func (h *Handler) originSession(ctx context.Context, convID string) (acp.Session
 	if sid, _, live := h.cfg.Sessions.Live(convID); live {
 		return sid, nil
 	}
-	list, err := h.cfg.Agent.ListSessions(ctx, h.convDir(convID))
+	list, err := h.cfg.Agent.ListSessions(ctx, h.sessionCwd(convID))
 	if err != nil {
 		return "", fmt.Errorf("listing the origin's sessions failed (%v)", err)
 	}

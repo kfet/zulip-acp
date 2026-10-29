@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kfet/acp-kit/convo"
+	"github.com/kfet/acp-kit/origin"
 	"io"
 	"io/fs"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -478,6 +480,16 @@ type Config struct {
 	// Controller, so the caller must not call SetController itself.
 	Commands *command.Broker
 
+	// PerUserSessions is session_scope "thread_user": every sender in
+	// a topic or DM gets their own agent session, keyed by
+	// journal.Conv.SessionKey. A reply @-mentions the user it answers,
+	// and a new message supersedes only its sender's own turn.
+	PerUserSessions bool
+	// AgentCwd is cwd_mode "agent": the cwd sent to the agent is
+	// AgentCwd(key), an opaque placeholder, and never a directory on
+	// this host. Login commands then run in the sender's own scope.
+	AgentCwd bool
+
 	// Updater runs the owner-only `!update` command (acp-kit/update).
 	// Nil leaves `!update` unrecognised.
 	Updater *update.Updater
@@ -606,6 +618,10 @@ type Handler struct {
 	// started a turn in it. A catch-up turn still waiting for a slot
 	// must not supersede a newer live turn.
 	liveTurns sync.Map
+	// userKeys maps a conv-id to the per-user session keys used in it
+	// (session_scope "thread_user"), as a *sync.Map of key → struct{}.
+	// See turnKeys.
+	userKeys sync.Map
 	// appPosts tracks the MCP App link posts still in flight (apps.go).
 	appPosts sync.WaitGroup
 
@@ -1047,8 +1063,8 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 		defer h.advanceMark(m.ID)
 	}
 	if r, ok := h.route(ctx, m, nil); ok {
-		h.liveTurns.Store(r.conv.ID, m.ID)
-		h.startTurn(ctx, r.conv, r.prompt, r.addressed, m.ID)
+		h.liveTurns.Store(r.conv.SessionKey(), m.ID)
+		h.startTurn(origin.With(ctx, r.origin), r.conv, r.prompt, r.addressed, m.ID)
 	}
 }
 
@@ -1057,6 +1073,9 @@ type routed struct {
 	conv      journal.Conv
 	prompt    string
 	addressed bool
+	// origin is the triggering message, sent to the agent in _meta
+	// on every session call of the turn. See originOf.
+	origin origin.Origin
 }
 
 // route applies every gate to m and resolves it to a conversation and
@@ -1258,7 +1277,9 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 		// answer, so it never runs on the abstain path.
 		addressed = true
 	} else {
-		prompt = "[" + m.SenderName + "] " + prompt
+		// Who sent the message is NOT written into the prompt: the
+		// agent gets it as structured origin _meta (originOf).
+		prompt = literalSlash(prompt)
 		// Hydration runs after the conversation exists — it dedupes per
 		// conversation — and before the rename hint, so the relay's own
 		// instruction stays the last thing in the prompt.
@@ -1268,7 +1289,10 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 		}
 	}
 
-	return routed{conv: conv, prompt: prompt, addressed: addressed}, true
+	if h.cfg.PerUserSessions {
+		conv.User, conv.UserName = m.SenderID, m.SenderName
+	}
+	return routed{conv: conv, prompt: prompt, addressed: addressed, origin: h.originOf(m, key, h.mentioned(text))}, true
 }
 
 // renameHint is the one-off instruction appended to the turn that
@@ -1323,8 +1347,9 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 	// is fully unwound and no longer in flight, so `new_session` cannot
 	// cancel the very turn that requested it.
 	entry := &inflightEntry{rename: &pendingRename{anchor: anchorID}, started: h.now()}
+	h.noteUserKey(conv)
 	h.convo.Start(ctx, convo.Job{
-		Conv:  conv.ID,
+		Conv:  conv.SessionKey(),
 		Value: entry,
 		Run: func(pctx context.Context, _ *convo.Turn) error {
 			return h.run(pctx, conv, prompt, addressed, ackMsgID, nil)
@@ -1416,10 +1441,10 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	st := h.beginSchedTurn(token, fired)
 	defer h.endSchedTurn(token, st)
 
-	post := &convPoster{client: h.cfg.Client, key: conv.Key}
+	post := &convPoster{client: h.cfg.Client, key: conv.Key, prefix: h.addressee(conv)}
 	split, err := rollover.New(rollover.Config{
 		Poster:     post,
-		Budget:     h.cfg.Budget,
+		Budget:     prefixedBudget(h.cfg.Budget, post.prefix),
 		SealMarker: h.cfg.SealMarker,
 		ContMarker: h.cfg.ContinuationMarker,
 	})
@@ -1475,7 +1500,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	// Outermost: notices bypass the chain entirely — see noticeRouter.
 	sinkFor = &noticeRouter{next: sinkFor, sink: sink}
 
-	sess, err = h.cfg.Sessions.GetOrCreate(lctx, conv.ID, sinkFor)
+	sess, err = h.cfg.Sessions.GetOrCreate(lctx, conv.SessionKey(), sinkFor)
 	if err != nil {
 		wcancel()
 		_ = split.Close(context.WithoutCancel(ctx), fmt.Sprintf("\n*error: %v*", err))
@@ -1511,7 +1536,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		// Inbound attachments are ingested here, and not at intake, for one
 		// reason: the files go in the conversation's working directory, and
 		// the session is what knows where that is. See inbox.go.
-		note, extra := h.ingestAttachments(ctx, sess.Cwd, text)
+		note, extra := h.ingestAttachments(ctx, h.localDir(conv, sess.Cwd), text)
 		blocks = append([]acp.ContentBlock{acp.TextBlock(text + note)}, extra...)
 	}
 
@@ -1562,7 +1587,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	}
 
 	fctx := context.WithoutCancel(ctx)
-	suffix := h.uploadOutbox(fctx, sess.Cwd)
+	suffix := h.uploadOutbox(fctx, h.localDir(conv, sess.Cwd))
 	// The safety net: an agent that answers with nothing but the
 	// sentinel on a path that could not abstain (an addressed turn)
 	// must not have the sentinel posted verbatim. After the outbox
@@ -2167,7 +2192,13 @@ func (h *Handler) describe(k journal.Key) string {
 // reports whether there was one. `!stop` uses that answer to tell the
 // difference between interrupting something and doing nothing.
 func (h *Handler) cancelInflight(ctx context.Context, convID string) bool {
-	return h.convo.Active().Stop(ctx, convID)
+	stopped := false
+	for _, k := range h.turnKeys(convID) {
+		if h.convo.Active().Stop(ctx, k) {
+			stopped = true
+		}
+	}
+	return stopped
 }
 
 // CancelAll stops every in-flight turn and returns where each one was,
@@ -2178,7 +2209,9 @@ func (h *Handler) CancelAll() []string {
 	ids := h.convo.Active().CancelAll(context.Background())
 	where := map[string]string{}
 	for _, c := range h.cfg.Journal.Convs() {
-		where[c.ID] = h.describe(c.Key)
+		for _, k := range h.turnKeys(c.ID) {
+			where[k] = h.describe(c.Key)
+		}
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -2193,11 +2226,14 @@ func (h *Handler) CancelAll() []string {
 func (h *Handler) Busy() []string {
 	var out []string
 	for _, c := range h.cfg.Journal.Convs() {
-		e := h.inflightOf(c.ID)
-		if e == nil {
-			continue
+		for _, k := range h.turnKeys(c.ID) {
+			t, ok := h.convo.Active().Get(k)
+			if !ok {
+				continue
+			}
+			e := t.Value.(*inflightEntry)
+			out = append(out, fmt.Sprintf("%s (running %s)", h.describe(c.Key), h.now().Sub(e.started).Round(time.Second)))
 		}
-		out = append(out, fmt.Sprintf("%s (running %s)", h.describe(c.Key), h.now().Sub(e.started).Round(time.Second)))
 	}
 	sort.Strings(out)
 	return out
@@ -2213,15 +2249,19 @@ func (h *Handler) WaitCancelled(ctx context.Context) error {
 func (h *Handler) Idle() bool { return h.convo.Active().Len() == 0 }
 
 // isInflight reports whether a turn is running for convID.
-func (h *Handler) isInflight(convID string) bool { return h.convo.Active().Running(convID) }
+func (h *Handler) isInflight(convID string) bool { return h.inflightOf(convID) != nil }
 
 // inflightOf returns the entry of convID's running turn, or nil.
+//
+// With per-user sessions it is the first running turn of any of the
+// conversation's session keys (turnKeys).
 func (h *Handler) inflightOf(convID string) *inflightEntry {
-	t, ok := h.convo.Active().Get(convID)
-	if !ok {
-		return nil
+	for _, k := range h.turnKeys(convID) {
+		if t, ok := h.convo.Active().Get(k); ok {
+			return t.Value.(*inflightEntry)
+		}
 	}
-	return t.Value.(*inflightEntry)
+	return nil
 }
 
 func (h *Handler) setInflight(convID string, e *inflightEntry) {
@@ -2373,9 +2413,15 @@ func spinnerLoop(ctx context.Context, split *rollover.Splitter, sink *streamingS
 type convPoster struct {
 	client Poster
 	key    journal.Key
+	// prefix goes in front of every message posted and every edit:
+	// the @-mention of a per-user session's user (addressee). Empty
+	// for a shared session. The splitter's budget is cut by its
+	// length, so a prefixed message still fits.
+	prefix string
 }
 
 func (p *convPoster) Post(ctx context.Context, content string) (int64, error) {
+	content = p.prefix + content
 	if p.key.IsDM() {
 		return p.client.SendDirectMessage(ctx, p.key.UserIDs, content)
 	}
@@ -2383,7 +2429,7 @@ func (p *convPoster) Post(ctx context.Context, content string) (int64, error) {
 }
 
 func (p *convPoster) Edit(ctx context.Context, id int64, content string) error {
-	return p.client.EditMessage(ctx, id, content)
+	return p.client.EditMessage(ctx, id, p.prefix+content)
 }
 
 // Delete implements rollover.Deleter, which the splitter uses to
@@ -2416,4 +2462,31 @@ func isPassthrough(in, out string) bool {
 // attribution, so only a passthrough turn can start with "/".
 func isSlashPrompt(prompt string) bool {
 	return strings.HasPrefix(prompt, "/")
+}
+
+// literalSlashNote marks prose that a user typed with a leading "/".
+const literalSlashNote = "[relay] The user typed the text below. It is a message, not a command:\n"
+
+// literalSlash keeps a user's own "/x" prose from being run as an
+// agent slash command: the agent runs one only when the prompt STARTS
+// with "/". A real command reaches the agent through the passthrough
+// (`!reload` → `/reload`), never through this path.
+func literalSlash(prompt string) string {
+	if isSlashPrompt(prompt) {
+		return literalSlashNote + prompt
+	}
+	return prompt
+}
+
+// prefixedBudget is the splitter budget left once every message
+// carries prefix. 0 stays 0 (the splitter's default) when there is
+// no prefix.
+func prefixedBudget(budget int, prefix string) int {
+	if prefix == "" {
+		return budget
+	}
+	if budget == 0 {
+		budget = rollover.DefaultBudget
+	}
+	return budget - utf8.RuneCountInString(prefix)
 }

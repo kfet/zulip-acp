@@ -379,10 +379,11 @@ only in how the plan is filled, and every difference is forced:
 - **`ReactionAdd` only.** Un-reacting is not consumed and does not un-branch:
   a branch has created a topic, a conversation and a turn, and none of that is
   undone by removing an emoji.
-- **The prompt names the text's AUTHOR when it is not the reactor.** The
-  `[name]` prefix of a relay prompt means "whose turn this is", which for a
-  branch is whoever branched — so the reaction form would otherwise tell the
-  agent that the reactor said words they never typed. It is a provenance
+- **The prompt says when the text is not the reactor's.** The origin `_meta`
+  of a turn names "whose turn this is", which for a branch is whoever
+  branched — so the reaction form would otherwise tell the agent that the
+  reactor said words they never typed. The clause names nobody: identity
+  reaches the agent only as origin `_meta`. It is a provenance
   question, not a courtesy: `allowed_user_ids` decides whose words may reach
   the model, and one allowlisted tap can spin in a message from somebody the
   allowlist would never have delivered. The clause is omitted when there is

@@ -362,6 +362,8 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
 | `agent_cmd` | `["fir","--mode","acp"]` | agent argv |
 | `state_dir` | `$XDG_STATE_HOME/zulip-acp` | per-conversation cwds + journal |
+| `session_scope` | `thread` | `thread` = one agent session per topic or DM. `thread_user` = one session per (topic, sender). See [Session scope and cwd mode](#session-scope-and-cwd-mode) |
+| `cwd_mode` | `local` | `local` = each session's cwd is a directory under `state_dir`. `agent` = the relay sends an opaque placeholder cwd and the agent picks the real one. See [Session scope and cwd mode](#session-scope-and-cwd-mode) |
 | `session_idle_timeout_seconds` | `1800` | idle session GC |
 | `no_progress_timeout_seconds` | `120` | cut a turn with no agent output **and** no tool activity for this long. Tool calls reset it, so a long-running tool is never cut |
 | `prompt_timeout_seconds` | 7200 | absolute ceiling on one turn, regardless of progress. `0`/unset = 2 hours; a negative value disables the ceiling |
@@ -947,6 +949,45 @@ later, which passes MCP data through ACP (`dev.fir.mcp/v1`). See
 
 Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 `--state-dir`. Set `ZULIP_ACP_DEBUG=1` for protocol-level logging.
+
+
+### Session scope and cwd mode
+
+Every agent call the relay makes — `session/new`, `session/resume`,
+`session/load`, `session/fork` and `session/prompt` — carries the message
+that caused it as origin `_meta` under the key `dev.acp-kit.origin/v1`:
+`platform` (`"zulip"`), `team_id` (the `site`), `user_id`, `channel_id`
+(empty in a DM), `thread_id` (the topic, or the DM key), `message_id`,
+`is_dm` and `is_mention`. The prompt text does not name the sender. A user's
+own text that starts with `/` gets a one-line relay note in front, so that
+the agent does not run it as a slash command.
+
+`session_scope`:
+
+- `thread` (default): one session per topic or DM, shared by everybody in
+  it. A new message supersedes the turn in progress, whoever sent it.
+- `thread_user`: one session per (topic, sender). Each message goes to its
+  sender's session, and each reply starts with an @-mention of the user it
+  answers (not in a one-to-one DM, where there is nobody else). A new message
+  supersedes only its sender's own turn; turns of other users in the same
+  topic continue. `!stop`, `!new`, archive and the reload drain still act on
+  the whole topic. Reactions and scheduled prompts use the topic's shared
+  session. The relay records one streaming message per topic for restart
+  recovery, so after a crash only the newest reply is marked interrupted.
+
+`cwd_mode`:
+
+- `local` (default): each session's cwd is `<state_dir>/convs/<key>` on this
+  host.
+- `agent`: the relay sends the placeholder `/acp-agent-cwd/<key>`, where
+  `<key>` is the session key (the conversation id, plus `-u<user id>` in
+  `thread_user` scope). It is not a path on any host, and the relay never
+  creates it. The agent side maps it to a real directory. Because each session
+  key has its own placeholder, `session/list` and resume still find each
+  conversation's sessions. Inbound attachments and the outbox stay on the
+  relay host under `state_dir`, so an agent on another host gets inbound images
+  only inline. `!login` and the pasted redirect that completes it belong to
+  the sender: one user's pending login does not take another user's message.
 
 ## Running as a service
 

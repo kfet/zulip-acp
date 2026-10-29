@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cwd_mode` config: `agent` sends the opaque placeholder cwd `/acp-agent-cwd/<key>` and lets the agent pick the real directory; `!login` is then the sender's own. `local` (default) keeps today's behaviour.
+- `session_scope` config: `thread_user` gives each sender their own agent session in a topic or DM, addresses each reply to its user, and lets a new message supersede only its sender's turn. `thread` (default) keeps today's behaviour.
+- Origin `_meta` (`dev.acp-kit.origin/v1`, acp-kit v0.38.0) on every session call — new, resume, load, fork and prompt — built from the triggering message.
+
+### Changed
+
+- The prompt no longer starts with `[sender name]`, and a branch prompt no longer names the brancher or the author: the sender reaches the agent only as origin `_meta`. A user's own `/text` gets a relay note in front, so the agent does not run it as a command.
+- acp-kit v0.38.0.
+
 ## [0.65.2] - 2026-10-29
 
 ### Fixed

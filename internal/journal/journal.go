@@ -199,6 +199,13 @@ type Conv struct {
 	// keeps the pre-DM on-disk shape ({"id","stream_id","topic"})
 	// readable and writable unchanged.
 	Key
+	// User and UserName name the human a per-user session serves
+	// (session_scope "thread_user"). They are set per turn by the
+	// relay and are never saved: the journal maps a topic, and one
+	// topic holds the sessions of many users. 0 means the topic's one
+	// shared session.
+	User     int64  `json:"-"`
+	UserName string `json:"-"`
 	// TailID is the message the relay is currently streaming into, or
 	// 0 when no turn is in flight. A non-zero value surviving a
 	// restart means that turn was interrupted.
@@ -1111,3 +1118,13 @@ func (j *Journal) save() error {
 // randomRead is crypto/rand.Read, indirected so the must-helper stays
 // trivially auditable.
 var randomRead = rand.Read
+
+// SessionKey is the acp-kit state manager key of the session that
+// serves this turn: ID for a shared session, or ID plus the user for a
+// per-user session. It is a safe single path component, as ID is.
+func (c Conv) SessionKey() string {
+	if c.User == 0 {
+		return c.ID
+	}
+	return c.ID + "-u" + strconv.FormatInt(c.User, 10)
+}

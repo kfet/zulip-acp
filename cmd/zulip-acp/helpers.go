@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kfet/acp-kit/state"
 	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/updater"
 
@@ -378,4 +379,15 @@ func resolveDeleter(ctx context.Context, cfg *config.Config, me zulipproto.User)
 	}
 	log.Printf("zulip-acp: topic delete (:%s:) is on: %s (user %d) performs it; owners only: %t", cfg.DeleteEmoji(), who.Email, who.UserID, d.GetOwnersOnly())
 	return bot, true, nil
+}
+
+// cwdFor is the state manager's cwd layout. cwd_mode "local" keeps the
+// default (a directory per session under the state dir). cwd_mode
+// "agent" sends the opaque handler.AgentCwd placeholder and creates
+// nothing on this host.
+func cwdFor(cfg *config.Config) state.CwdFor {
+	if !cfg.AgentCwd() {
+		return nil
+	}
+	return func(_, key string) (string, error) { return handler.AgentCwd(key), nil }
 }

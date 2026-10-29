@@ -238,7 +238,7 @@ type branchPlan struct {
 	Channel string
 	// Actor is the person branching — the `!branch` sender, or the
 	// REACTOR for the reaction form. It supplies the seed's @-mention,
-	// the prompt's name prefix and the log line; it is NOT necessarily
+	// the origin _meta and the log line; it is NOT necessarily
 	// the sender of the message the branch hangs off.
 	Actor *zulipproto.Message
 	// Author is who WROTE Text, when that is not the Actor. Empty for
@@ -352,7 +352,12 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 	}
 	h.rememberOwn(conv.ID, seed)
 	h.inheritModel(p.Origin, conv.ID)
-	forked := h.forkBranch(bctx, p.Origin, p.Parent.MessageID, conv)
+	if h.cfg.PerUserSessions && p.Actor.SenderID != 0 {
+		conv.User, conv.UserName = p.Actor.SenderID, p.Actor.SenderName
+	}
+	// The new topic's session calls carry the brancher as origin.
+	ctx = h.withOriginOf(ctx, p.Actor, newKey)
+	forked := h.forkBranch(h.withOriginOf(bctx, p.Actor, newKey), p.Origin, p.Parent.MessageID, conv)
 
 	// The pointer line in the ORIGIN topic. Posted after the branch is
 	// real, so it never points at a topic that was not created; a
@@ -699,9 +704,9 @@ func mentionOf(m *zulipproto.Message) string {
 // The pointer the tool actually uses is the journal's, not this
 // string; this is documentation, and the journal is truth.
 func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
-	m, parent, text := p.Actor, p.Parent, p.Text
+	parent, text := p.Parent, p.Text
 	origin := h.originLink(parent.Key, parent.MessageID)
-	prompt := fmt.Sprintf("[%s] [branched from %s]%s\n%s", senderName(m), origin, h.branchAttribution(p), text)
+	prompt := fmt.Sprintf("[branched from %s]%s\n%s", origin, h.branchAttribution(p), text)
 	if h.cfg.Loopback != nil {
 		if forked {
 			prompt += "\n\n[relay] This topic was branched out of another conversation, and this session is a fork of " +
@@ -722,10 +727,11 @@ func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 // branchAttribution is the clause that keeps the prompt honest about
 // who wrote the text below it.
 //
-// The `[name]` prefix of every relay prompt means "the person whose
-// turn this is", and for a branch that is the person who branched. In
-// the reaction form the TEXT is somebody else's, and saying nothing
-// would tell the agent that the reactor said words they never typed.
+// The origin _meta of every relay turn names "the person whose turn
+// this is", and for a branch that is the person who branched. In the
+// reaction form the TEXT is somebody else's, and saying nothing would
+// tell the agent that the reactor said words they never typed. The
+// clause names nobody: identity reaches the agent only as origin _meta.
 // That is not a nicety: `allowed_user_ids` gates who may put words in
 // front of the model, and one allowlisted tap can spin in a message
 // from somebody the allowlist would never have delivered.
@@ -738,9 +744,9 @@ func (h *Handler) branchAttribution(p branchPlan) string {
 		return ""
 	}
 	if p.Author == h.cfg.BotFullName {
-		return fmt.Sprintf(" [the text below is an earlier message of your own, which %s asked to spin out]", senderName(p.Actor))
+		return " [the text below is an earlier message of your own, which the user asked to spin out]"
 	}
-	return fmt.Sprintf(" [the text below was written by %s, not by %s]", p.Author, senderName(p.Actor))
+	return " [the text below was written by somebody other than the user who branched it]"
 }
 
 // originLink renders the place a branch came from as a Zulip message

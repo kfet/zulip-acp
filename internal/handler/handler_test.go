@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kfet/acp-kit/origin"
 	"io"
 	"os"
 	"path/filepath"
@@ -672,6 +673,8 @@ type fakeAgent struct {
 	setModel              []string
 	setErr                error
 	prompts               []string
+	// origins is the origin _meta each Prompt's context carried.
+	origins []origin.Origin
 	// imageCap is agentCapabilities.promptCapabilities.image, and
 	// promptBlocks records the FULL block list of every prompt —
 	// prompts above keeps only the text, which is exactly what an
@@ -892,6 +895,8 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 		a.mu.Unlock()
 	}()
 	a.prompts = append(a.prompts, blocks[0].Text.Text)
+	o, _ := origin.From(ctx)
+	a.origins = append(a.origins, o)
 	a.promptBlocks = append(a.promptBlocks, slices.Clone(blocks))
 	if d, ok := ctx.Deadline(); ok {
 		a.deadlines = append(a.deadlines, d)
@@ -1292,8 +1297,9 @@ func TestMentionVariants(t *testing.T) {
 		if hh.z.count() != 1 {
 			t.Fatalf("mention form %q was not recognised", form)
 		}
-		// The addressing syntax is stripped; the sender is named.
-		if got := hh.a.prompts[0]; got != "[Kfet] ping" {
+		// The addressing syntax is stripped; the sender is NOT named
+		// (it travels as origin _meta).
+		if got := hh.a.prompts[0]; got != "ping" {
 			t.Fatalf("prompt = %q", got)
 		}
 	}
@@ -1301,7 +1307,7 @@ func TestMentionVariants(t *testing.T) {
 	// than becoming an empty prompt.
 	hh := newHarness(t, newAgent("ok"), nil)
 	hh.deliver(t, "bare", "@**fir-relay**")
-	if got := hh.a.prompts[0]; got != "[Kfet] @**fir-relay**" {
+	if got := hh.a.prompts[0]; got != "@**fir-relay**" {
 		t.Fatalf("bare mention prompt = %q", got)
 	}
 	// With no bot name configured nothing can be a mention.

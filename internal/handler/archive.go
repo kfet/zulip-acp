@@ -608,7 +608,10 @@ func deleteFailed(err error, configured bool) string {
 // collects it. The working directory stays on disk either way.
 func (h *Handler) endSession(ctx context.Context, convID string) {
 	h.cancelInflight(ctx, convID)
-	h.cfg.Sessions.Cancel(ctx, convID)
+	for _, k := range h.turnKeys(convID) {
+		h.cfg.Sessions.Cancel(ctx, k)
+	}
+	h.userKeys.Delete(convID)
 	h.takeReactions(convID)
 	h.dropArchiveArm(convID)
 	h.forgetOwn(convID)

@@ -786,3 +786,12 @@ func TestSetLastOwnRollsBackOnAWriteFailure(t *testing.T) {
 		t.Fatalf("record = %d after a failed write, want the previous 5", got.LastOwnID)
 	}
 }
+
+func TestConvSessionKey(t *testing.T) {
+	if got := (Conv{ID: "c1"}).SessionKey(); got != "c1" {
+		t.Fatalf("shared = %q", got)
+	}
+	if got := (Conv{ID: "c1", User: 8}).SessionKey(); got != "c1-u8" {
+		t.Fatalf("per-user = %q", got)
+	}
+}

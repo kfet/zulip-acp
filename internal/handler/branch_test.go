@@ -238,7 +238,7 @@ func TestBranchPromptCarriesTheBackLink(t *testing.T) {
 		t.Fatalf("prompts = %+v", prompts)
 	}
 	p := prompts[0]
-	if !strings.Contains(p, "[Kfet] [branched from #**fleet>planning@") {
+	if !strings.Contains(p, "[branched from #**fleet>planning@") {
 		t.Fatalf("prompt = %q", p)
 	}
 	if !strings.Contains(p, "rework the splitter") {
@@ -912,7 +912,7 @@ func TestBranchReactionSpinsTheMessageOut(t *testing.T) {
 	// The message's body is the new session's first prompt, attributed
 	// to the reactor and carrying the clamped back-link.
 	prompt := hh.lastPrompt()
-	if !strings.Contains(prompt, "[Ada Lovelace] [branched from #**fleet>planning@"+fmt.Sprint(id)+"**]") {
+	if !strings.Contains(prompt, "[branched from #**fleet>planning@"+fmt.Sprint(id)+"**]") {
 		t.Fatalf("prompt = %q", prompt)
 	}
 	if !strings.Contains(prompt, "it keeps sealing early") {
@@ -1190,8 +1190,8 @@ func TestBranchReactionUnservedChannel(t *testing.T) {
 	}
 }
 
-// TestBranchReactionAttributesTheTextToItsAuthor: the prompt's `[name]`
-// prefix is the person branching, but the text is somebody else's. The
+// TestBranchReactionAttributesTheTextToItsAuthor: the origin _meta
+// is the person branching, but the text is somebody else's. The
 // agent must be told, because `allowed_user_ids` decides whose words
 // reach it — and one allowlisted tap can spin in a message from
 // somebody it would never have delivered.
@@ -1200,7 +1200,7 @@ func TestBranchReactionAttributesTheTextToItsAuthor(t *testing.T) {
 		hh := branchReactHarness(t)
 		id := hh.plant("planning", "rework the splitter", 99, "Grace Hopper")
 		hh.fork(t, humanID, id)
-		if !strings.Contains(hh.lastPrompt(), "written by Grace Hopper, not by Ada Lovelace") {
+		if !strings.Contains(hh.lastPrompt(), "written by somebody other than the user who branched it") {
 			t.Fatalf("prompt = %q", hh.lastPrompt())
 		}
 	})

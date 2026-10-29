@@ -14,6 +14,7 @@ import (
 	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/catchup"
 	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/skills"
 	"github.com/kfet/zulip-acp/internal/sysprompt"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
@@ -464,5 +465,15 @@ func TestResolveDeleter(t *testing.T) {
 func TestNewDeleteBot(t *testing.T) {
 	if _, err := newDeleteBot("https://zulip.example.com", "d@example.com", "k"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCwdFor(t *testing.T) {
+	if cwdFor(&config.Config{}) != nil {
+		t.Fatal("cwd_mode local must keep the default layout")
+	}
+	f := cwdFor(&config.Config{CwdMode: config.CwdModeAgent})
+	if got, err := f("/state", "c1-u8"); err != nil || got != handler.AgentCwd("c1-u8") {
+		t.Fatalf("got %q, %v", got, err)
 	}
 }
