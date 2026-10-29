@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-10-29
+
 ### Added
 
 - `cwd_mode` config: `agent` sends the opaque placeholder cwd `/acp-agent-cwd/<key>` and lets the agent pick the real directory; `!login` is then the sender's own. `local` (default) keeps today's behaviour.
