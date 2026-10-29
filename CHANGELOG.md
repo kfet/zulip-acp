@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.2] - 2026-10-29
+
 ### Fixed
 
 - Delete (`:fire:`) with a `delete` bot that is not an organisation administrator. Zulip's `delete_topic` is admin-only and ignores `can_delete_any_message_group`; on refusal the relay now deletes the topic message by message, which honours that group.
