@@ -356,3 +356,61 @@ func TestDeleteTopicShapes(t *testing.T) {
 		t.Fatalf("err = %v, requests = %d", err, len(ts.requests()))
 	}
 }
+
+// TestDeleteTopicFallback: a refused delete_topic (not an admin) falls
+// back to fetching the topic and deleting each message, until empty.
+func TestDeleteTopicFallback(t *testing.T) {
+	pages := 0
+	ts := newServer(t, func(r recordedReq) (int, string) {
+		switch {
+		case r.method == "POST":
+			return 400, `{"result":"error","msg":"Must be an organization administrator","code":"UNAUTHORIZED_PRINCIPAL"}`
+		case r.method == "GET":
+			pages++
+			if pages == 1 {
+				return 200, okJSON(`"messages":[{"id":7},{"id":9}]`)
+			}
+			return 200, okJSON(`"messages":[]`)
+		}
+		return 200, okJSON("")
+	})
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var del []string
+	for _, r := range ts.requests() {
+		if r.method == "DELETE" {
+			del = append(del, r.path)
+		}
+	}
+	if len(del) != 2 || del[0] != "/api/v1/messages/7" || del[1] != "/api/v1/messages/9" || pages != 2 {
+		t.Fatalf("deletes = %v, pages = %d", del, pages)
+	}
+}
+
+// TestDeleteTopicFallbackShapes: a refused per-message delete is
+// returned, and a topic that never empties is bounded.
+func TestDeleteTopicFallbackShapes(t *testing.T) {
+	refuse := `{"result":"error","msg":"no","code":"BAD_REQUEST"}`
+	ts := newServer(t, func(r recordedReq) (int, string) {
+		if r.method == "GET" {
+			return 200, okJSON(`"messages":[{"id":7}]`)
+		}
+		return 400, refuse
+	})
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); !RejectedByServer(err) {
+		t.Fatalf("err = %v", err)
+	}
+	ts = newServer(t, func(r recordedReq) (int, string) {
+		switch r.method {
+		case "POST":
+			return 400, refuse
+		case "GET":
+			return 200, okJSON(`"messages":[{"id":7}]`)
+		}
+		return 200, okJSON("")
+	})
+	if err := newClient(t, ts).DeleteTopic(context.Background(), 42, "t"); err == nil || RejectedByServer(err) {
+		t.Fatalf("err = %v", err)
+	}
+}

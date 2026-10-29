@@ -768,6 +768,9 @@ bot whose only extra power is to delete messages:
 2. Create a user group that holds only that bot.
 3. Set the organisation setting **who can delete any message**
    (`can_delete_any_message_group`, Zulip 10+) to include that group.
+   Zulip's bulk `delete_topic` endpoint is admin-only, so for a bot that is not
+   an administrator the relay deletes the topic one message at a time with
+   `DELETE /messages/{id}`, which honours this setting.
 4. Put the key in a file with mode `0600`: `install -m 600 /dev/null ~/.config/zulip-acp/delete.key`, then write the key into it.
 5. Add the block to the config:
 
@@ -791,7 +794,7 @@ bot whose only extra power is to delete messages:
 The relay reads the key once at startup and checks it with `GET /users/me`. The
 key is never put in the agent's environment, the system prompt, the state
 directory or a log. The relay uses it ONLY for `delete_topic` on the `:fire:`
-confirmation, with the same arm, expiry and identity rules as an archive. The
+confirmation (and the per-message fallback), with the same arm, expiry and identity rules as an archive. The
 agent has no tool for it. Every delete is logged: who, user id, channel, topic
 and the warning message id.
 

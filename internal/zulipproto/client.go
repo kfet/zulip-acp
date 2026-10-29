@@ -609,11 +609,55 @@ const deleteTopicMaxBatches = 100
 
 // DeleteTopic deletes a whole topic, every message in it, for good.
 //
-// POST /streams/{id}/delete_topic is ORGANISATION-ADMIN only; a bot
-// without that role gets a 4xx, which RejectedByServer reports. The
-// server works in batches and answers complete=false while messages
+// POST /streams/{id}/delete_topic is ORGANISATION-ADMIN only
+// (@require_realm_admin): it does NOT honour can_delete_any_message_group.
+// The server works in batches and answers complete=false while messages
 // remain, so the call is repeated until it says complete.
+//
+// When the server refuses delete_topic (a 4xx: the bot is not an
+// admin), DeleteTopic falls back to DELETE /messages/{id} for every
+// message in the topic. That endpoint DOES honour
+// can_delete_any_message_group, so a delete bot that is only in that
+// group still works. A refusal there is returned as is, and
+// RejectedByServer reports it.
 func (c *Client) DeleteTopic(ctx context.Context, streamID int64, topic string) error {
+	err := c.deleteTopicBulk(ctx, streamID, topic)
+	if err == nil || !RejectedByServer(err) {
+		return err
+	}
+	return c.deleteTopicByMessage(ctx, streamID, topic)
+}
+
+// deleteTopicPage is how many messages one fallback round fetches.
+const deleteTopicPage = 100
+
+// deleteTopicMaxPages bounds the per-message fallback: a topic that
+// still has messages after this many pages is reported, not looped on.
+const deleteTopicMaxPages = 200
+
+// deleteTopicByMessage deletes a topic one message at a time, newest
+// page first, until the narrow is empty.
+func (c *Client) deleteTopicByMessage(ctx context.Context, streamID int64, topic string) error {
+	narrow := TopicNarrow(streamID, topic)
+	for range deleteTopicMaxPages {
+		msgs, err := c.Messages(ctx, narrow, deleteTopicPage, 0)
+		if err != nil {
+			return err
+		}
+		if len(msgs) == 0 {
+			return nil
+		}
+		for _, m := range msgs {
+			if err := c.DeleteMessage(ctx, m.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return fmt.Errorf("zulip: delete topic in channel %d: messages remain after %d pages", streamID, deleteTopicMaxPages)
+}
+
+// deleteTopicBulk is the admin-only POST /streams/{id}/delete_topic loop.
+func (c *Client) deleteTopicBulk(ctx context.Context, streamID int64, topic string) error {
 	path := "/streams/" + strconv.FormatInt(streamID, 10) + "/delete_topic"
 	form := url.Values{"topic_name": {topic}}
 	for range deleteTopicMaxBatches {
@@ -634,11 +678,9 @@ func (c *Client) DeleteTopic(ctx context.Context, streamID int64, topic string) 
 
 // DeleteMessage removes a message the bot posted.
 //
-// It exists for exactly one caller: retiring a superseded `!opts`
-// panel. A panel carrying a widget CANNOT be edited (see zform.go), so
+// It has two callers: retiring a superseded `!opts` panel, and the
+// DeleteTopic fallback (the delete bot, never the relay bot). A panel carrying a widget CANNOT be edited (see zform.go), so
 // deleting it is the only way to keep one live panel per conversation.
-// Nothing else in the relay deletes anything — agent output and human
-// messages are never touched.
 //
 // Whether the bot may delete its own message is a REALM POLICY
 // (delete_own_message_policy) and is additionally time-limited by

@@ -586,11 +586,11 @@ func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, top
 // configured says whether the `delete` block supplied the deleter.
 func deleteFailed(err error, configured bool) string {
 	if zulipproto.RejectedByServer(err) {
-		fix := "Set up the `delete` config block: a second bot that the organisation lets delete messages (can_delete_any_message_group)."
+		fix := "Set up the `delete` config block: a second bot that is an organisation administrator, or that the organisation lets delete any message (can_delete_any_message_group)."
 		if configured {
-			fix = "The delete bot from the `delete` config block is not allowed to: add it to the organisation's can_delete_any_message_group."
+			fix = "The delete bot from the `delete` config block is not allowed to: add it to the organisation's can_delete_any_message_group, or make it an administrator."
 		}
-		return fmt.Sprintf("I ended this conversation, but Zulip refused to delete the topic (%v). %s Nothing was deleted; delete the topic by hand, or react :%s: to archive instead next time.", err, fix, archiveEmoji)
+		return fmt.Sprintf("I ended this conversation, but Zulip refused to delete the topic (%v). %s Some messages may be left, or none deleted; delete the rest by hand, or react :%s: to archive instead next time.", err, fix, archiveEmoji)
 	}
 	return fmt.Sprintf("I ended this conversation, but deleting the topic failed (%v). Nothing was deleted; delete the topic by hand, or leave it — the next message starts a fresh conversation.", err)
 }
