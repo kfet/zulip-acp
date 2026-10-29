@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-10-29
+
 ### Added
 
 - `delete.emoji` sets the emoji that confirms a topic delete (default `fire`). The relay uses it in the pre-reaction, the confirm match, the warning, `!help` and the system prompt, and reserves it from `quick_models`.
