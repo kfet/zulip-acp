@@ -651,22 +651,27 @@ func (z *fakeZulip) count() int {
 // fakeAgent plays the ACP agent: it replays a scripted reply through
 // whatever sink the session manager installed.
 type fakeAgent struct {
-	mu          sync.Mutex
-	sink        client.SessionUpdateSink
-	chunks      []string
-	thoughts    []string
-	meta        map[string]any
-	stop        acp.StopReason
-	err         error
-	model       string
-	models      []client.ModelInfo
-	agentCmds   []client.CommandInfo
-	authMethods []client.AuthMethod
-	authResult  client.AuthResult
-	authErr     error
-	setModel    []string
-	setErr      error
-	prompts     []string
+	mu sync.Mutex
+	// unwind, when set, holds a cancelled blocked prompt open until it
+	// is closed — the agent still unwinding after session/cancel.
+	unwind chan struct{}
+	// inflight and maxInflight count concurrent Prompt calls.
+	inflight, maxInflight int
+	sink                  client.SessionUpdateSink
+	chunks                []string
+	thoughts              []string
+	meta                  map[string]any
+	stop                  acp.StopReason
+	err                   error
+	model                 string
+	models                []client.ModelInfo
+	agentCmds             []client.CommandInfo
+	authMethods           []client.AuthMethod
+	authResult            client.AuthResult
+	authErr               error
+	setModel              []string
+	setErr                error
+	prompts               []string
 	// imageCap is agentCapabilities.promptCapabilities.image, and
 	// promptBlocks records the FULL block list of every prompt —
 	// prompts above keeps only the text, which is exactly what an
@@ -879,13 +884,20 @@ func (a *fakeAgent) promptedBlocks() [][]acp.ContentBlock {
 
 func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
 	a.mu.Lock()
+	a.inflight++
+	a.maxInflight = max(a.maxInflight, a.inflight)
+	defer func() {
+		a.mu.Lock()
+		a.inflight--
+		a.mu.Unlock()
+	}()
 	a.prompts = append(a.prompts, blocks[0].Text.Text)
 	a.promptBlocks = append(a.promptBlocks, slices.Clone(blocks))
 	if d, ok := ctx.Deadline(); ok {
 		a.deadlines = append(a.deadlines, d)
 	}
 	sink, chunks, thoughts, meta := a.sink, a.chunks, a.thoughts, a.meta
-	block, hold, stop, err := a.block, a.hold, a.stop, a.err
+	block, hold, stop, err, unwind := a.block, a.hold, a.stop, a.err, a.unwind
 	streamed := a.streamed
 	during := a.during
 	updates := a.updates
@@ -904,6 +916,9 @@ func (a *fakeAgent) Prompt(ctx context.Context, _ acp.SessionId, blocks []acp.Co
 		select {
 		case <-block:
 		case <-ctx.Done():
+			if unwind != nil {
+				<-unwind
+			}
 			return "", ctx.Err()
 		}
 	}
@@ -3085,6 +3100,53 @@ func TestSupersededTurnReadsAsSuperseded(t *testing.T) {
 	}
 	if strings.Contains(all, "context canceled") {
 		t.Fatalf("raw cancellation leaked to the surface: %q", all)
+	}
+}
+
+// TestSteerWaitsForCancelledTurn is the regression test for a mid-turn
+// message that was never answered: the follow-up's prompt must not reach
+// the agent while it still unwinds the turn the follow-up cancelled. fir
+// queued such a prompt behind the aborted run and answered it with an
+// empty turn, which the relay posted as "(no output)".
+func TestSteerWaitsForCancelledTurn(t *testing.T) {
+	agent := newAgent("the real answer")
+	agent.block = make(chan struct{})
+	agent.unwind = make(chan struct{})
+	hh := newHarness(t, agent, nil)
+	msg := func(text string) zulipproto.Event {
+		return zulipproto.Event{Type: zulipproto.EventMessage, Message: &zulipproto.Message{
+			SenderID: humanID, SenderName: "Kfet", Content: text,
+			StreamID: 4, Topic: "busy", Type: "stream",
+		}}
+	}
+	hh.h.Handle(context.Background(), msg(mention("run a long tool")))
+	<-agent.entered
+	agent.mu.Lock()
+	agent.block = nil
+	agent.mu.Unlock()
+	hh.h.Handle(context.Background(), msg("steer: do this instead"))
+	// A relay that does not wait prompts again at once, while the first
+	// prompt still unwinds; one that waits never does. The bound only
+	// ends the hold for a relay that waits.
+	select {
+	case <-agent.entered:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(agent.unwind)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	agent.mu.Lock()
+	peak, prompts := agent.maxInflight, len(agent.prompts)
+	agent.mu.Unlock()
+	if peak != 1 || prompts != 2 {
+		t.Fatalf("peak concurrent prompts = %d, prompts = %d; want 1 and 2", peak, prompts)
+	}
+	all := strings.Join(hh.z.stored(), "\n")
+	if !strings.Contains(all, "the real answer") || strings.Contains(all, "no output") {
+		t.Fatalf("stored = %q", all)
 	}
 }
 

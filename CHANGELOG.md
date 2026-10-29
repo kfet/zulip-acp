@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A message sent while the agent is mid-turn now gets a real reply. The relay cancelled the running turn and sent the new prompt before the agent had unwound the cancelled one; fir (before 1.44.1) answered it with an empty turn, which the relay posted as `(no output)`. acp-kit 0.37.3 now waits for the agent to answer the cancelled prompt, and runs the new turn only after the old one ends. Use fir 1.44.1 or later.
+
 ## [0.65.0] - 2026-10-29
 
 ### Added
