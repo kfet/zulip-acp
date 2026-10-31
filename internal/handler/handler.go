@@ -604,6 +604,10 @@ type Handler struct {
 	// ownEcho and echoWG serve reactWhenVisible.
 	ownEcho *ownEcho
 	echoWG  sync.WaitGroup
+	// endWG counts the endTurn calls still to come. A turn leaves the
+	// convo Active set BEFORE its endTurn runs, and endTurn writes the
+	// journal, so WaitIdle must wait for it too.
+	endWG sync.WaitGroup
 
 	// catchups tracks the goroutine that starts catch-up turns.
 	catchups sync.WaitGroup
@@ -1348,6 +1352,7 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 	// cancel the very turn that requested it.
 	entry := &inflightEntry{rename: &pendingRename{anchor: anchorID}, started: h.now()}
 	h.noteUserKey(conv)
+	h.endWG.Add(1)
 	h.convo.Start(ctx, convo.Job{
 		Conv:  conv.SessionKey(),
 		Value: entry,
@@ -1374,6 +1379,7 @@ func (h *Handler) startTurnThen(ctx context.Context, conv journal.Conv, prompt s
 // raised for the whole turn, the abstain path included, so the user
 // sees the agent is reading even when it then stays silent.
 func (h *Handler) runTurn(pctx context.Context, cancel context.CancelFunc, conv journal.Conv, entry *inflightEntry, prompt string, addressed bool, ackIDs []int64) {
+	h.endWG.Add(1)
 	go func() {
 		// LIFO: deferred actions the agent asked for are applied only
 		// after the turn is fully unwound and no longer inflight, so
@@ -2295,7 +2301,7 @@ func (h *Handler) clearInflight(_ string, e *inflightEntry) {
 // has already moved past their messages, so a reload that did not wait
 // for them would lose them.
 func (h *Handler) WaitIdle(ctx context.Context) error {
-	started := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		h.catchups.Wait()
 		// A running `!fir` / `!run` posts its answer too, and its
@@ -2304,14 +2310,19 @@ func (h *Handler) WaitIdle(ctx context.Context) error {
 		// Reactions waiting on an echo (see reactWhenVisible); the
 		// echo timeout bounds the wait.
 		h.echoWG.Wait()
-		close(started)
+		// A cancelled ctx is reported by the select below.
+		_ = h.convo.Active().WaitIdle(ctx)
+		// A turn leaves the Active set before its endTurn runs.
+		h.endWG.Wait()
+		// endTurn can start work of its own (a deferred loopback action).
+		done <- h.convo.Active().WaitIdle(ctx)
 	}()
 	select {
-	case <-started:
+	case err := <-done:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return h.convo.Active().WaitIdle(ctx)
 }
 
 // --- background loops ----------------------------------------------------

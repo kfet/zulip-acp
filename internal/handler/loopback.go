@@ -459,6 +459,7 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	}
 	// See handleMessage: endTurn runs after the turn has left the
 	// inflight map, never before.
+	h.endWG.Add(1)
 	defer h.endTurn(conv, entry)
 	defer h.clearInflight(conv.ID, entry)
 
@@ -496,7 +497,10 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // is the fail-safe direction — nothing is reset — and the user's next
 // `!new` does what they wanted anyway; carrying a rename through would
 // mean tracking identity across a turn for one vanishingly rare case.
+//
+// Every caller adds one to h.endWG first; endTurn marks it done.
 func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
+	defer h.endWG.Done()
 	// The topic may have moved since the turn started — markBusy
 	// unresolves it — so act on the topic as it is now.
 	if cur, ok := h.cfg.Journal.LookupID(conv.ID); ok {

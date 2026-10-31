@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -576,7 +577,54 @@ func TestDeferredNewSessionAppliesAfterTheTurn(t *testing.T) {
 
 func TestEndTurnWithoutLoopbackIsANoOp(t *testing.T) {
 	hh := cmdHarness(t, newAgent("ok"), nil)
+	hh.h.endWG.Add(1)
 	hh.h.endTurn(journal.Conv{ID: "c1", Key: journal.Channel(4, "t")}, nil)
+}
+
+// TestWaitIdleWaitsForEndTurn is the regression: a turn leaves the
+// convo Active set before its endTurn runs, so WaitIdle returned while
+// endTurn still wrote the journal, and a test's TempDir cleanup failed
+// with "directory not empty".
+func TestWaitIdleWaitsForEndTurn(t *testing.T) {
+	reached, release := make(chan struct{}), make(chan struct{})
+	var ended atomic.Bool
+	hh := cmdHarness(t, newAgent("ok"), func(c *Config) {
+		c.OnTurnEnd = func(string) {
+			close(reached)
+			<-release
+			ended.Store(true)
+		}
+	})
+	hh.h.Handle(context.Background(), channelEvent(humanID, "t", mention("hi")))
+	<-reached
+	got := make(chan bool)
+	go func() {
+		_ = hh.h.WaitIdle(context.Background())
+		got <- ended.Load()
+	}()
+	close(release)
+	if !<-got {
+		t.Fatal("WaitIdle returned before endTurn finished")
+	}
+}
+
+func TestWaitIdleCancelledDuringEndTurn(t *testing.T) {
+	reached, release := make(chan struct{}), make(chan struct{})
+	hh := cmdHarness(t, newAgent("ok"), func(c *Config) {
+		c.OnTurnEnd = func(string) {
+			close(reached)
+			<-release
+		}
+	})
+	hh.h.Handle(context.Background(), channelEvent(humanID, "t", mention("hi")))
+	<-reached
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := hh.h.WaitIdle(ctx); err == nil {
+		t.Fatal("WaitIdle ignored a cancelled context")
+	}
+	close(release)
+	hh.idle(t)
 }
 
 // callTool invokes a relaytool tool by name, the way mcphost would.

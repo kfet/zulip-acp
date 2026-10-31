@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Handler.WaitIdle` now waits for the end-of-turn work too. A turn left the active set before that work wrote the journal, so a test could end while the journal was still being written (the v0.66.1 release build failed this way).
+
 ## [0.66.1] - 2026-10-31
 
 ### Fixed
