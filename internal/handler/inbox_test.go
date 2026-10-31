@@ -960,8 +960,13 @@ func TestInboundByteBudgetIsChargedAfterDownscaling(t *testing.T) {
 	a := newAgent("ok")
 	a.imageCap = true
 	hh := inboxHarness(t, a, func(c *Config) { c.MaxInlineImagePixels = 256 })
+	// A smaller cap keeps the image small: a 5 MiB noise image is too
+	// slow to decode and downscale under -race on a loaded host.
+	saved := inlineImageMax
+	inlineImageMax = 1 << 20
+	t.Cleanup(func() { inlineImageMax = saved })
 	// Noise, so the PNG cannot compress its way under the cap.
-	big := noisePNG(t, 1600, 1200)
+	big := noisePNG(t, 800, 600)
 	if len(big) <= inlineImageMax {
 		t.Fatalf("test image is only %d bytes, not over the %d inline cap", len(big), inlineImageMax)
 	}

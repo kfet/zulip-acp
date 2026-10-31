@@ -52,6 +52,10 @@ type fakeZulip struct {
 	// which happens after the placeholder has already gone up.
 	sendHook func(content string) error
 	editErr  error
+	// liveHistory makes Messages read the stored messages, not history.
+	liveHistory bool
+	// editErrFor fails the edit of one message id only.
+	editErrFor int64
 	// editN counts every successful EditMessage. Quiet mode is a claim
 	// about HOW MANY edits a turn costs, so it needs a counter, not a
 	// body comparison.
@@ -169,12 +173,21 @@ func (z *fakeZulip) oldestCalls() int {
 // Messages plays GET /messages. It answers the whole canned history —
 // the narrow is recorded rather than applied, because what the tests
 // assert is which narrow the relay ASKED for.
-func (z *fakeZulip) Messages(_ context.Context, narrow []zulipproto.NarrowTerm, _ int, _ int64) ([]zulipproto.Message, error) {
+func (z *fakeZulip) Messages(_ context.Context, narrow []zulipproto.NarrowTerm, limit int, _ int64) ([]zulipproto.Message, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	z.narrows = append(z.narrows, narrow)
 	if z.historyErr != nil {
 		return nil, z.historyErr
+	}
+	if z.liveHistory {
+		// The newest limit messages the relay posted, oldest first, as
+		// the server returns them. The narrow is not applied.
+		var out []zulipproto.Message
+		for _, id := range z.order[max(0, len(z.order)-limit):] {
+			out = append(out, zulipproto.Message{ID: id})
+		}
+		return out, nil
 	}
 	return append([]zulipproto.Message(nil), z.history...), nil
 }
@@ -353,6 +366,9 @@ func (z *fakeZulip) EditMessage(_ context.Context, id int64, content string) err
 	defer z.mu.Unlock()
 	if z.editErr != nil {
 		return z.editErr
+	}
+	if id != 0 && id == z.editErrFor {
+		return errors.New("edit limit")
 	}
 	if z.widgets[id] != "" {
 		return &zulipproto.APIError{Status: 400, Msg: "Widgets cannot be edited.", Code: "BAD_REQUEST"}

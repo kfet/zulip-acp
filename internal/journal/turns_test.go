@@ -22,6 +22,8 @@ func TestTurnLeafMapsMessagesToTheirTurn(t *testing.T) {
 		{PromptID: 50, ReplyID: 51},                               // no leaf: ignored
 		{Leaf: "e"},                                               // no message: ignored
 		{PromptID: 60, Leaf: strings.Repeat("x", MaxLeafBytes+1)}, // not an id: ignored
+		{ReplyID: 70, Leaf: "f"},
+		{ReplyID: 70, Leaf: "g"}, // a repeat edited into the same message: the newer turn wins
 	} {
 		if err := j.RecordTurn(c.ID, tr); err != nil {
 			t.Fatal(err)
@@ -36,7 +38,7 @@ func TestTurnLeafMapsMessagesToTheirTurn(t *testing.T) {
 		want string
 	}{
 		{9, ""}, {10, "a"}, {11, "a"}, {15, "a"}, {20, "b"}, {25, "b"},
-		{30, "c"}, {39, "c"}, {40, "d"}, {51, "d"}, {99, "d"},
+		{30, "c"}, {39, "c"}, {40, "d"}, {51, "d"}, {69, "d"}, {70, "g"}, {99, "g"},
 	} {
 		if got := j2.TurnLeaf(c.ID, x.msg); got != x.want {
 			t.Errorf("TurnLeaf(%d) = %q, want %q", x.msg, got, x.want)

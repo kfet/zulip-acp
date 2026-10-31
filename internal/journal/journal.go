@@ -387,6 +387,10 @@ type Heartbeat struct {
 	MsgID int64 `json:"msg_id"`
 	// Count is how many checks the message reports.
 	Count int `json:"count"`
+	// Hash is set when MsgID is a scheduled ANSWER, not a heartbeat
+	// line: the normalised hash of that answer. A later fire with the
+	// same hash edits the message instead of posting a new one.
+	Hash string `json:"hash,omitempty"`
 }
 
 const currentVersion = 1
@@ -854,7 +858,7 @@ func (j *Journal) TurnLeaf(convID string, msgID int64) string {
 	}
 	leaf, best := "", int64(0)
 	for _, t := range c.Turns {
-		if s := t.start(); s <= msgID && s > best {
+		if s := t.start(); s > 0 && s <= msgID && s >= best {
 			leaf, best = t.Leaf, s
 		}
 	}

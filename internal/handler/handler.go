@@ -1558,7 +1558,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		wcancel()
 		if perr != nil {
 			sink.flushThought()
-			return h.failTurn(lctx, conv, split, perr)
+			return h.failTurn(lctx, conv, split, sink, post.prefix, sched, perr)
 		}
 		if res.Abstained {
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
@@ -1576,7 +1576,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		wcancel()
 		if err != nil {
 			sink.flushThought()
-			return h.failTurn(lctx, conv, split, err)
+			return h.failTurn(lctx, conv, split, sink, post.prefix, sched, err)
 		}
 		// The bound covers the prompt and nothing after it. Disarming
 		// here rather than only on the deferred path keeps the clock
@@ -1608,6 +1608,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	// BEFORE Close flushes, so the body the end-of-turn repost copies
 	// already carries it. Close then has nothing of its own to append.
 	split.Append(suffix)
+	hash := repeatHash(sink.messageText() + suffix)
 	pending := h.Schedules(token)
 	sink.setSchedMarker(h.schedMarker(st, pending))
 	sink.maybeAppendFooter()
@@ -1621,6 +1622,12 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	}
 	if cerr != nil {
 		h.rescue(fctx, post, split.Transcript(), cerr)
+	} else if kept := h.collapseRepeat(fctx, conv, split, post.prefix, sched, hash); kept != 0 {
+		// The same answer as the last fire: the old message took the
+		// new text, and it is the one that carries the reaction and
+		// keys the turn.
+		replyID = kept
+		h.markArmed(fctx, st, pending, kept)
 	} else {
 		// Record the chain BEFORE the repost, which may replace the
 		// ids and does its own tracking. In quiet mode this is the
@@ -1632,6 +1639,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		// After the repost, which replaces the message ids: the
 		// reaction must sit on the message that stays.
 		h.markArmed(fctx, st, pending, split.TailID())
+		h.recordAnswer(sched, split.TailID(), hash)
 	}
 	h.recordTurn(conv.ID, msgID, replyID, leaf)
 	h.clearTail(conv.ID)
@@ -1756,7 +1764,10 @@ func (h *Handler) rescue(ctx context.Context, post *convPoster, transcript strin
 // sentinel — so classifying on the returned error alone is exactly how
 // a wedged turn came to surface as a bare, meaningless "*error: context
 // deadline exceeded*".
-func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollover.Splitter, cause error) error {
+//
+// A scheduled turn (sched non-nil) that fails the same way as its last
+// fire edits that message instead of posting again (collapseRepeat).
+func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollover.Splitter, sink *streamingSink, prefix string, sched *schedule.Item, cause error) error {
 	suffix := fmt.Sprintf("\n\n*error: %v*", cause)
 	switch c := context.Cause(ctx); {
 	case errors.Is(c, client.ErrNoProgress):
@@ -1775,6 +1786,11 @@ func (h *Handler) failTurn(ctx context.Context, conv journal.Conv, split *rollov
 	fctx := context.WithoutCancel(ctx)
 	if err := split.Close(fctx, suffix); err != nil {
 		h.cfg.Logf("handler: reporting error into %s: %v", conv.ID, err)
+	} else if sched != nil {
+		hash := repeatHash(sink.messageText() + suffix)
+		if h.collapseRepeat(fctx, conv, split, prefix, sched, hash) == 0 {
+			h.recordAnswer(sched, split.TailID(), hash)
+		}
 	}
 	h.clearTail(conv.ID)
 	return cause

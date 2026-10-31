@@ -98,12 +98,17 @@ const (
 const (
 	// maxAttachments bounds how many files one message can pull in.
 	maxAttachments = 10
-	// inlineImageMax bounds an image sent as a ContentBlock::Image, in
-	// bytes before base64, and is measured on the DOWNSCALED copy.
-	// Anything still bigger is on disk and named — the agent reads it
-	// from there instead of carrying ~1.4x its size through the
-	// prompt.
-	inlineImageMax = 5 << 20
+)
+
+// inlineImageMax bounds an image sent as a ContentBlock::Image, in
+// bytes before base64, and is measured on the DOWNSCALED copy.
+// Anything still bigger is on disk and named — the agent reads it
+// from there instead of carrying ~1.4x its size through the
+// prompt. It is a variable only so that a test can lower it: a
+// noise image over 5 MiB is too slow to downscale under -race.
+var inlineImageMax = 5 << 20
+
+const (
 	// inlineTotalMax bounds what ONE message may inline in total. The
 	// per-image cap alone is not enough: ten images each just under it
 	// would still assemble a prompt an order of magnitude larger than

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `TestInboundByteBudgetIsChargedAfterDownscaling` no longer times out under `-race` on a loaded host: it lowers the inline cap and uses a smaller image.
+- A repeating schedule that gives the same answer on each fire (for example a provider error) no longer posts a new message each time. It edits its last answer, with a "×N · last HH:MM" note, while that answer is still the newest message.
+
 ## [0.66.0] - 2026-10-29
 
 ### Added
