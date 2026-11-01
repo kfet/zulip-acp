@@ -898,3 +898,26 @@ func TestReactSettle(t *testing.T) {
 		t.Fatal("negative accepted")
 	}
 }
+
+func TestGetPublicURL(t *testing.T) {
+	c := &Config{Site: "https://internal.example"}
+	if got := c.GetPublicURL(); got != "https://internal.example" {
+		t.Fatalf("default: %q", got)
+	}
+	c.PublicURL = " https://zulip.example.com/ "
+	if got := c.GetPublicURL(); got != "https://zulip.example.com/" {
+		t.Fatalf("set: %q", got)
+	}
+}
+
+func TestGetSiteAliasesAddsPublicURL(t *testing.T) {
+	c := &Config{SiteAliases: []string{"a.example.com"}}
+	if got := c.GetSiteAliases(); len(got) != 1 {
+		t.Fatalf("unset: %v", got)
+	}
+	c.PublicURL = "https://zulip.example.com/"
+	got := c.GetSiteAliases()
+	if len(got) != 2 || got[1] != "https://zulip.example.com/" || len(c.SiteAliases) != 1 {
+		t.Fatalf("set: %v", got)
+	}
+}

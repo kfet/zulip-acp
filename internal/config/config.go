@@ -123,6 +123,13 @@ type Config struct {
 	// Entries may be bare hosts ("zulip.example.com", with an optional
 	// :port) or full URLs; only the host part is used.
 	SiteAliases []string `json:"site_aliases,omitempty"`
+
+	// PublicURL is the realm root that humans open, e.g.
+	// https://zulip.example.com/. Set it when Site is an internal name
+	// (a Tailscale or LAN host) that a phone outside that network
+	// cannot reach. Links the agent gives to humans use it. Unset
+	// means Site.
+	PublicURL string `json:"public_url,omitempty"`
 	// BotEmail and BotAPIKey are the bot's HTTP Basic credentials.
 	BotEmail  string `json:"bot_email,omitempty"`
 	BotAPIKey string `json:"bot_api_key,omitempty"`
@@ -897,6 +904,25 @@ func (c *Config) GetArchiveChannel() string {
 		return DefaultArchiveChannel
 	}
 	return strings.TrimSpace(*c.ArchiveChannel)
+}
+
+// GetPublicURL returns the realm root that humans open: PublicURL
+// when set, else Site.
+func (c *Config) GetPublicURL() string {
+	if u := strings.TrimSpace(c.PublicURL); u != "" {
+		return u
+	}
+	return c.Site
+}
+
+// GetSiteAliases returns SiteAliases plus PublicURL when set: a link
+// copied from the public name is ours too.
+func (c *Config) GetSiteAliases() []string {
+	out := append([]string(nil), c.SiteAliases...)
+	if u := strings.TrimSpace(c.PublicURL); u != "" {
+		out = append(out, u)
+	}
+	return out
 }
 
 // GetInboundAttachments reports whether the relay downloads the files

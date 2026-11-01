@@ -677,7 +677,7 @@ func main() {
 		DeleteEmoji:        cfg.DeleteEmoji(),
 
 		Site:                    cfg.Site,
-		SiteAliases:             cfg.SiteAliases,
+		SiteAliases:             cfg.GetSiteAliases(),
 		InboundAttachments:      cfg.GetInboundAttachments(),
 		MaxAttachmentBytes:      cfg.MaxAttachmentBytes,
 		MaxAttachmentTotalBytes: cfg.MaxAttachmentTotalBytes,

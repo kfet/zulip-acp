@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `public_url` config key: the realm root that humans open. The widget link in the system prompt uses it, not the internal `site`, and upload links on its host are accepted.
+
 ## [0.67.0] - 2026-11-01
 
 ### Added

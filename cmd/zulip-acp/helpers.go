@@ -155,7 +155,7 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	builtin = gateWidgets(builtin, cfg.Widgets)
 	widgetsSite := ""
 	if cfg.Widgets {
-		widgetsSite = cfg.Site
+		widgetsSite = cfg.GetPublicURL()
 	}
 	dir := config.DefaultConfigDir()
 	if cfgPath != "" {

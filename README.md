@@ -353,6 +353,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 |---|---|---|
 | `site` | — | Zulip base URL. Env: `ZULIP_SITE` |
 | `site_aliases` | `[]` | other host names the same realm answers to, so an upload link copied from a browser on one of them is still recognised as ours. Bare hosts or full URLs |
+| `public_url` | `site` | realm root that humans open, e.g. `https://zulip.example.com/`. Set it when `site` is an internal name a phone cannot reach. The widget link in the system prompt uses it, and its host counts as a `site_aliases` entry |
 | `bot_email` | — | bot's Zulip email. Env: `ZULIP_EMAIL` |
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
 | `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |

@@ -500,3 +500,13 @@ func TestSystemPromptProvider_WidgetsGate(t *testing.T) {
 		}
 	}
 }
+
+// The widget link must point at the realm humans open, not the
+// internal name the relay dials.
+func TestSystemPromptProviderWidgetsUsesPublicURL(t *testing.T) {
+	got := systemPromptProvider("", &config.Config{Site: "https://internal.example",
+		PublicURL: "https://zulip.example.com/", Widgets: true, StateDir: t.TempDir()})()
+	if !strings.Contains(got, "zulip.example.com") || strings.Contains(got, "internal.example") {
+		t.Fatalf("widget link not public_url: %s", got)
+	}
+}
