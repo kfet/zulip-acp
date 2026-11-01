@@ -923,7 +923,23 @@ none of its own. See *The topic status mark*.
 
 ### The topic status mark (`topic_status`)
 
-On by default. A channel topic WITHOUT Zulip's `✔ ` prefix has live agent
+Two modes. The default, `"emoji"`, changes only a prefix on the topic name:
+`status_busy` (⧗ U+29D7) while a turn runs, `status_question` (⁇ U+2047)
+while the agent waits for the user, and no prefix while idle. A pending
+schedule alone shows no prefix. The agent sets "waits for the user" with the
+`topic_status` loopback tool; the state is per turn, defaults to done, and is
+applied by `endTurn`, never mid-turn. A turn that posts no answer (the silent
+sentinel) keeps the earlier state. Both default glyphs have no emoji
+presentation in Unicode, so every client draws them in the text colour.
+
+Measured on Zulip 12.2 before this mode became the default: a plain topic
+move with both notification flags `false` posts NO Notification Bot notice,
+and a user who follows the topic still follows it under the new name.
+`journal.SetStatusPrefixes` makes `BaseTopic` strip the glyphs, so a status
+change never changes a conversation's identity.
+
+The `"resolve"` mode is the earlier behaviour, below, kept for users who
+filter on `is:resolved`. A channel topic WITHOUT Zulip's `✔ ` prefix has live agent
 work; a topic WITH it is idle. The relay resolves a topic when no turn runs in
 it and no schedule is pending there, and unresolves it when a turn starts
 (before anything is posted) or when a schedule is armed outside a turn. A

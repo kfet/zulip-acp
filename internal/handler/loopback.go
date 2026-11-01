@@ -514,9 +514,16 @@ func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
 	// conversation and forgets its messages, and the fresh one has
 	// none of its own yet to move the topic by.
 	anchor := h.cachedOwn(conv.ID)
+	// A turn that retracted its own answer leaves no message of the
+	// relay's to move the topic by; the turn's trigger is the next
+	// best one. settleStatus checks that it is still in the topic.
+	if anchor == 0 && entry != nil && entry.rename != nil {
+		anchor = entry.rename.anchor
+	}
 	if h.cfg.Loopback != nil {
 		h.cfg.Loopback.EndTurn(conv.Key.Token())
 	}
+	h.noteTurnStatus(conv, entry)
 	// After the rename and the loopback drain, so the mark is set on
 	// the final topic and sees any schedule the turn left armed.
 	h.settleStatusKey(conv.Key.Token(), anchor)

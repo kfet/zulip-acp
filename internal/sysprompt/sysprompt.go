@@ -137,8 +137,23 @@ func widgetsInstruction(site string) string {
 // deleteEmoji is the emoji that confirms a topic delete; "" means the
 // default :fire: that Base names.
 // widgetsSite is the realm root URL when inline widgets are on, else "".
-func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji, widgetsSite string) string {
-	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel)+widgetsInstruction(widgetsSite), extra, disabled, catalog)
+// topicStatus adds the `topic_status` tool note; pass it only when the
+// relay offers that tool.
+func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji, widgetsSite string, topicStatus bool) string {
+	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel)+widgetsInstruction(widgetsSite)+topicStatusInstruction(topicStatus), extra, disabled, catalog)
+}
+
+// TopicStatusInstruction tells the agent when to call the relay's
+// `topic_status` tool. The relay sees on its own that a turn runs; only
+// the agent knows that its answer waits for the user.
+const TopicStatusInstruction = "\n\nBefore you end a turn that asks the user a question, asks them to decide, or offers choice reactions, call the relay `topic_status` tool with state=needs_input, so the topic list shows that the topic waits for them. Do not call it otherwise."
+
+// topicStatusInstruction returns TopicStatusInstruction when on.
+func topicStatusInstruction(on bool) string {
+	if !on {
+		return ""
+	}
+	return TopicStatusInstruction
 }
 
 // withDeleteEmoji returns Base with the configured delete emoji in

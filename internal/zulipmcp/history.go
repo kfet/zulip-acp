@@ -111,6 +111,11 @@ type Config struct {
 	// conversation is the Handler's, because it needs Zulip and the
 	// journal.
 	React func(sessionKey string, msgID int64, emoji string) error
+	// TopicStatus records, for the turn running in the conversation the
+	// session key names, whether it waits for the user. Optional: nil
+	// means the relay shows no glyph status, and the tool is not
+	// offered at all. The tool has validated the state.
+	TopicStatus func(sessionKey, state string) (string, error)
 	// Timeout bounds one Zulip round-trip. The agent's turn is blocked
 	// until the tool call returns, so an unbounded fetch would let one
 	// wedged request hang the turn forever.
@@ -219,6 +224,15 @@ type Child struct {
 
 // Tools builds the tool set as data.
 func (t *Tools) Tools() []Tool {
+	tools := t.coreTools()
+	if t.cfg.TopicStatus != nil {
+		tools = append(tools, t.topicStatusTool())
+	}
+	return tools
+}
+
+// coreTools is every tool the relay always offers.
+func (t *Tools) coreTools() []Tool {
 	return []Tool{{
 		Name: ToolHistory,
 		Description: "Read earlier messages of THIS conversation, oldest first, as raw markdown — " +

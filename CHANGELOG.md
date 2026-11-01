@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `topic_status` loopback tool: the agent marks a turn that waits for the user (`needs_input`), and the topic shows `status_question` until the next answered turn.
+
+### Changed
+
+- `topic_status` now takes `"emoji"` (the new default), `"resolve"` or `"off"`. The default puts a monochrome glyph in front of the topic name (`status_busy` ⧗ while a turn runs, `status_question` ⁇ while the agent waits) instead of resolving idle topics, so Notification Bot no longer posts a "marked as resolved" notice per turn. `"resolve"` keeps the old behaviour; `true`/`false` still load.
+
+### Fixed
+
+- The topic status now settles after a turn that retracted its own answer: the turn's trigger is the move anchor when the relay has no message of its own left.
+
 ## [0.68.0] - 2026-11-01
 
 ### Added

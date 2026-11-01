@@ -6,7 +6,7 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	got := Resolve("", false, "", "", false, "", "")
+	got := Resolve("", false, "", "", false, "", "", false)
 	if !strings.Contains(got, "Zulip") {
 		t.Fatalf("built-in block missing: %q", got)
 	}
@@ -28,34 +28,34 @@ func TestResolve(t *testing.T) {
 		t.Fatal("system prompt must document the inbox convention")
 	}
 
-	withExtra := Resolve("You are the ops bot.", false, "", "", false, "", "")
+	withExtra := Resolve("You are the ops bot.", false, "", "", false, "", "", false)
 	if !strings.Contains(withExtra, "You are the ops bot.") || !strings.Contains(withExtra, "Zulip") {
 		t.Fatalf("extra text not composed: %q", withExtra)
 	}
-	if Resolve("anything", true, "", "", false, "", "") != "" {
+	if Resolve("anything", true, "", "", false, "", "", false) != "" {
 		t.Fatal("disabled injection must produce nothing")
 	}
-	withCatalog := Resolve("", false, "<available_skills>x</available_skills>", "", false, "", "")
+	withCatalog := Resolve("", false, "<available_skills>x</available_skills>", "", false, "", "", false)
 	if !strings.Contains(withCatalog, "available_skills") {
 		t.Fatalf("catalog not composed: %q", withCatalog)
 	}
 }
 
 func TestSentinelInstruction(t *testing.T) {
-	if got := Resolve("", false, "", "", false, "", ""); strings.Contains(got, "ambiently") {
+	if got := Resolve("", false, "", "", false, "", "", false); strings.Contains(got, "ambiently") {
 		t.Fatalf("no sentinel must produce no abstain instruction: %q", got)
 	}
-	got := Resolve("", false, "", "<<SILENT>>", false, "", "")
+	got := Resolve("", false, "", "<<SILENT>>", false, "", "", false)
 	if !strings.Contains(got, "<<SILENT>>") || !strings.Contains(got, "ambiently") {
 		t.Fatalf("instruction = %q", got)
 	}
 }
 
 func TestReactionInstruction(t *testing.T) {
-	if got := Resolve("", false, "", "<<SILENT>>", false, "", ""); strings.Contains(got, "[reaction]") {
+	if got := Resolve("", false, "", "<<SILENT>>", false, "", "", false); strings.Contains(got, "[reaction]") {
 		t.Fatalf("reactions off must produce no reaction note: %q", got)
 	}
-	got := Resolve("", false, "", "<<SILENT>>", true, "", "")
+	got := Resolve("", false, "", "<<SILENT>>", true, "", "", false)
 	// The wire shape, so the agent recognises a reaction turn at all.
 	for _, want := range []string{
 		"Emoji reactions:",
@@ -90,7 +90,7 @@ func TestReactionInstruction(t *testing.T) {
 	// With no sentinel the agent cannot decline, so the instruction
 	// must not tell it to emit one — it must ask for the smallest
 	// possible reply instead.
-	noSentinel := Resolve("", false, "", "", true, "", "")
+	noSentinel := Resolve("", false, "", "", true, "", "", false)
 	if !strings.Contains(noSentinel, "no way to suppress a reply") ||
 		!strings.Contains(noSentinel, "single short line") {
 		t.Fatalf("sentinel-less guidance = %q", noSentinel)
@@ -120,10 +120,10 @@ func TestBaseLinkRule(t *testing.T) {
 }
 
 func TestResolveDeleteEmoji(t *testing.T) {
-	if got := Resolve("", false, "", "", false, "", ""); !strings.Contains(got, ":fire:") {
+	if got := Resolve("", false, "", "", false, "", "", false); !strings.Contains(got, ":fire:") {
 		t.Fatal("default prompt must name :fire:")
 	}
-	got := Resolve("", false, "", "", false, "bomb", "")
+	got := Resolve("", false, "", "", false, "bomb", "", false)
 	if strings.Contains(got, ":fire:") || !strings.Contains(got, ":bomb: on that same warning") {
 		t.Fatalf("custom delete emoji not rendered:\n%s", got)
 	}
@@ -132,13 +132,22 @@ func TestResolveDeleteEmoji(t *testing.T) {
 // TestWidgets pins the gate: no widget note unless a site is given,
 // and the fallback link points at the realm root with one slash.
 func TestWidgets(t *testing.T) {
-	if got := Resolve("", false, "", "", false, "", ""); strings.Contains(got, "widget-html") {
+	if got := Resolve("", false, "", "", false, "", "", false); strings.Contains(got, "widget-html") {
 		t.Fatal("widget note present with widgets off")
 	}
-	got := Resolve("", false, "", "", false, "", "https://chat.example.com/")
+	got := Resolve("", false, "", "", false, "", "https://chat.example.com/", false)
 	for _, want := range []string{"Inline widgets:", "````spoiler 🧩 Interactive widget: open in the web app", "(https://chat.example.com/)", "zlite-widget height=N", "widget-data", "Only bot", "NO network", "10000", "src=", "`widgets` skill"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("widget note missing %q", want)
 		}
+	}
+}
+
+func TestResolveTopicStatus(t *testing.T) {
+	if strings.Contains(Resolve("", false, "", "", false, "", "", false), "topic_status") {
+		t.Fatal("topic_status note without the tool")
+	}
+	if !strings.Contains(Resolve("", false, "", "", false, "", "", true), TopicStatusInstruction) {
+		t.Fatal("topic_status note missing")
 	}
 }

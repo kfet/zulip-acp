@@ -167,7 +167,7 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 		// this relay actually arms, so the agent knows the window
 		// before it picks a poll interval.
 		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
-			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji(), widgetsSite),
+			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji(), widgetsSite, cfg.OffersTopicStatus()),
 			kit.LivenessNote(cfg.NoProgressTimeout()), "")
 	}
 }
@@ -414,4 +414,25 @@ func cwdFor(cfg *config.Config) state.CwdFor {
 		return nil
 	}
 	return func(_, key string) (string, error) { return handler.AgentCwd(key), nil }
+}
+
+// statusModeOf maps the config's topic status mode to the handler's.
+func statusModeOf(m config.TopicStatusMode) handler.StatusMode {
+	switch m {
+	case config.TopicStatusResolve:
+		return handler.StatusResolve
+	case config.TopicStatusEmoji:
+		return handler.StatusEmoji
+	}
+	return handler.StatusOff
+}
+
+// topicStatusHook is zulipmcp.Config.TopicStatus: h's SetTopicStatus
+// when the relay offers the tool, else nil, so the agent is not offered
+// a tool that does nothing.
+func topicStatusHook(cfg *config.Config, h *handler.Handler) func(string, string) (string, error) {
+	if !cfg.OffersTopicStatus() {
+		return nil
+	}
+	return h.SetTopicStatus
 }

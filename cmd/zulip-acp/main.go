@@ -363,6 +363,13 @@ func main() {
 		}
 	}
 
+	// Before the journal opens: its index is built on BaseTopic, which
+	// must already strip the status glyphs. In EVERY mode, and with the
+	// defaults too: a topic left as "⁇ foo" must stay the conversation
+	// "foo" after the operator changes the mode or the glyphs.
+	statusMode := statusModeOf(cfg.GetTopicStatus())
+	journal.SetStatusPrefixes(cfg.GetStatusBusy(), cfg.GetStatusQuestion(),
+		config.DefaultStatusBusy, config.DefaultStatusQuestion)
 	jr, err := journal.Open(filepath.Join(cfg.StateDir, "journal.json"))
 	if err != nil {
 		log.Fatalf("journal: %v", err)
@@ -654,7 +661,9 @@ func main() {
 		ZulipCallTimeout:   config.DefaultZulipCallTimeout,
 		EditInterval:       cfg.EditInterval(),
 		BatchEdits:         !cfg.GetStreamEdits(),
-		TopicStatus:        cfg.GetTopicStatus(),
+		TopicStatus:        statusMode,
+		StatusBusy:         cfg.GetStatusBusy(),
+		StatusQuestion:     cfg.GetStatusQuestion(),
 		SpinnerInterval:    ptr(cfg.SpinnerInterval()),
 		ReactSettle:        cfg.ReactSettle(),
 		TypingInterval:     typingInterval,
@@ -752,9 +761,10 @@ func main() {
 			Branch: func(k string, tasks []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 				return h.BranchTasks(k, tasks)
 			},
-			React:   func(k string, id int64, emoji string) error { return h.ReactTo(k, id, emoji) },
-			Timeout: config.DefaultZulipCallTimeout,
-			Logf:    log.Printf,
+			React:       func(k string, id int64, emoji string) error { return h.ReactTo(k, id, emoji) },
+			TopicStatus: topicStatusHook(cfg, h),
+			Timeout:     config.DefaultZulipCallTimeout,
+			Logf:        log.Printf,
 		})
 		if err != nil {
 			log.Fatalf("relay-mcp history: %v", err)

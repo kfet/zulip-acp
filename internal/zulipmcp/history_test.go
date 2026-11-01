@@ -73,7 +73,7 @@ func only(t *testing.T, tools *Tools) Tool { return pick(t, tools, ToolHistory) 
 func pick(t *testing.T, tools *Tools, name string) Tool {
 	t.Helper()
 	set := tools.Tools()
-	if len(set) != 5 {
+	if len(set) < 5 || len(set) > 6 {
 		t.Fatalf("tool set = %+v", set)
 	}
 	for _, x := range set {

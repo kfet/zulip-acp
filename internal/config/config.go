@@ -292,16 +292,25 @@ type Config struct {
 	StreamEdits *bool `json:"stream_edits,omitempty"`
 
 	// TopicStatus shows in the topic list whether agent work is live in
-	// a topic, through Zulip's own "resolve topic" mark: the relay
-	// resolves a topic (✔) when no turn runs in it and nothing is
-	// scheduled there, and unresolves it when a turn starts or a
-	// schedule is armed. Unset = true.
+	// a topic: "emoji" (the default), "resolve" or "off". The old
+	// boolean form still loads: true is the default, false is off.
 	//
-	// Zulip's Notification Bot posts a "marked as resolved" notice for
-	// every resolve, and no API flag suppresses it (measured, Zulip
-	// 12.2). Set it to false when that noise costs more than the mark
-	// is worth.
-	TopicStatus *bool `json:"topic_status,omitempty"`
+	// "emoji" puts StatusBusy in front of the topic name while a turn
+	// runs and StatusQuestion while the agent waits for the user; an
+	// idle topic has no prefix. A plain topic move posts no notice
+	// (measured, Zulip 12.2).
+	//
+	// "resolve" uses Zulip's own resolve mark (✔): resolved when no
+	// turn runs and nothing is scheduled. Notification Bot posts a
+	// "marked as resolved" notice for every resolve, and no API flag
+	// suppresses it. Use it only when is:resolved matters to you.
+	TopicStatus *TopicStatusMode `json:"topic_status,omitempty"`
+
+	// StatusBusy and StatusQuestion are the "emoji" mode glyphs. Unset =
+	// DefaultStatusBusy / DefaultStatusQuestion. Literal Unicode: a
+	// topic name does not expand :name: emoji.
+	StatusBusy     *string `json:"status_busy,omitempty"`
+	StatusQuestion *string `json:"status_question,omitempty"`
 
 	// SpinnerIntervalMs animates the "Thinking…" placeholder until the
 	// first chunk of the answer replaces it.
@@ -577,6 +586,9 @@ func Load(path string) (*Config, error) {
 // Credentials may arrive from the environment instead, so they are
 // checked separately by ValidateCredentials.
 func (c *Config) Validate() error {
+	if err := c.validateTopicStatus(); err != nil {
+		return err
+	}
 	if _, err := autoupdate.ParseMode(c.AutoUpdate); err != nil {
 		return err
 	}
@@ -763,12 +775,6 @@ func (c *Config) EditInterval() time.Duration {
 // Unset means true.
 func (c *Config) GetStreamEdits() bool {
 	return c.StreamEdits == nil || *c.StreamEdits
-}
-
-// GetTopicStatus reports whether the relay marks idle topics resolved.
-// Unset means true.
-func (c *Config) GetTopicStatus() bool {
-	return c.TopicStatus == nil || *c.TopicStatus
 }
 
 // SpinnerInterval returns the placeholder animation period, or 0 for

@@ -212,12 +212,8 @@ func TestDefaults(t *testing.T) {
 	if !c.GetStreamEdits() {
 		t.Fatal("streaming edits must be the default")
 	}
-	if !c.GetTopicStatus() {
-		t.Fatal("the topic status mark must be the default")
-	}
-	off := false
-	if (&Config{TopicStatus: &off}).GetTopicStatus() {
-		t.Fatal("topic_status: false must turn the mark off")
+	if c.GetTopicStatus() != TopicStatusEmoji {
+		t.Fatal("the emoji topic status must be the default")
 	}
 	if c.GetSilentSentinel() != DefaultSilentSentinel {
 		t.Fatalf("sentinel = %q", c.GetSilentSentinel())

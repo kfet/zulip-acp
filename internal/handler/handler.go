@@ -291,9 +291,14 @@ type Config struct {
 	// notification the user gets carries the real answer. Liveness
 	// comes from the typing indicator instead — see typing.go.
 	BatchEdits bool
-	// TopicStatus marks a channel topic resolved (✔) while it is idle
-	// and unresolved while agent work is live. See topicstatus.go.
-	TopicStatus bool
+	// TopicStatus picks how a channel topic shows whether agent work is
+	// live in it: off, Zulip's resolve mark, or a glyph prefix. See
+	// topicstatus.go.
+	TopicStatus StatusMode
+	// StatusBusy and StatusQuestion are the StatusEmoji glyphs: a turn
+	// runs, and the agent waits for the user. Both must be non-empty in
+	// that mode, and journal.SetStatusPrefixes must name them.
+	StatusBusy, StatusQuestion string
 	// SpinnerInterval animates the "Thinking…" placeholder. nil is the
 	// default: 900ms while streaming, off in batch mode. A non-nil 0
 	// disables the animation — the placeholder is posted once and no
@@ -595,6 +600,11 @@ type inflightEntry struct {
 	turn   *convo.Turn
 	// started is when the turn began; Busy reports the turn age from it.
 	started time.Time
+	// status is what the `topic_status` tool set during the turn, and
+	// quiet that the turn posted no answer. Both are read and written
+	// under renameMu and applied by endTurn; see topicstatus.go.
+	status string
+	quiet  bool
 }
 
 // Handler implements the event side of the relay.
@@ -652,6 +662,9 @@ type Handler struct {
 	// statusMu holds one *sync.Mutex per topic token, which serialises
 	// the resolves and unresolves of that topic. See topicstatus.go.
 	statusMu sync.Map
+	// waiting holds the token of every topic whose last answered turn
+	// asked the user for input (StatusEmoji only); see topicstatus.go.
+	waiting sync.Map
 
 	// dmNames remembers the display names of a DM's participants,
 	// learned from the messages arriving in it. The key holds user
@@ -1270,7 +1283,7 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 	// With the status mark on, markBusy does this from the server under
 	// the topic's lock instead: the relay's own moves make the message's
 	// topic stale there.
-	if !h.cfg.TopicStatus && !conv.IsDM() && conv.Topic != key.Topic {
+	if h.cfg.TopicStatus == StatusOff && !conv.IsDM() && conv.Topic != key.Topic {
 		if c, moved, err := h.cfg.Journal.Rename(key.StreamID, conv.Topic, key.Topic); err == nil && moved {
 			conv = c
 		}
@@ -1568,6 +1581,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		}
 		if res.Abstained {
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
+			h.markQuiet(conv.ID)
 			h.recordTurn(conv.ID, msgID, 0, res.LeafID)
 			h.clearTail(conv.ID)
 			h.heartbeat(context.WithoutCancel(ctx), conv, sched)
@@ -1600,6 +1614,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	// upload: an attachment is an answer.
 	if suffix == "" && h.cfg.SilentSentinel != "" && strings.TrimSpace(sink.messageText()) == strings.TrimSpace(h.cfg.SilentSentinel) {
 		h.cfg.Logf("handler: agent answered only with the sentinel in %s", conv.ID)
+		h.markQuiet(conv.ID)
 		h.retract(fctx, conv.ID, split)
 		h.recordTurn(conv.ID, msgID, 0, leaf)
 		h.clearTail(conv.ID)

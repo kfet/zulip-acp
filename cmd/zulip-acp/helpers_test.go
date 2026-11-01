@@ -510,3 +510,24 @@ func TestSystemPromptProviderWidgetsUsesPublicURL(t *testing.T) {
 		t.Fatalf("widget link not public_url: %s", got)
 	}
 }
+
+func TestStatusModeOf(t *testing.T) {
+	for in, want := range map[config.TopicStatusMode]handler.StatusMode{
+		config.TopicStatusOff:     handler.StatusOff,
+		config.TopicStatusResolve: handler.StatusResolve,
+		config.TopicStatusEmoji:   handler.StatusEmoji,
+	} {
+		if got := statusModeOf(in); got != want {
+			t.Errorf("statusModeOf(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestTopicStatusHook(t *testing.T) {
+	if topicStatusHook(&config.Config{}, nil) != nil {
+		t.Fatal("hook without the loopback")
+	}
+	if topicStatusHook(&config.Config{RelayMCP: true}, &handler.Handler{}) == nil {
+		t.Fatal("no hook in emoji mode with the loopback")
+	}
+}

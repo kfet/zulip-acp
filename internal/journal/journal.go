@@ -39,6 +39,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Key is what a conversation is reached by. Zulip has exactly two
@@ -103,19 +104,64 @@ func (k Key) index() string {
 
 // ResolvedPrefix is what Zulip puts in front of a topic name to mark the
 // topic resolved (RESOLVED_TOPIC_PREFIX on the server). The relay
-// toggles it to show whether agent work is live in the topic.
+// toggles it to show whether agent work is live in the topic, when
+// "topic_status" is "resolve".
 const ResolvedPrefix = "✔ "
 
-// BaseTopic returns topic without the resolved prefix. Zulip strips
-// every leading prefix when a topic is unresolved, so this does too.
-//
-// The index is built on the BASE topic, so "foo" and "✔ foo" are one
-// conversation: resolving a topic must never cost it its session.
-func BaseTopic(topic string) string {
-	for strings.HasPrefix(topic, ResolvedPrefix) {
-		topic = topic[len(ResolvedPrefix):]
+// statusPrefixes holds the extra topic-name prefixes the relay puts in
+// front of a topic to show its status ("topic_status": "emoji"). Each
+// one is a glyph and a space. It is written once at start-up by
+// SetStatusPrefixes and read on every lookup, hence the atomic.
+var statusPrefixes atomic.Pointer[[]string]
+
+// SetStatusPrefixes makes BaseTopic strip the given glyphs, each with
+// one space after it, as well as ResolvedPrefix. Empty glyphs are
+// ignored. Call it once, before the journal is opened: the index is
+// built on BaseTopic, and a set that changes under a loaded index
+// would split one conversation into two.
+func SetStatusPrefixes(glyphs ...string) {
+	var ps []string
+	for _, g := range glyphs {
+		if g != "" {
+			ps = append(ps, g+" ")
+		}
 	}
-	return topic
+	statusPrefixes.Store(&ps)
+}
+
+// StatusPrefix returns glyph with the space the relay puts after it,
+// or "" for no glyph.
+func StatusPrefix(glyph string) string {
+	if glyph == "" {
+		return ""
+	}
+	return glyph + " "
+}
+
+// BaseTopic returns topic without its status prefixes: the resolved
+// prefix and every glyph SetStatusPrefixes named. Zulip strips every
+// leading resolved prefix when a topic is unresolved, so this strips
+// any run of them, in any order.
+//
+// The index is built on the BASE topic, so "foo", "✔ foo" and "⧗ foo"
+// are one conversation: a status change must never cost a topic its
+// session.
+func BaseTopic(topic string) string {
+	var extra []string
+	if p := statusPrefixes.Load(); p != nil {
+		extra = *p
+	}
+	for {
+		cut := false
+		for _, pre := range append([]string{ResolvedPrefix}, extra...) {
+			if rest, ok := strings.CutPrefix(topic, pre); ok {
+				topic, cut = rest, true
+			}
+		}
+		if !cut {
+			return topic
+		}
+	}
 }
 
 // IsResolved reports whether topic carries the resolved prefix.

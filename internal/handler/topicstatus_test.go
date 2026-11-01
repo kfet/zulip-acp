@@ -19,7 +19,7 @@ import (
 // with the triggering message, which channelEvent always numbers 1.
 func statusHarness(t *testing.T) *loopHarness {
 	t.Helper()
-	lh := newLoopHarness(t, newAgent("done"), func(c *Config) { c.TopicStatus = true })
+	lh := newLoopHarness(t, newAgent("done"), func(c *Config) { c.TopicStatus = StatusResolve })
 	lh.z.mu.Lock()
 	lh.z.next = 100
 	lh.z.mu.Unlock()

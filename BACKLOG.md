@@ -355,3 +355,12 @@ option set there, including a CLAMPED thinking level when the model does not
 support the one asked for. Until acp-kit records it (`noteConfig`), `!status`
 shows the old level until the agent sends a `config_option_update`, and
 `!think` shows the level asked for, not the clamped one.
+
+## Loopback turn lookup with per-user sessions
+
+`inflightOf(conv.ID)` returns the first running turn of ANY of the
+conversation's session keys. With per-user sessions, `RenameTopic`,
+`SetTopicStatus` and `markQuiet` can therefore tag another user's
+concurrent turn in the same topic. Fix: resolve the entry from the
+caller's own session key. This touches every loopback tool that arms
+per-turn state, so do it as one change.
