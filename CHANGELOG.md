@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-11-01
+
 ### Added
 
 - `topic_status` loopback tool: the agent marks a turn that waits for the user (`needs_input`), and the topic shows `status_question` until the next answered turn.
