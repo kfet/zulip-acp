@@ -1185,6 +1185,24 @@ conversation gets a new working directory and therefore an empty inbox, while
 the old files stay on disk under the retired id. That is the same rule
 everywhere else: ending a conversation never destroys its files.
 
+### Inline widgets (`widgets`)
+
+The relay adds no widget code. A zulip-lite realm with the widgets patch
+renders a `widget-html` block in a bot message as a sandboxed frame, so the
+only gap was that the agent did not know. `"widgets": true` closes it with
+two pieces, both gated on the key:
+
+- a short note in the system prompt (`sysprompt.widgetsInstruction`), so the
+  agent knows the option exists when it chooses a deliverable. It carries the
+  realm root from `site`, which the unpatched-client fallback links to;
+- the bundled `widgets` skill, which holds the full format. `gateWidgets` in
+  `cmd/zulip-acp` drops it from the catalog when the key is off.
+
+Off is the default: on a stock realm the same message is only a collapsed
+spoiler, and an agent that offers it there gives the user nothing. The
+`src=` flow uses the existing outbox: one turn uploads the app, a later turn
+names the upload path.
+
 ## What was deliberately not ported from slack-acp
 
 | slack-acp | why not |

@@ -696,6 +696,27 @@ func TestReactions(t *testing.T) {
 	}
 }
 
+// TestWidgets pins the default: widgets are off unless the operator
+// says the realm runs the zulip-lite widgets patch.
+func TestWidgets(t *testing.T) {
+	for _, c := range []struct {
+		json string
+		want bool
+	}{{`{}`, false}, {`{"widgets":true}`, true}, {`{"widgets":false}`, false}} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", c.json, err)
+		}
+		if cfg.Widgets != c.want {
+			t.Fatalf("%s: Widgets = %v, want %v", c.json, cfg.Widgets, c.want)
+		}
+	}
+}
+
 // TestArchiveChannel covers the three states of `archive_channel`:
 // unset (the documented default), explicitly disabled, and named.
 func TestArchiveChannel(t *testing.T) {

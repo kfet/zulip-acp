@@ -477,3 +477,26 @@ func TestCwdFor(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 }
+
+// The widgets skill and the widgets note reach the agent only when the
+// realm has widgets on, and the note links the realm root.
+func TestSystemPromptProvider_WidgetsGate(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
+	for _, on := range []bool{false, true} {
+		got := systemPromptProvider("", &config.Config{
+			StateDir: t.TempDir(),
+			Site:     "https://chat.example.com",
+			Widgets:  on,
+		})()
+		if s := strings.Contains(got, "<name>widgets</name>"); s != on {
+			t.Errorf("widgets=%v: skill listed = %v", on, s)
+		}
+		if s := strings.Contains(got, "(https://chat.example.com/)"); s != on {
+			t.Errorf("widgets=%v: note present = %v", on, s)
+		}
+		if !strings.Contains(got, "<name>notes</name>") {
+			t.Errorf("widgets=%v: notes skill dropped", on)
+		}
+	}
+}

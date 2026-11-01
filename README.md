@@ -381,6 +381,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `react_settle_ms` | `200` | pause after the echo of the relay's own message before it pre-adds reactions; `0` disables. The macOS client drops reactions that arrive a few ms after the message |
 | `spinner_interval_ms` | `900` (`0` in quiet mode) | animation period of the `Thinking...` placeholder; `0` posts it once and never edits it. Streaming mode only |
 | `ack_emoji` | `eyes` | bare emoji name (no colons) reacted onto a message while its turn runs; `""` disables |
+| `widgets` | `false` | the realm runs the zulip-lite widgets patch: the system prompt tells the agent it can post live HTML widgets and MCP Apps, and the bundled `widgets` skill is listed. See below |
 | `reactions` | `true` | deliver emoji reactions (added **and** removed) into the owning conversation as one coalesced ambient turn. See below |
 | `catchup_max_age_seconds` | `86400` | after a cold start, answer messages posted while the relay was down, one collapsed turn per topic; older ones get a one-line notice. `0` = off |
 | `archive_channel` | `archive` | channel a topic is **moved** to by the `:wastebasket:` reaction or `!archive`; must be a channel the relay does **not** serve. `""` disables. See below |
@@ -495,6 +496,17 @@ to true, so every autotopic lift used to make Notification Bot post a notice in
 the origin *and* the destination topic — each one a push whose body starts with
 a markdown link, which a phone renders as a **blank** notification. Both are
 sent as `false`.
+
+### Inline widgets (`widgets`)
+
+Set `"widgets": true` only on a realm that runs the zulip-lite widgets patch
+(`WIDGETS.md` in zulip-lite). The patched web app shows a `widget-html` block
+in a bot message as a live, sandboxed frame, and is also an MCP Apps host.
+With the key on, the system prompt gets a short "Inline widgets" note with the
+realm root link from `site`, and the agent sees the bundled `widgets` skill,
+which holds the full format, `widget-data`, `src=` uploads and the sandbox
+limits. With the key off (the default) the agent hears of neither: on a stock
+realm a widget is only a collapsed spoiler.
 
 ### Emoji reactions (`reactions`)
 

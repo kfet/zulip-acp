@@ -152,6 +152,11 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	if err != nil {
 		log.Printf("skills: builtin load failed (continuing): %v", err)
 	}
+	builtin = gateWidgets(builtin, cfg.Widgets)
+	widgetsSite := ""
+	if cfg.Widgets {
+		widgetsSite = cfg.Site
+	}
 	dir := config.DefaultConfigDir()
 	if cfgPath != "" {
 		dir = filepath.Dir(cfgPath)
@@ -162,9 +167,28 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 		// this relay actually arms, so the agent knows the window
 		// before it picks a poll interval.
 		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
-			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji()),
+			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji(), widgetsSite),
 			kit.LivenessNote(cfg.NoProgressTimeout()), "")
 	}
+}
+
+// widgetsSkill is the bundled skill that only a widgets realm lists.
+const widgetsSkill = "widgets"
+
+// gateWidgets drops the widgets skill unless the realm has widgets on.
+// On a stock realm a widget is only a collapsed spoiler, so the skill
+// would teach the agent to post something nobody can use.
+func gateWidgets(builtin []skills.Skill, on bool) []skills.Skill {
+	if on {
+		return builtin
+	}
+	out := make([]skills.Skill, 0, len(builtin))
+	for _, s := range builtin {
+		if s.Name != widgetsSkill {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // buildSkillsCatalog renders the <available_skills> block injected into

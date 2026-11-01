@@ -351,6 +351,14 @@ type Config struct {
 	// at all.
 	Reactions *bool `json:"reactions,omitempty"`
 
+	// Widgets tells the agent that this realm runs the zulip-lite
+	// widgets patch, so a bot message can carry a live, sandboxed HTML
+	// widget or an MCP App. When true, the system prompt gets a short
+	// "Inline widgets" note and the bundled widgets skill is listed.
+	// Default false: on a stock realm the widget shows only as a
+	// collapsed spoiler, so the agent must not offer it there.
+	Widgets bool `json:"widgets,omitempty"`
+
 	// QuickModels is the emoji model switcher: a short list of
 	// provider/account/model combos, each bound to one emoji. A
 	// reaction with QuickModelsMenuEmoji on any relay message posts a

@@ -112,14 +112,33 @@ func reactionInstruction(reactions bool, sentinel string) string {
 		"- If you are unsure whether a reaction needs a reply, it does not."
 }
 
+// widgetsInstruction tells the agent that this realm can show a live
+// HTML widget in a bot message. site is the realm root URL, which the
+// unpatched-client fallback links to; "" means widgets are off and the
+// note is left out, because on a stock realm a widget is only a
+// collapsed spoiler. The full format is in the bundled widgets skill;
+// this note holds only what the agent needs to know the option exists.
+func widgetsInstruction(site string) string {
+	if site == "" {
+		return ""
+	}
+	root := strings.TrimRight(site, "/") + "/"
+	return "\n\nInline widgets:\n" +
+		"- This realm shows live, interactive HTML inside your messages (web app only). When the deliverable is interactive or animated — a demo, a chart to explore, a calculator, a game, an MCP App — post a widget instead of a PNG or a link.\n" +
+		"- Format: open a spoiler with four backticks, ````spoiler 🧩 Interactive widget: open in the web app, then the line [Open in the Zulip web app](" + root + ") to use this widget., then a three-backtick widget-html block whose first line is <!-- zlite-widget height=N -->. For an MCP tool result, add a widget-data block with JSON {tool, input, result} right after it, in the same spoiler. Unpatched clients show only the collapsed spoiler and its link.\n" +
+		"- Only bot messages render. The widget is sandboxed with NO network: inline all scripts, styles and data. A message holds at most 10000 characters; upload a bigger app and use `src=`.\n" +
+		"- Read the `widgets` skill for the full format, `src=` uploads and an example before your first widget."
+}
+
 // Resolve composes the final durable system prompt: the built-in Zulip
 // block, the abstain instruction for the configured sentinel, the
 // reaction note, the operator's extra text, and the skills catalog.
 // Returns "" when the operator disabled injection entirely.
 // deleteEmoji is the emoji that confirms a topic delete; "" means the
 // default :fire: that Base names.
-func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji string) string {
-	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel), extra, disabled, catalog)
+// widgetsSite is the realm root URL when inline widgets are on, else "".
+func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji, widgetsSite string) string {
+	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel)+widgetsInstruction(widgetsSite), extra, disabled, catalog)
 }
 
 // withDeleteEmoji returns Base with the configured delete emoji in

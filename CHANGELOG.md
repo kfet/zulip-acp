@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New config key `widgets` (default `false`). When true, the system prompt tells the agent that it can post live HTML widgets and MCP Apps (zulip-lite widgets patch), and the new bundled `widgets` skill gives the full format.
+
 ## [0.66.2] - 2026-10-31
 
 ### Fixed
