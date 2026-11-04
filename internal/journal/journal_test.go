@@ -214,7 +214,7 @@ func TestRenameEdgeCases(t *testing.T) {
 		t.Fatal("no-op rename disturbed the conversation")
 	}
 	// Renaming onto an occupied topic: the destination wins, and the
-	// merged-away conv-id disappears rather than leaving two
+	// merged-away conv-id is retired rather than leaving two
 	// conversations answering to one topic.
 	b, err := j.Ensure(Channel(4, "beta"))
 	if err != nil {
@@ -233,10 +233,8 @@ func TestRenameEdgeCases(t *testing.T) {
 	if _, ok := j.Lookup(Channel(4, "alpha")); ok {
 		t.Fatal("source topic still resolves")
 	}
-	for _, c := range j.Convs() {
-		if c.ID == a.ID {
-			t.Fatal("merged-away conversation is still listed")
-		}
+	if c, ok := j.LookupID(a.ID); !ok || !c.Retired {
+		t.Fatalf("merged-away conversation not retired: %+v %v", c, ok)
 	}
 }
 

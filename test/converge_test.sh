@@ -16,6 +16,10 @@ pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $1"; }
 bad() { fail=$((fail + 1)); echo "  FAIL $1"; }
 
+# Portable in-place edits: BSD sed (macOS) has no GNU `sed -i` / `2i`.
+sedi() { local f=${*: -1}; sed "${@:1:$#-1}" "$f" > "$f.sedi" && cat "$f.sedi" > "$f" && rm "$f.sedi"; }
+ins2() { local f=$2; awk -v l="$1" 'NR==2{print l} {print}' "$f" > "$f.ins2" && cat "$f.ins2" > "$f" && rm "$f.ins2"; }
+
 WANT=0.62.0 FIRV=1.42.0 REV=1111111111111111111111111111111111111111
 
 # A private repo copy, so the test owns dist.lock.
@@ -40,7 +44,7 @@ H="$W/hosts/$1"
 [ -d "$H" ] || { echo "no route to $1" >&2; exit 255; }
 HOME=$H FAKEHOST=$1 PATH="$H/.local/bin:$W/stubs:$PATH" CONVERGE_PROC="$H/proc" bash -c "$2"
 EOF
-sed -i "2i W='$W'" "$W/rsh"
+ins2 "W='$W'" "$W/rsh"
 
 cat >"$W/stubs/za" <<'EOF'
 #!/bin/sh
@@ -108,7 +112,7 @@ mkdir -p "$HOME/proc/$pid"
 cp "$s/za" "$s/run.$pid"
 printf '#!/bin/sh\ncat "%s"\n' "$s/run.$pid" >"$HOME/proc/$pid/exe"; chmod +x "$HOME/proc/$pid/exe"
 EOF
-sed -i "2i REV=$REV" "$W/stubs/fir"
+ins2 "REV=$REV" "$W/stubs/fir"
 chmod +x "$W"/rsh "$W"/stubs/*
 
 # mkhost <host> <za-version> — a provisioned host: binary, fir, ext, secret.
@@ -185,7 +189,7 @@ seq_is "config-only call sequence" "host-b systemctl reload zulip-acp.service"
 [ -n "$(find "$W/hosts/host-b/.config/zulip-acp" -name 'config.json.bak-*')" ] && ok "backup on overwrite" || bad "no backup"
 
 echo "== unit change: daemon-reload + ONE restart, no reload"
-sed -i 's/^Restart=.*/Restart=always/' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
+sedi 's/^Restart=.*/Restart=always/' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
 run bot-b --apply
 seq_is "unit-change call sequence" "host-b systemctl daemon-reload
 host-b systemctl restart zulip-acp.service"
@@ -275,7 +279,7 @@ has "reload pending: this relay reloads when the current turn ends" "self case s
 seq_is "self case reloads once" "host-b systemctl reload zulip-acp.service"
 
 echo "== self unit + unit change: write the files, refuse the restart"
-sed -i 's/^Restart=.*/Restart=always/' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
+sedi 's/^Restart=.*/Restart=always/' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
 run bot-b --apply
 [ "$rc" != 0 ] && ok "self restart refused" || bad "self restart must refuse"
 grep -q '^Restart=on-failure' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service" && ok "unit still written" || bad "unit not written"

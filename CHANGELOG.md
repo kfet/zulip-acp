@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Journal sidecars: each conversation writes its id, key, parent, created time and retired flag to `state/convs/<id>/.conv.json`. Each start adopts the sidecars the journal does not know and writes the missing ones, so a lost `journal.json` is rebuilt by the normal start (log line `journal: adopted N conversations`). The deploy skill has a restore runbook.
+
+### Changed
+
+- A rename onto a topic that already has a conversation now retires the moved conversation instead of dropping it from the journal.
+- acp-kit v0.39.0.
+
+### Fixed
+
+- Tests pass on macOS (temp dir symlink, short unix socket paths).
+- `converge.sh`: match this machine's host name case-insensitively (`ssh -G` prints it in lower case).
+
 ## [0.69.0] - 2026-11-01
 
 ### Added

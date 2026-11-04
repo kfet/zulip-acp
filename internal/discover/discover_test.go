@@ -508,7 +508,8 @@ func TestDefaultLatestOK(t *testing.T) {
 
 func TestOSSys(t *testing.T) {
 	s := OS()
-	dir := t.TempDir()
+	// Resolved: on macOS t.TempDir is under the /var symlink.
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	p := filepath.Join(dir, "x")
 	if err := os.WriteFile(p, []byte("hi"), 0o755); err != nil {
 		t.Fatal(err)

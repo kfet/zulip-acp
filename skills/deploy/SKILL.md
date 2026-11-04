@@ -356,6 +356,22 @@ Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
   clone produced two different v0.14.0s.)
 
 
+## Restore a relay from backup
+
+The relay rebuilds `state/journal.json` from the per-conversation sidecars
+(`state/convs/<id>/.conv.json`) on every start. The code that does this runs
+on every normal start, so restore needs no special tool. Do these steps only:
+
+1. Stop the relay unit.
+2. Unpack the relay state dir (`~/.config/zulip-acp/state/`, including
+   `convs/`) to its usual path. If `journal.json` is lost, that is OK.
+3. Unpack the fir session dirs to `~/.config/fir/sessions/`. Their names are
+   `--<encoded path of state/convs/<id>>--`. Do not move them into the relay
+   state dir.
+4. Start the relay unit.
+5. Check the log for `journal: adopted N conversations`. N is the number of
+   conversations that were not in the journal. With a full journal N is 0.
+
 ## Pitfalls
 
 - **Bare-process deploy** — the classic mistake: `./zulip-acp --config config.json`

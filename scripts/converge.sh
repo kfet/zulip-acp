@@ -489,8 +489,13 @@ host_is_self() {
     localhost|127.0.0.1|::1) SELF_WHY="$host -> $real is the loopback"; return 0 ;;
   esac
 
-  # A plain name match is enough, and it works with no network at all.
-  if [ "$real" = "$(hostname 2>/dev/null)" ] || [ "$real" = "$(hostname -f 2>/dev/null)" ]; then
+  # A plain name match is enough, and it works with no network at all. Host
+  # names are case-insensitive, and `ssh -G` prints them in lower case.
+  local lreal hn hf
+  lreal=$(printf '%s' "$real" | tr '[:upper:]' '[:lower:]')
+  hn=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  hf=$(hostname -f 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  if [ "$lreal" = "$hn" ] || [ "$lreal" = "$hf" ]; then
     SELF_WHY="$host -> $real matches this machine's hostname"
     return 0
   fi

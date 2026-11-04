@@ -104,7 +104,7 @@ func TestMain(m *testing.M) {
 // --- the test ------------------------------------------------------------
 
 func TestLoopbackToolsSurviveAReload(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := shortTempDir(t)
 
 	relay, control := startRelay(t, stateDir)
 	socket, token := relay.awaitReady(t, "ready")
@@ -156,7 +156,7 @@ func TestLoopbackToolsSurviveAReload(t *testing.T) {
 // under the state dir, not under $TMPDIR, so it is still there — and
 // still the same path — after an upgrade.
 func TestSocketPathIsInsideTheStateDir(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := shortTempDir(t)
 	relay, control := startRelay(t, stateDir)
 	socket, _ := relay.awaitReady(t, "ready")
 	want := filepath.Join(stateDir, zulipmcp.DirName, zulipmcp.SocketName)
@@ -444,4 +444,17 @@ func (r *redirProc) history(t *testing.T, id int) string {
 		sb.WriteString(c.(map[string]any)["text"].(string))
 	}
 	return sb.String()
+}
+
+// shortTempDir is a temp dir with a short path. A unix socket path is
+// limited to about 104 bytes on macOS, and t.TempDir there is under a
+// long /var/folders path.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := os.MkdirTemp("/tmp", "za")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
 }

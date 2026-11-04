@@ -27,3 +27,13 @@ func mustMarshal(f file) []byte {
 	}
 	return b
 }
+
+// mustMarshalSidecar encodes a sidecar, for the same reason as
+// mustMarshal: a closed struct of ints, strings and bools cannot fail.
+func mustMarshalSidecar(s sidecar) []byte {
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		panic("journal: unmarshalable sidecar: " + err.Error())
+	}
+	return b
+}

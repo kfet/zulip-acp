@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Key is what a conversation is reached by. Zulip has exactly two
@@ -382,7 +384,15 @@ type Conv struct {
 	// through SetTail without hitting "unknown conversation". Absent
 	// in a pre-!new journal, so no version bump is needed.
 	Retired bool `json:"retired,omitempty"`
+	// Created is when the relay minted the conversation, in Unix
+	// milliseconds, or 0 for one minted before the field existed. It is
+	// what decides between two sidecars that claim one key when the
+	// journal is rebuilt (see adoptSidecars).
+	Created int64 `json:"created,omitempty"`
 }
+
+// nowMillis is the clock for Conv.Created; tests replace it.
+var nowMillis = func() int64 { return time.Now().UnixMilli() }
 
 // Turn is one finished turn: the Zulip messages that bound it and the
 // agent's leaf entry id at its end.
@@ -462,6 +472,7 @@ func Open(path string) (*Journal, error) {
 	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}, heartbeats: map[string]Heartbeat{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		log.Printf("journal: adopted %d conversations", j.adoptSidecars())
 		return j, nil
 	}
 	if err != nil {
@@ -495,6 +506,7 @@ func Open(path string) (*Journal, error) {
 	for id, hb := range f.Heartbeats {
 		j.heartbeats[id] = hb
 	}
+	log.Printf("journal: adopted %d conversations", j.adoptSidecars())
 	return j, nil
 }
 
@@ -585,13 +597,16 @@ func (j *Journal) Ensure(k Key) (Conv, error) {
 		j.mu.Unlock()
 		return out, nil
 	}
-	c := &Conv{ID: j.newID(), Key: k}
+	c := &Conv{ID: j.newID(), Key: k, Created: nowMillis()}
 	j.index(c)
 	out := *c
 	err := j.commit(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, k.index())
 	})
+	if err == nil {
+		j.syncSidecars(nil, c)
+	}
 	j.mu.Unlock()
 	if err != nil {
 		return Conv{}, err
@@ -609,7 +624,7 @@ func (j *Journal) Ensure(k Key) (Conv, error) {
 //
 // Returns ok=false when the old topic is unknown (nothing to migrate)
 // or when the new topic already has its own conversation, in which
-// case the existing one wins and the stale alias is dropped. The topic
+// case the existing one wins and the moved conversation is retired. The topic
 // is truth: two conv-ids must never share a key.
 func (j *Journal) Rename(streamID int64, oldTopic, newTopic string) (Conv, bool, error) {
 	return j.Move(streamID, oldTopic, streamID, newTopic)
@@ -645,28 +660,30 @@ func (j *Journal) Move(oldStreamID int64, oldTopic string, newStreamID int64, ne
 		prev := c.Topic
 		c.Topic = newTopic
 		out := *c
-		return out, true, j.commit(func() { c.Topic = prev })
+		return out, true, j.commitSync(func() { c.Topic = prev }, c)
 	}
 	if !ok {
 		return Conv{}, false, nil
 	}
 	delete(j.byKey, oldKey)
 	if existing, clash := j.byKey[newKey]; clash {
-		// The destination already has a conversation. Keep it, and let
-		// the migrated one become unreachable rather than leaving two
-		// conv-ids answering to the same key.
-		delete(j.byID, c.ID)
+		// The destination already has a conversation. Keep it, and
+		// retire the migrated one rather than leaving two conv-ids
+		// answering to the same key. Retired, not dropped: its sidecar
+		// stays on disk, and a dropped entry would come back live from
+		// it on the next start.
+		c.Retired = true
 		// The dropped conversation's children go to the one that keeps
 		// the key, or a later topic of the old name would inherit them.
 		moved := j.repointChildren(oldKey, newK)
 		out := *existing
-		return out, false, j.commit(func() {
+		return out, false, j.commitSync(func() {
 			for _, ch := range moved {
 				ch.Parent.Key = oldK
 			}
-			j.byID[c.ID] = c
+			c.Retired = false
 			j.byKey[oldKey] = c
-		})
+		}, append(moved, c)...)
 	}
 	c.StreamID, c.Topic = newStreamID, newTopic
 	j.byKey[newKey] = c
@@ -676,14 +693,14 @@ func (j *Journal) Move(oldStreamID int64, oldTopic string, newStreamID int64, ne
 	// of the old name.
 	moved := j.repointChildren(oldKey, newK)
 	out := *c
-	return out, true, j.commit(func() {
+	return out, true, j.commitSync(func() {
 		for _, ch := range moved {
 			ch.Parent.Key = oldK
 		}
 		delete(j.byKey, newKey)
 		c.StreamID, c.Topic = oldStreamID, oldTopic
 		j.byKey[oldKey] = c
-	})
+	}, append(moved, c)...)
 }
 
 // repointChildren moves every parent pointer at oldIdx to k and
@@ -774,16 +791,16 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// branched from somewhere, and `!new` does not un-branch it. The
 	// retired conversation keeps its own copy — it is the record of
 	// where that session's context came from.
-	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent}
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent, Created: nowMillis()}
 	j.index(c)
 	prev, fresh = *old, *c
-	return prev, fresh, true, j.commit(func() {
+	return prev, fresh, true, j.commitSync(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, idx)
 		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
 		old.PollID, old.PollReplies = prevPoll, prevPollReplies
 		j.byKey[idx] = old
-	})
+	}, old, c)
 }
 
 // SetTail records the message id the relay is streaming into for a
@@ -1031,13 +1048,13 @@ func (j *Journal) Branch(k Key, p Parent) (Conv, error) {
 	if _, taken := j.byKey[k.index()]; taken {
 		return Conv{}, fmt.Errorf("journal: a conversation already lives in %s", k.Label())
 	}
-	c := &Conv{ID: j.newID(), Key: k, Parent: &p}
+	c := &Conv{ID: j.newID(), Key: k, Parent: &p, Created: nowMillis()}
 	j.index(c)
 	out := *c
-	return out, j.commit(func() {
+	return out, j.commitSync(func() {
 		delete(j.byID, c.ID)
 		delete(j.byKey, k.index())
-	})
+	}, c)
 }
 
 // LookupMessage returns the conversation that owns a message id the
@@ -1142,6 +1159,16 @@ func (j *Journal) commit(undo func()) error {
 		undo()
 	}
 	return err
+}
+
+// commitSync is commit, and on success writes the sidecars of the
+// conversations the change touched. Caller holds mu.
+func (j *Journal) commitSync(undo func(), touched ...*Conv) error {
+	if err := j.commit(undo); err != nil {
+		return err
+	}
+	j.syncSidecars(nil, touched...)
+	return nil
 }
 
 // save writes the whole journal atomically. Caller holds mu.
