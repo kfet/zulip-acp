@@ -89,7 +89,10 @@ Use **restart** — a hard, destructive restart — only for:
    `scripts/converge.sh --all --apply` (or `<bot>... --apply`) converges the
    fleet. **Converge is the only sanctioned way to touch a fleet host** — it
    moves the binary, `fir`, the fir extensions, `config.json` and the unit to
-   the locked state, then does ONE recycle per unit and verifies it. Never
+   the locked state, then does ONE recycle per unit and checks it once (no
+   wait). Exit 0 = converged, 1 = failure, 3 = pending: a reload is still
+   draining in-flight turns. On 3, re-run converge (the dry run is enough)
+   later to confirm. Never
    hand-upgrade a fleet host to an unlocked version.
 
    **Ownership.** The binary owns the file swap: converge runs

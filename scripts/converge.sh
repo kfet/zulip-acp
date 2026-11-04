@@ -12,13 +12,18 @@
 # See docs/converge-design.md.
 #
 # Usage:
-#   converge.sh <bot>... [--apply] [--local]   plan (default) or apply
+#   converge.sh <bot>... [--apply] [--local]   plan (default; also --check) or apply
 #   converge.sh --all [--apply]                every managed bot of this relay
 #   converge.sh --tot                          resolve dist.lock; NEVER converges
 #   converge.sh render <bot> <artefact>        config | execstart | unit
 #   converge.sh recycle-action <unit_changed> <active_state> <running> <want> <files_changed>
 #   converge.sh semver-cmp <a> <b> | semver-sat <ver> <constraint>
 #   converge.sh resolve <component> <ver...> | self-host <host>   (test hooks)
+#
+# Exit code: 0 converged, 1 failure, 3 pending — a reload is still draining
+# (the old image runs until its in-flight turns end). Converge never waits
+# for a drain: re-run it (the dry run is enough) to confirm. Exception: a
+# converge that runs inside the relay it reloads exits 0 (see apply_host).
 #
 # Bots are grouped by .host: the binary, fir and fir extensions are updated
 # ONCE per host; config, unit and the recycle are per bot. --apply prints the
@@ -91,9 +96,9 @@ FIR_DIST_REPO="https://github.com/kfet/fir-dist"
 # The release that first shipped `zulip-acp update`. Below it the host cannot
 # update itself, and converge refuses (bootstrap once with install.sh).
 SELFUPDATE_MIN=0.19.0
-# How long (seconds) to wait for the recycled unit to run the wanted image.
-VERIFY_WAIT=${VERIFY_WAIT:-30}
-case "$VERIFY_WAIT" in ''|*[!0-9]*) echo "converge: error: VERIFY_WAIT must be a whole number of seconds" >&2; exit 1 ;; esac
+# Exit code when nothing failed but at least one reload is still draining.
+EXIT_PENDING=3
+PENDING=0
 
 die()  { echo "converge: error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
@@ -592,7 +597,8 @@ unit_semantic() {
 #   unit changed          -> restart (daemon-reload, restart; drops turns)
 #                            ("changed" = unit_semantic differs; a
 #                            comment-only change is written, not restarted)
-#   reloading             -> pending (a SIGHUP is already draining)
+#   reloading             -> pending (a SIGHUP is already draining: the
+#                            relay ignores SIGHUP until it re-execs)
 #   files changed, or the running image is not the wanted one
 #                         -> reload
 #   otherwise             -> none
@@ -609,6 +615,10 @@ recycle_action() { # <unit_changed> <active_state> <running_ver> <want> <files_c
 # version is read from <proc>/<MainPID>/exe: the in-memory image, not the
 # file on disk. self=1 when this very script runs inside that unit (its
 # cgroup), i.e. converge was started by the relay it is about to recycle.
+# An active relay that ignores SIGHUP (bit 0 of SigIgn in <proc>/<pid>/status)
+# is draining a reload: the relay ignores SIGHUP from the first one until its
+# re-exec. That state is reported as "reloading": systemd says "active",
+# because ExecReload (kill -HUP) returns at once.
 probe_unit() {
   rsh "u='$1'; P=\${CONVERGE_PROC:-/proc}
 $(cat <<'EOS'
@@ -617,6 +627,10 @@ pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null || true)
 case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
 run=''
 [ "$pid" -gt 0 ] && run=$("$P/$pid/exe" --version 2>/dev/null | head -1 || true)
+if [ "$st" = active ] && [ "$pid" -gt 0 ]; then
+  ign=$(awk '/^SigIgn:/{print $2}' "$P/$pid/status" 2>/dev/null || true)
+  case "$ign" in *[13579bBdDfF]) st=reloading ;; esac
+fi
 self=0
 grep -qs "/$u\$" "$P/self/cgroup" && self=1
 printf '%s|%s|%s\n' "${st:-unknown}" "$run" "$self"
@@ -624,21 +638,26 @@ EOS
 )" || die "cannot probe $1 on $HOST"
 }
 
-# verify_unit <unit> <want> — the unit must run the wanted image within
-# VERIFY_WAIT seconds. A timeout is a failure.
-verify_unit() {
-  local u=$1 want=$2 i st run pr
-  for i in $(seq 1 "$VERIFY_WAIT"); do
-    pr=$(probe_unit "$u")
-    IFS='|' read -r st run _ <<<"$pr"
-    if [ "$st" = active ] && [ "$run" = "$want" ]; then
-      note "$u: running $want ✓"; return 0
-    fi
-    [ "$i" = "$VERIFY_WAIT" ] || sleep 1
-  done
-  echo "converge: error: $HOST $u: state ${st:-?}, running ${run:-unreadable} after ${VERIFY_WAIT}s, wanted $want. Last journal lines:" >&2
+# check_unit <unit> <want> <action> — probe ONCE after a recycle; no wait.
+#   active + wanted image          -> done (return 0)
+#   draining, activating, or a reload whose SIGHUP is not taken yet
+#                                  -> pending (return 3)
+#   anything else (failed, inactive, wrong image after a start/restart)
+#                                  -> failure with the journal (return 1)
+check_unit() {
+  local u=$1 want=$2 act=$3 st run pr
+  pr=$(probe_unit "$u")
+  IFS='|' read -r st run _ <<<"$pr"
+  if [ "$st" = active ] && [ "$run" = "$want" ]; then
+    note "$u: running $want ✓"; return 0
+  fi
+  if [ "$st" = reloading ] || [ "$st" = activating ] || { [ "$act" = reload ] && [ "$st" = active ]; }; then
+    note "$u: reload pending (draining in-flight turns; running ${run:-?}, wanted $want); re-run converge to confirm"
+    return "$EXIT_PENDING"
+  fi
+  echo "converge: error: $HOST $u: state ${st:-?}, running ${run:-unreadable}, wanted $want. Last journal lines:" >&2
   rsh "journalctl --user -u '$u' -n 20 --no-pager 2>&1 || true" >&2 || true
-  exit 1
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -765,7 +784,8 @@ plan_bot() { # <bot>
   B_ACT[$bot]=$act
   case "$act" in
     none)    note "$unit: running ${run:-?} ✓" ;;
-    pending) note "$unit: a reload is already draining (running ${run:-?}); nothing to signal" ;;
+    pending) PENDING=$((PENDING + 1))
+             note "$unit: reload pending (already draining; running ${run:-?}, wanted $want_za); nothing to signal — re-run converge to confirm" ;;
     restart) CHANGES=$((CHANGES + 1))
              note "PLAN restart $unit (unit changed) — WARNING: drops in-flight turns and messages posted before the fresh event queue registers"
              if [ "$self" = 1 ]; then note "WARNING: converge runs inside $unit; --apply writes the files, then refuses this restart"; fi ;;
@@ -823,7 +843,8 @@ apply_host() { # <host>
     local u=${B_UNIT[$bot]} self=${B_SELF[$bot]}
     case "${B_ACT[$bot]}" in
       none) continue ;;
-      pending) note "reload pending: $u re-execs when its current drain ends"; continue ;;
+      pending) note "reload pending: $u re-execs when its current drain ends"
+               PENDING=$((PENDING + 1)); continue ;;
       start) rsh "systemctl --user enable --now '$u'" || die "$h: cannot start $u" ;;
       restart)
         if [ "$self" = 1 ]; then
@@ -834,9 +855,13 @@ apply_host() { # <host>
       reload) rsh "systemctl --user reload '$u'" || die "$h: reload of $u failed" ;;
     esac
     if [ "$self" = 1 ]; then
+      # Not counted as pending (exit 0): the caller is this relay's own
+      # `!update` job, which reads any nonzero rc as a failure.
       note "reload pending: this relay reloads when the current turn ends"; continue
     fi
-    verify_unit "$u" "$want_za"
+    local c=0
+    check_unit "$u" "$want_za" "${B_ACT[$bot]}" || c=$?
+    case "$c" in 0) : ;; "$EXIT_PENDING") PENDING=$((PENDING + 1)) ;; *) rc=1 ;; esac
   done
   [ "$rc" = 0 ] || exit "$rc"
   return 0
@@ -874,12 +899,22 @@ converge() { # <bot>...
     done
   done
   if [ "$CHANGES" = 0 ]; then
+    if [ "$PENDING" -gt 0 ]; then
+      echo "== pending: $PENDING reload(s) still draining; re-run converge to confirm"; exit "$EXIT_PENDING"
+    fi
     echo "== converged: nothing to do"; return 0
   fi
   if [ "$APPLY" != 1 ]; then
-    echo "== $CHANGES change(s) planned (dry run; re-run with --apply)"; return 0
+    echo "== $CHANGES change(s) planned (dry run; re-run with --apply)"
+    [ "$PENDING" = 0 ] || { echo "== pending: $PENDING reload(s) still draining"; exit "$EXIT_PENDING"; }
+    return 0
   fi
+  PENDING=0
   for h in "${HOSTS[@]}"; do apply_host "$h"; done
+  if [ "$PENDING" -gt 0 ]; then
+    echo "== applied $CHANGES change(s); pending: $PENDING reload(s) still draining — re-run converge to confirm"
+    exit "$EXIT_PENDING"
+  fi
   echo "== converged ($CHANGES change(s) applied)"
 }
 
@@ -1042,7 +1077,7 @@ case "$1" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --apply) APPLY=1 ;;
-        --dry-run) APPLY=0 ;;
+        --dry-run|--check) APPLY=0 ;;
         --local) FORCE_LOCAL=1 ;;
         --all) mapfile -t -O "${#TARGETS[@]}" TARGETS < <(all_managed) ;;
         -*) usage ;;

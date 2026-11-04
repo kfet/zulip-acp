@@ -29,7 +29,7 @@ cp "$ROOT/distro.json" "$W/repo/"
 jq -n --arg za "$WANT" --arg fir "$FIRV" --arg ext "$REV" \
   '{zulip_acp: $za, fir: $fir, exts: {"github.com/kfet/fir-exts": $ext}}' >"$W/repo/dist.lock"
 C="$W/repo/scripts/converge.sh"
-export FLEET_BOTS_DIR="$W/bots" CALLS="$W/calls" VERIFY_WAIT=2 CONVERGE_RSH="$W/rsh"
+export FLEET_BOTS_DIR="$W/bots" CALLS="$W/calls" CONVERGE_RSH="$W/rsh"
 
 # Two bots on host-a (two units), one on host-b.
 base="$ROOT/test/fixtures/bots/bot-a.json"
@@ -85,7 +85,8 @@ cat >"$W/stubs/journalctl" <<'EOF'
 echo "journal: stub line for $*"
 EOF
 # systemctl: ActiveState and MainPID per unit; a recycle points the pid's
-# image at the binary on disk, unless st/hang says the drain never ends.
+# image at the binary on disk. st/hang: the reload drains (the old image
+# runs and ignores SIGHUP). st/fail: the recycle leaves the unit failed.
 cat >"$W/stubs/systemctl" <<'EOF'
 #!/bin/sh
 s=$HOME/st
@@ -106,7 +107,8 @@ case "$1" in
 esac
 pid=$(cat "$s/pid.$u" 2>/dev/null || echo 0)
 [ "$1" = reload ] || pid=$((pid + 100))
-[ -f "$s/hang" ] && exit 0
+if [ -f "$s/hang" ]; then printf 'SigIgn:\t0000000000000001\n' >"$HOME/proc/$pid/status"; exit 0; fi
+[ -f "$s/fail" ] && { echo failed >"$s/state.$u"; exit 0; }
 echo active >"$s/state.$u"; echo "$pid" >"$s/pid.$u"
 mkdir -p "$HOME/proc/$pid"
 cp "$s/za" "$s/run.$pid"
@@ -140,6 +142,7 @@ converged() {
 calls() { cat "$CALLS" 2>/dev/null || true; }
 run() { : >"$CALLS"; out=$("$C" "$@" 2>&1) && rc=0 || rc=$?; }
 has() { case "$out" in *"$1"*) ok "$2" ;; *) bad "$2: no '$1' in:"; echo "$out" ;; esac; }
+nothas() { case "$out" in *"$1"*) bad "$2: found '$1' in:"; echo "$out" ;; *) ok "$2" ;; esac; }
 seq_is() { # <label> <expected call log>
   if [ "$(calls)" = "$2" ]; then ok "$1"; else bad "$1"; diff <(echo "$2") <(calls) || true; fi
 }
@@ -276,19 +279,38 @@ run --all
 has "== plan host-a" "--all plans host-a"
 has "== plan host-b" "--all plans host-b"
 
-echo "== reload that never takes effect: fail with the journal"
+echo "== reload still draining: pending, exit 3, no wait"
 echo 0.61.5 >"$W/hosts/host-b/st/za"; running host-b zulip-acp 0.61.5
 touch "$W/hosts/host-b/st/hang"
+t0=$(date +%s); run bot-b --apply; t1=$(date +%s)
+[ "$rc" = 3 ] && ok "draining reload exits 3" || { bad "rc=$rc"; echo "$out"; }
+[ $((t1 - t0)) -lt 5 ] && ok "no wait for the drain" || bad "converge waited $((t1 - t0))s"
+has "reload pending (draining" "pending reported"
+nothas "converge: error" "pending is not an error"
+
+echo "== dry run while draining: pending, no signal, exit 3"
+run bot-b --check
+[ "$rc" = 3 ] && ok "dry run exits 3" || { bad "rc=$rc"; echo "$out"; }
+has "already draining" "dry run says pending"
+seq_is "no second SIGHUP" ""
 run bot-b --apply
-[ "$rc" != 0 ] && ok "verify timeout fails" || bad "timeout must fail"
-has "journal: stub line" "failure shows the journal"
+seq_is "apply while draining sends nothing" ""
+[ "$rc" = 3 ] && ok "apply while draining exits 3" || bad "rc=$rc"
 rm "$W/hosts/host-b/st/hang"
 
-echo "== already reloading: do not signal again"
-echo reloading >"$W/hosts/host-b/st/state.zulip-acp.service"
+echo "== drain done: converged, exit 0"
+running host-b zulip-acp "$WANT"
+run bot-b --check
+[ "$rc" = 0 ] && ok "done exits 0" || { bad "rc=$rc"; echo "$out"; }
+has "nothing to do" "done is converged"
+
+echo "== recycle leaves the unit failed: error with the journal"
+echo 0.61.5 >"$W/hosts/host-b/st/za"; running host-b zulip-acp 0.61.5
+touch "$W/hosts/host-b/st/fail"
 run bot-b --apply
-seq_is "no second SIGHUP" ""
-has "already draining" "pending reload reported"
+[ "$rc" = 1 ] && ok "failed unit exits 1" || { bad "rc=$rc"; echo "$out"; }
+has "journal: stub line" "failure shows the journal"
+rm "$W/hosts/host-b/st/fail"
 
 echo "== self unit: reload, then 'reload pending', exit 0"
 running host-b zulip-acp 0.61.5

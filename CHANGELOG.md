@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/converge.sh` no longer waits for a reload. It probes each recycled
+  unit once. A reload that is still draining in-flight turns is reported as
+  "reload pending", not as an error, and converge continues with the next
+  unit. Before, a drain longer than 30 s failed the run and stopped it before
+  the other units.
+
+### Changed
+
+- `scripts/converge.sh` exit codes: 0 converged, 1 failure, 3 pending (a
+  reload is still draining). The dry run also reports a draining unit as
+  pending and exits 3. Converge detects the drain from the relay itself: it
+  ignores SIGHUP until its re-exec. `--check` is a new alias for the dry run.
+  `VERIFY_WAIT` is removed.
+
 ## [0.70.1] - 2026-11-03
 
 ### Fixed

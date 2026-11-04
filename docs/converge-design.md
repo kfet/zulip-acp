@@ -8,7 +8,7 @@ Keep bash. Target <=450 lines.
 
 1. Go `zulip-acp update`: add `--binary PATH` (single install, no discovery) and `--no-reload` (swap only). In discovery mode, an install you cannot write is a `warn:` line, not a failure; exit code reflects only requested targets; never nonzero after a successful target swap. Unit tests incl. stray root-owned copy -> exit 0 + warning. Release it, then bump SELFUPDATE_MIN in converge to it.
 2. converge cuts: delete gh-download fallback + "no way to install" die (below SELFUPDATE_MIN: one-line refusal with install.sh cmd). Delete probe_state, stale_decision, recycle_plan, SIGHUP path, 60s poll loop. install_binary = `$b update --binary $b --version v$want --no-reload -y`, then `$b --version` must equal want, else die.
-3. Reload: exactly one `systemctl --user reload <unit>` per unit, only if binary/config/unit/fir changed. Verify /proc/$MainPID/exe --version == want, bounded 30s, else die with last 20 journal lines. Timeout = failure. Self-unit case (converge runs inside the target relay: MainPID is an ancestor, walk PPid chain or compare /proc/self/cgroup): skip the wait, print "reload pending: this relay reloads when the current turn ends", exit 0. Rendered unit must keep ExecReload=/bin/kill -HUP $MAINPID.
+3. Reload: exactly one `systemctl --user reload <unit>` per unit, only if binary/config/unit/fir changed. Verify /proc/$MainPID/exe --version == want with ONE probe (no wait; a draining reload is pending, exit 3 — see rule 3a), else fail with last 20 journal lines. Self-unit case (converge runs inside the target relay: MainPID is an ancestor, walk PPid chain or compare /proc/self/cgroup): skip the wait, print "reload pending: this relay reloads when the current turn ends", exit 0. Rendered unit must keep ExecReload=/bin/kill -HUP $MAINPID.
 4. Group by host: binary + fir + fir-exts once per host; config + unit + reload per bot. Two bots on one host -> one update call, two reloads.
 5. Simplify local-vs-ssh where safe (prefer one code path; keep a local transport only if self-ssh is unavailable — check; the update skill says hosts usually cannot ssh to themselves, so a simple, explicit local test is likely still needed — keep it minimal).
 6. `--apply` prints the full plan before any write. Second `--apply` on an up-to-date fleet writes nothing, reloads nothing, exits 0 (acceptance test).
@@ -29,7 +29,18 @@ Update skills/update SKILL.md and deploy skill to match.
    a recycle), refuses the restart that would kill its own turn, and exits
    nonzero with the command to run from outside the relay.
 3. **`reloading` is pending.** A SIGHUP is already draining; a second one is
-   not sent.
+   not sent. systemd shows `active` during the drain (ExecReload returns at
+   once), so converge reads the drain from the relay itself: it ignores
+   SIGHUP (SigIgn bit 0 in `/proc/<MainPID>/status`) from the first SIGHUP
+   until its re-exec.
+3a. **No wait for a drain.** After a recycle, converge probes the unit ONCE.
+   Active on the wanted image: done. Draining, activating, or a reload whose
+   SIGHUP is not taken yet: pending. Failed, inactive, or the wrong image
+   after a start/restart: failure with the last journal lines. Exit codes:
+   0 converged, 1 failure, 3 pending. The dry run (`--check`) also reports a
+   draining unit as pending and exits 3. Re-run converge to confirm. A
+   converge inside the relay it reloads exits 0 (the `!update` job reads any
+   nonzero rc as a failure).
 4. **A binary that does not know `--binary`** (capability probe:
    `update -h | grep -- -binary`, not a version guess) gets
    `update --version vX </dev/null` — with no tty and no `-y` that is the
