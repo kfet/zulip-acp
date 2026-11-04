@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-11-03
+
 ### Added
 
 - Journal sidecars: each conversation writes its id, key, parent, created time and retired flag to `state/convs/<id>/.conv.json`. Each start adopts the sidecars the journal does not know and writes the missing ones, so a lost `journal.json` is rebuilt by the normal start (log line `journal: adopted N conversations`). The deploy skill has a restore runbook.
