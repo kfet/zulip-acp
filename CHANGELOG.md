@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `!mcp login <server>` authorises an MCP server from the chat: open the URL the relay sends, authorise, then paste the URL of the page you land on, even if it fails to load. `!mcp login cancel` stops it.
+
+### Changed
+
+- acp-kit v0.40.0.
+
 ## [0.70.2] - 2026-11-03
 
 ### Fixed

@@ -364,3 +364,15 @@ conversation's session keys. With per-user sessions, `RenameTopic`,
 concurrent turn in the same topic. Fix: resolve the entry from the
 caller's own session key. This touches every loopback tool that arms
 per-turn state, so do it as one change.
+
+## `!mcp login` and `!status` with per-user sessions
+
+Known issue. With `session_scope: "thread_user"` (`PerUserSessions`), the
+session key is `conv.ID-u<user>`, not `conv.ID`. The lookups use
+`Live(conv.ID)` — acp-kit's `convo` controller, in `ACPSessionID` for
+`!mcp login` and in `addSession` for `!status` — so they find no live
+session. The result: `!mcp login` asks the user to send a message
+first even when a session is live, and `!status` shows no session. Fix:
+resolve the live session from the sender's own session key. The fix belongs
+in acp-kit, so `poe-acp` gets it too. The loopback lookup above has the same
+cause but lives in this repo; fix each on its own.

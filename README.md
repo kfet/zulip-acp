@@ -266,6 +266,19 @@ curated allowlist — `!reload`, `!logout`, `!compact`, `!session`,
 `!changelog`, `!mcp`, and `!skills` when the agent is not fir. These do reach the agent and stream a reply
 like any other turn. `!help` lists whichever ones your agent currently offers.
 
+`!mcp login <server>` is the exception: the relay handles it and does not
+forward it. Use it to authorise an MCP server that needs OAuth:
+
+1. Send `!mcp login <server>`. The relay replies with a URL.
+2. Open the URL and authorise.
+3. Paste the URL of the page you land on into the topic, even if that page
+   fails to load. The relay sends it to the agent, which completes the login.
+
+`!mcp login cancel` stops a login that is in progress. The conversation must
+have a live session, so send a message first if the topic is new. Other `!mcp`
+subcommands go to the agent as before. An agent that does not support
+MCP login from the relay gets `!mcp login` passed through, as before.
+
 `!new` is why this surface matters most. A channel conversation can always be
 replaced by opening a new topic, but a **direct message is keyed on the
 participant set**, so without `!new` a DM is one conversation forever with no
