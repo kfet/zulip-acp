@@ -574,6 +574,14 @@ diff_artifact() {
   diff -u --label "$1 (current)" --label "$1 (desired)" "$have" "$3"
 }
 
+# unit_semantic — the unit on stdin without comment and blank lines: the
+# [Section] and Key=Value lines that systemd reads. A difference only in the
+# GENERATED header (or any other comment) is not a unit change: the file is
+# written and daemon-reloaded, but it never forces a restart.
+unit_semantic() {
+  grep -Ev '^[[:space:]]*([#;]|$)' || true
+}
+
 # ---------------------------------------------------------------------------
 # Recycle: ONE action per unit
 #
@@ -582,6 +590,8 @@ diff_artifact() {
 # but never a changed unit (ExecStart flags, EnvironmentFile, PATH). Hence:
 #   not active            -> start   (daemon-reload, enable --now)
 #   unit changed          -> restart (daemon-reload, restart; drops turns)
+#                            ("changed" = unit_semantic differs; a
+#                            comment-only change is written, not restarted)
 #   reloading             -> pending (a SIGHUP is already draining)
 #   files changed, or the running image is not the wanted one
 #                         -> reload
@@ -715,7 +725,7 @@ host_changed() {
 }
 
 plan_bot() { # <bot>
-  local bot=$1 h binary cfg unit uc=0 fc=0 st run self act pr
+  local bot=$1 h binary cfg unit uc=0 us=0 fc=0 st run self act pr
   SPEC=${B_SPEC[$bot]}; SPEC_SRC="$BOTS_DIR/$bot.json"
   h=${B_HOST[$bot]}; HOST=$h
   binary=$(jqs '.binary'); unit="$(jqs '.unit').service"; B_UNIT[$bot]=$unit
@@ -735,14 +745,22 @@ plan_bot() { # <bot>
   render_unit >"$TMPD/$bot.unit"
   # shellcheck disable=SC2088
   if diff_artifact "systemd unit" "~/.config/systemd/user/$unit" "$TMPD/$bot.unit"; then note "unit $unit ✓"
-  else uc=1; CHANGES=$((CHANGES + 1)); H_DR[$h]=1; note "PLAN write unit $unit"; fi
+  else
+    uc=1; CHANGES=$((CHANGES + 1)); H_DR[$h]=1
+    # shellcheck disable=SC2088
+    if [ "$(rcat "~/.config/systemd/user/$unit" | unit_semantic)" = "$(unit_semantic <"$TMPD/$bot.unit")" ]; then
+      note "PLAN write unit $unit (comments only: no restart)"
+    else
+      us=1; note "PLAN write unit $unit"
+    fi
+  fi
 
   host_changed "$h" "$binary" && fc=1
   B_FILES[$bot]="$fc$uc"
   pr=$(probe_unit "$unit")
   IFS='|' read -r st run self <<<"$pr"
   B_SELF[$bot]=$self
-  act=$(recycle_action "$uc" "$st" "$run" "$want_za" "$fc")
+  act=$(recycle_action "$us" "$st" "$run" "$want_za" "$fc")
   [ "$act" = start ] && H_DR[$h]=1
   B_ACT[$bot]=$act
   case "$act" in

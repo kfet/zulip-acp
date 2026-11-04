@@ -22,7 +22,7 @@ Update skills/update SKILL.md and deploy skill to match.
    keeps the old argv and environment, so a changed unit file never takes
    effect through a reload, and a unit that is not running cannot be
    reloaded. `recycle_action` picks exactly one: not active → `enable --now`;
-   unit changed → `restart` (loud warning: drops in-flight turns); already
+   unit changed → `restart` (loud warning: drops in-flight turns). "Changed" means the unit without comment and blank lines differs: a change only in a comment (such as the GENERATED header) writes the file and daemon-reloads, but does not restart; already
    `reloading` → nothing; binary/config/fir moved or running image old →
    `reload`; else nothing.
 2. **Self unit + unit change: refuse.** Converge writes the files (inert until

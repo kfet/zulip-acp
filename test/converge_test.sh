@@ -195,6 +195,26 @@ seq_is "unit-change call sequence" "host-b systemctl daemon-reload
 host-b systemctl restart zulip-acp.service"
 has "WARNING: drops in-flight turns" "restart is announced loudly"
 
+echo "== comment-only unit change: write + daemon-reload, no restart"
+ins2 "# a comment the renderer does not write" "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
+run bot-b --apply
+seq_is "comment-only call sequence" "host-b systemctl daemon-reload"
+has "comments only: no restart" "comment-only change is announced"
+grep -q "a comment the renderer" "$W/hosts/host-b/.config/systemd/user/zulip-acp.service" && bad "unit not rewritten" || ok "unit rewritten"
+
+echo "== comment-only unit change + stale image: daemon-reload + reload"
+ins2 "# a comment the renderer does not write" "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
+running host-b zulip-acp 0.61.5
+run bot-b --apply
+seq_is "comment-only + stale call sequence" "host-b systemctl daemon-reload
+host-b systemctl reload zulip-acp.service"
+
+echo "== ExecStart change: restart"
+sedi 's|^ExecStart=\(.*\)$|ExecStart=\1 --x|' "$W/hosts/host-b/.config/systemd/user/zulip-acp.service"
+run bot-b --apply
+seq_is "ExecStart-change call sequence" "host-b systemctl daemon-reload
+host-b systemctl restart zulip-acp.service"
+
 echo "== stale running image with current files: reload"
 running host-b zulip-acp 0.61.5
 run bot-b --apply
