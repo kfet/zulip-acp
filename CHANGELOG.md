@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-11-07
+
 ### Changed
 
 - The opening message of a branched topic quotes the trigger text (one line, cut to 120 characters, mentions made silent), so it shows what the branch is about.
