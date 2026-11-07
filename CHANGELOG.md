@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The opening message of a branched topic quotes the trigger text (one line, cut to 120 characters, mentions made silent), so it shows what the branch is about.
+- A forked branch session is told that the origin session still runs and owns its work (subagents, jobs, schedules), and that it must leave that work alone unless the user moves it here.
+- acp-kit v0.43.0 (adds `Rekey` to the schedule store, the loopback tools and the command broker).
+
+### Fixed
+
+- A schedule that fires while a human turn runs waits for that turn, and then uses the conversation as that turn left it. If the turn renamed the topic, the scheduled answer goes to the new name and does not open a second topic under the old one. If the turn started a new session, the scheduled turn runs in the new session.
+- A topic renamed with `rename_topic` gets its status mark when the turn ends. The end of the turn used the old topic name and found no conversation.
+- A schedule armed in the same turn as `rename_topic` is no longer dropped as "its conversation is gone". A topic rename or move, by the agent or by a human, now moves the schedules, a deferred `new_session` and a pending login to the new topic. A topic moved onto a topic that has its own conversation gives its schedules to that conversation.
+
 ## [0.72.0] - 2026-11-07
 
 ### Added

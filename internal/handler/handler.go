@@ -1007,7 +1007,7 @@ func (h *Handler) handleUpdate(ev zulipproto.Event) {
 		h.cfg.Logf("handler: topic %q moved to #%s, which is also served", oldTopic, name)
 		dest = ev.NewStreamID
 	}
-	c, migrated, err := h.cfg.Journal.Move(ev.StreamID, oldTopic, dest, newTopic)
+	c, migrated, err := h.moveConv(ev.StreamID, oldTopic, dest, newTopic)
 	if err != nil {
 		h.cfg.Logf("handler: topic move %q → %q: %v", oldTopic, newTopic, err)
 		return
@@ -1282,7 +1282,7 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 	// the topic's lock instead: the relay's own moves make the message's
 	// topic stale there.
 	if h.cfg.TopicStatus == StatusOff && !conv.IsDM() && conv.Topic != key.Topic {
-		if c, moved, err := h.cfg.Journal.Rename(key.StreamID, conv.Topic, key.Topic); err == nil && moved {
+		if c, moved, err := h.renameConv(key.StreamID, conv.Topic, key.Topic); err == nil && moved {
 			conv = c
 		}
 	}

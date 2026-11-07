@@ -325,7 +325,7 @@ func (h *Handler) branchOnce(ctx context.Context, p branchPlan) (journal.Conv, s
 	// because they are still reading the origin topic — on a phone the
 	// mention is the only thing that surfaces the new one.
 	newKey := journal.Channel(p.Dest, title)
-	seed, err := (&convPoster{client: h.cfg.Client, key: newKey}).Post(bctx, branchSeed(p.Actor, h.originLink(p.Parent.Key, p.Parent.MessageID)))
+	seed, err := (&convPoster{client: h.cfg.Client, key: newKey}).Post(bctx, branchSeed(p.Actor, h.originLink(p.Parent.Key, p.Parent.MessageID), p.Text))
 	if err != nil {
 		h.cfg.Logf("handler: branching %s into #%s: the opening message failed (%v) — nothing was created", h.describe(p.Origin), p.Channel, err)
 		return journal.Conv{}, "", fmt.Errorf("I could not open a topic in #%s (%v). Nothing was created.", p.Channel, err)
@@ -675,9 +675,29 @@ func suffixTopic(base string, n int) string {
 // facts in its prompt (see branchPrompt), and a bot message that
 // merely repeats a machine-readable header teaches a reader nothing.
 // The @-mention is load-bearing — see branchCommand.
-func branchSeed(m *zulipproto.Message, origin string) string {
-	return fmt.Sprintf("🌱 %s branched this out of %s. Working on it — the answer follows in this topic.",
-		mentionOf(m), origin)
+//
+// The quote of the trigger text says what the branch is about. Without
+// it, the topic opens with a line that names only who and where, and
+// the reader must wait for the answer to learn the subject.
+func branchSeed(m *zulipproto.Message, origin, text string) string {
+	out := fmt.Sprintf("🌱 %s branched this out of %s\n", mentionOf(m), origin)
+	if q := seedQuote(text); q != "" {
+		out += "> " + q + "\n"
+	}
+	return out + "Working on it — the answer follows here."
+}
+
+// seedQuote is the trigger text as one line for the seed's quote: the
+// whitespace collapsed, so a multi-line message cannot break out of the
+// quote, and cut to branchGoalRunes.
+//
+// A mention in it — of a user, a group or everyone — is made silent:
+// the seed quotes words, it does not say them again, and a second
+// notification for an old mention is noise.
+func seedQuote(text string) string {
+	line := strings.Join(strings.Fields(text), " ")
+	line = strings.ReplaceAll(line, "@*", "@_*")
+	return truncateRunes(line, branchGoalRunes)
 }
 
 // mentionOf renders a SILENT @-mention (`@_**Name|id**`) of a message's
@@ -712,7 +732,8 @@ func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 			prompt += "\n\n[relay] This topic was branched out of another conversation, and this session is a fork of " +
 				"that conversation's session: you already carry its context, up to its latest turn. Call the relay `" +
 				zulipmcp.ToolHistory + "` tool with origin=true only to read what the humans wrote there that your session " +
-				"did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read."
+				"did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read." +
+				" " + forkOriginLive
 		} else {
 			prompt += "\n\n[relay] This topic was branched out of another conversation, which you have NOT seen. " +
 				"Call the relay `" + zulipmcp.ToolHistory + "` tool with origin=true to read it — that reads the origin " +
@@ -720,9 +741,17 @@ func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 				"when the message above leans on context you do not have, not reflexively."
 		}
 		prompt += renameHint(title)
+	} else if forked {
+		prompt += "\n\n[relay] " + forkOriginLive
 	}
 	return prompt
 }
+
+// forkOriginLive tells a forked session that the session it was forked
+// from still runs. Without it, a forked session took a bare "stop" as
+// an order to stop the origin's subagent. Few words, by request.
+const forkOriginLive = "The origin session still runs and owns its work (subagents, jobs, schedules). " +
+	"Leave that work alone unless the user moves it here."
 
 // branchAttribution is the clause that keeps the prompt honest about
 // who wrote the text below it.

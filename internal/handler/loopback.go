@@ -455,7 +455,8 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	// No anchor: a scheduled prompt has no triggering message, so it
 	// cannot rename the topic (see rename.go).
 	entry := &inflightEntry{cancel: cancelTurn, rename: &pendingRename{}, started: h.now()}
-	if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
+	conv, err = h.claimFired(ctx, conv, entry)
+	if err != nil {
 		return err
 	}
 	// See handleMessage: endTurn runs after the turn has left the
@@ -464,12 +465,42 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	defer h.endTurn(conv, entry)
 	defer h.clearInflight(conv.ID, entry)
 
-	h.cfg.Logf("handler: firing schedule %s in %s (depth %d)", it.ID, h.describe(key), it.Depth)
+	h.cfg.Logf("handler: firing schedule %s in %s (depth %d)", it.ID, h.describe(conv.Key), it.Depth)
 	// Addressed, but run lets a scheduled turn abstain all the same:
 	// a check that found nothing new updates the schedule's heartbeat
 	// (heartbeat.go) instead of posting the sentinel. msgID 0 skips the
 	// :eyes: acknowledgement: there is no triggering message.
 	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, &it)
+}
+
+// claimFired claims conv for a scheduled turn and returns it as the
+// journal holds it once the claim is held.
+//
+// The claim can wait for a human turn, and that turn can change the
+// conversation at its end: `rename_topic` moves the key, and
+// `new_session` retires the conv-id. The snapshot taken before the
+// wait would post the answer under the old topic name — which makes a
+// second topic — or run it in the retired session. So the conversation
+// is read again under the claim, and a retired one is followed to the
+// conversation that now answers at its key.
+func (h *Handler) claimFired(ctx context.Context, conv journal.Conv, entry *inflightEntry) (journal.Conv, error) {
+	for {
+		if err := h.claimConvIdle(ctx, conv.ID, entry); err != nil {
+			return journal.Conv{}, err
+		}
+		// An unknown id leaves cur zero, and its zero key finds no
+		// conversation below.
+		cur, ok := h.cfg.Journal.LookupID(conv.ID)
+		if ok && !cur.Retired {
+			return cur, nil
+		}
+		h.clearInflight(conv.ID, entry)
+		next, ok := h.cfg.Journal.Lookup(cur.Key)
+		if !ok {
+			return journal.Conv{}, fmt.Errorf("%w: no conversation in %s", schedule.ErrGone, h.describe(cur.Key))
+		}
+		conv = next
+	}
 }
 
 // claimConvIdle blocks until no turn is in flight for convID and then
@@ -493,11 +524,10 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // turn, including a scheduled one: a loopback capability must not
 // depend on a human having started the turn.
 //
-// It resolves the token from the conversation as it was at the START of
-// the turn, so a topic renamed mid-turn drops the deferred action. That
-// is the fail-safe direction — nothing is reset — and the user's next
-// `!new` does what they wanted anyway; carrying a rename through would
-// mean tracking identity across a turn for one vanishingly rare case.
+// It resolves the token from the conversation as it is NOW, after the
+// rename the turn asked for. A topic move re-keys the deferred action
+// to the new token (see moveConv), so `new_session` and `rename_topic`
+// in one turn both take effect.
 //
 // Every caller adds one to h.endWG first; endTurn marks it done.
 func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
@@ -511,6 +541,12 @@ func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
 	// rename is the last thing the turn does to the topic it has been
 	// posting into, and nothing after it may assume the old name.
 	h.applyRename(conv, entry)
+	// The rename moved the key, and with it every token-keyed state
+	// (moveConv). Everything below must use the new token, or the
+	// deferred `new_session` and the status mark miss the topic.
+	if cur, ok := h.cfg.Journal.LookupID(conv.ID); ok {
+		conv = cur
+	}
 	// Read before the loopback drain: `new_session` ends this
 	// conversation and forgets its messages, and the fresh one has
 	// none of its own yet to move the topic by.

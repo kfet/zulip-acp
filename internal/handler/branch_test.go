@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/relaytool"
@@ -215,6 +216,10 @@ func TestBranchOpensATopicAndRecordsItsOrigin(t *testing.T) {
 	// so a reader can click from the new topic to the origin.
 	if want := fmt.Sprintf("#**fleet>planning@%d**", conv.Parent.MessageID); !strings.Contains(seed, want) {
 		t.Fatalf("the seed message does not link to the origin message %s: %q", want, seed)
+	}
+	// The seed says what the branch is about: the trigger text, quoted.
+	if !strings.Contains(seed, "\n> rework the rollover splitter it keeps sealing early\n") {
+		t.Fatalf("the seed message does not quote the trigger text: %q", seed)
 	}
 	if !strings.Contains(pointer, "branched → #**fleet>rework the rollover splitter**") {
 		t.Fatalf("origin pointer = %q", pointer)
@@ -520,9 +525,38 @@ func TestBranchAnchorsTheRenameInTheNewTopic(t *testing.T) {
 // --- the seed message ----------------------------------------------------
 
 func TestBranchSeedNamesAnAnonymousSender(t *testing.T) {
-	got := branchSeed(&zulipproto.Message{}, "#fleet > \"planning\"")
+	got := branchSeed(&zulipproto.Message{}, "#fleet > \"planning\"", "go")
 	if !strings.Contains(got, "someone") {
 		t.Fatalf("seed = %q", got)
+	}
+}
+
+// TestBranchSeedShape pins the opening message: who and where, the
+// trigger text as one quoted line, then the promise of an answer.
+func TestBranchSeedShape(t *testing.T) {
+	got := branchSeed(&zulipproto.Message{SenderID: 8, SenderName: "Kfet"}, "#**fleet>planning@3**", "rework\n\n  the splitter")
+	want := "🌱 @_**Kfet|8** branched this out of #**fleet>planning@3**\n" +
+		"> rework the splitter\n" +
+		"Working on it — the answer follows here."
+	if got != want {
+		t.Fatalf("seed =\n%s\nwant\n%s", got, want)
+	}
+	// No text, no empty quote.
+	if got := branchSeed(nil, "x", "  \n "); strings.Contains(got, ">") {
+		t.Fatalf("seed with no text = %q", got)
+	}
+}
+
+// TestSeedQuoteIsBoundedAndSilent: a long trigger is cut, and a
+// mention in it does not notify anyone a second time.
+func TestSeedQuoteIsBoundedAndSilent(t *testing.T) {
+	long := strings.Repeat("é", branchGoalRunes+50)
+	if got := seedQuote(long); utf8.RuneCountInString(got) != branchGoalRunes+1 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("quote of a long text = %d runes", utf8.RuneCountInString(got))
+	}
+	got := seedQuote("ask @**Ada|5** and @*team* and @**all**")
+	if want := "ask @_**Ada|5** and @_*team* and @_**all**"; got != want {
+		t.Fatalf("quote = %q, want %q", got, want)
 	}
 }
 
@@ -789,7 +823,7 @@ func TestBranchAvoidsATopicOnlyTheJournalKnows(t *testing.T) {
 // TestBranchSeedDegradesWithoutASenderID: there is no such message on
 // the wire, but mentioning user 0 would be worse than a bare name.
 func TestBranchSeedDegradesWithoutASenderID(t *testing.T) {
-	if got := branchSeed(nil, "#fleet > \"planning\""); strings.Contains(got, "@**") {
+	if got := branchSeed(nil, "#fleet > \"planning\"", "go"); strings.Contains(got, "@**") {
 		t.Fatalf("seed = %q", got)
 	}
 }
@@ -1388,5 +1422,23 @@ func TestConvChildrenReadsTheChildWhereItIsNow(t *testing.T) {
 		if k.ConvID == child.ID {
 			t.Fatal("the oldest child was resolved past the cap")
 		}
+	}
+}
+
+// TestForkedPromptWithoutLoopbackStillSaysTheOriginRuns: the forked
+// session's subagents and jobs exist with or without the relay's MCP
+// tools, so the warning does not depend on them.
+func TestForkedPromptWithoutLoopbackStillSaysTheOriginRuns(t *testing.T) {
+	hh := cmdHarness(t, newAgent("done"), nil)
+	plan := branchPlan{
+		Actor:  &zulipproto.Message{SenderName: "Ada"},
+		Parent: journal.Parent{Key: journal.Channel(4, "planning"), MessageID: 3},
+		Text:   "go on",
+	}
+	if p := hh.h.branchPrompt(plan, "a topic", true); !strings.HasSuffix(p, "\n\n[relay] "+forkOriginLive) {
+		t.Fatalf("forked prompt = %q", p)
+	}
+	if p := hh.h.branchPrompt(plan, "a topic", false); strings.Contains(p, forkOriginLive) {
+		t.Fatalf("fresh prompt = %q", p)
 	}
 }

@@ -164,7 +164,7 @@ func (h *Handler) applyRename(conv journal.Conv, e *inflightEntry) {
 		h.cfg.Logf("handler: renaming topic %q to %q failed (%v) — the topic keeps its name", conv.Key.Topic, title, err)
 		return
 	}
-	if _, moved, err := h.cfg.Journal.Rename(conv.Key.StreamID, conv.Key.Topic, title); err != nil {
+	if _, moved, err := h.renameConv(conv.Key.StreamID, conv.Key.Topic, title); err != nil {
 		h.cfg.Logf("handler: topic renamed to %q but the journal did not follow: %v", title, err)
 	} else if !moved {
 		h.cfg.Logf("handler: topic renamed to %q but the journal had already moved on", title)

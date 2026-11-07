@@ -2048,6 +2048,14 @@ answer streams into that topic through the existing path: rollover,
 statusline, attachments. Schedules live in `<state-dir>/schedules.json`,
 alongside the journal, so they survive a restart.
 
+A schedule is keyed by the conversation's key **token**, which holds the topic,
+so it survives `!new`. A topic rename or move changes the token. Every journal
+move therefore goes through `Handler.moveConv`, which re-keys the schedules, a
+deferred `new_session` and a pending login to the new token (`Rekey` in
+acp-kit's schedule store, relaytool and command broker). Never call
+`Journal.Move` or `Journal.Rename` directly: a schedule left under the old
+token fires into a conversation that is gone and is dropped.
+
 This is the layer `mintick` (host-level cron) cannot serve: it can run a
 command at a time, but it cannot deliver into a conversation *with context*.
 The converse also holds — host chores stay in host cron. Nothing here is a

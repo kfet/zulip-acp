@@ -145,7 +145,7 @@ func (h *Handler) inTopic(m zulipproto.Message, conv journal.Conv) bool {
 // followTopic makes the journal hold topic as conv's current name and
 // returns the conversation as the journal then holds it.
 func (h *Handler) followTopic(conv journal.Conv, topic string) journal.Conv {
-	if _, _, err := h.cfg.Journal.Rename(conv.StreamID, conv.Topic, topic); err != nil {
+	if _, _, err := h.renameConv(conv.StreamID, conv.Topic, topic); err != nil {
 		h.cfg.Logf("handler: topic %q is now %q but the journal did not follow: %v", conv.Topic, topic, err)
 	}
 	cur, _ := h.cfg.Journal.LookupID(conv.ID)
