@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-11-07
+
 ### Added
 
 - `zulip-acp import-states <file>` stages a one-time topic state import from a triage file. The relay applies it at its next start or graceful reload, only to topics with no state. An entry with `dup_of` becomes `done`.
