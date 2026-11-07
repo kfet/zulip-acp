@@ -921,16 +921,61 @@ sends that notice for every resolve, whatever the flags say (measured, Zulip
 12.2). An unresolve soon after a resolve deletes the resolve notice and sends
 none of its own. See *The topic status mark*.
 
+### Topic state
+
+`journal.TopicState` is what the user must do with a topic: `needs_you`,
+`fyi`, `waiting`, `blocked` or `done`, with a one-line reason, `set_at` and
+`set_by` (`agent`, `user` or `import`). Next to it the journal keeps
+`last_activity_at` (every human message, every turn start and end, and every out-of-band post) and `activity_since_state`
+(turns started since the state was recorded). All three belong to the PLACE:
+`!new` carries them to the fresh conversation.
+
+Decisions, and why:
+
+- **Change-only.** The agent records a state with the `topic_state` loopback
+  tool only when it changes. The per-turn `topic_status` tool it replaces made
+  every turn a status report, and asking the agent to restate the state every
+  turn was rejected as too invasive. A repeat with the same state and reason
+  writes nothing. Staleness is visible instead: `!inbox` flags a state with
+  three or more turns since it was recorded.
+- **One tool.** `topic_status` is gone. Two tools for one fact would confuse
+  the model. The `topic_state` description was tested on a cheap model; do
+  not reword it.
+- **The user wins.** `!state <state> [reason]` sets `set_by=user`. Nothing
+  resets a state but another recorded state.
+- **Merge-back posts, never moves.** When a branched conversation (journal
+  `parent`) first moves into `done` or `fyi` from any other state, the relay
+  posts `⤷ branch result: #**channel>topic** — reason` in the parent topic. An
+  import posts nothing: it is a backfill, not news.
+- **Import is staged, not written.** `zulip-acp import-states <file>` is a
+  second process; the running relay holds the journal in memory and rewrites
+  it whole, so a direct write would be lost. The command stages the file as
+  `<state_dir>/state-import.json`; `journal.ApplyStagedImport` applies it when
+  the relay opens the journal (a start or a graceful reload), only to
+  conversations with no state, and renames it to `.applied`.
+- **A listing stays in its channel.** It is a read, and the rule of link
+  hydration applies: the bot is subscribed to every served channel, so a
+  full list would show one channel's topics and reasons to the readers of
+  another. `!inbox` lists the channel it is sent in; an owner
+  (`OpsOwners`) gets every channel; a non-owner in a DM is told to ask in a
+  channel. The `inbox` tool lists the caller's channel and refuses a DM.
+- **Reasons cannot notify.** A reason is shown in `!inbox` and posted in a
+  parent topic, where its author did not write, so the journal silences
+  every mention in it (`@*` → `@_*`).
+- **`!inbox` is bounded.** One message, under Zulip's 10000 code-point limit,
+  with a "…and N more" line. DMs, retired conversations, done topics and
+  topics outside the served channels are left out. The `inbox` loopback tool
+  returns the same text and is read-only.
+
 ### The topic status mark (`topic_status`)
 
 Two modes. The default, `"emoji"`, changes only a prefix on the topic name:
 `status_busy` (⧗ U+29D7) while a turn runs, `status_question` (⁇ U+2047)
-while the agent waits for the user, and no prefix while idle. A pending
-schedule alone shows no prefix. The agent sets "waits for the user" with the
-`topic_status` loopback tool; the state is per turn, defaults to done, and is
-applied by `endTurn`, never mid-turn. A turn that posts no answer (the silent
-sentinel) keeps the earlier state. Both default glyphs have no emoji
-presentation in Unicode, so every client draws them in the text colour.
+while the topic's persistent state is `needs_you`, and no prefix otherwise. A
+pending schedule alone shows no prefix. The state is NOT per turn: see *Topic
+state*. A state the agent records during a turn is applied to the name by
+`endTurn`, never mid-turn. Both default glyphs have no emoji presentation in
+Unicode, so every client draws them in the text colour.
 
 Measured on Zulip 12.2 before this mode became the default: a plain topic
 move with both notification flags `false` posts NO Notification Bot notice,

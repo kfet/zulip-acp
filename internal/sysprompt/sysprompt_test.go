@@ -143,11 +143,11 @@ func TestWidgets(t *testing.T) {
 	}
 }
 
-func TestResolveTopicStatus(t *testing.T) {
-	if strings.Contains(Resolve("", false, "", "", false, "", "", false), "topic_status") {
-		t.Fatal("topic_status note without the tool")
+func TestResolveTopicState(t *testing.T) {
+	if strings.Contains(Resolve("", false, "", "", false, "", "", false), "topic_state") {
+		t.Fatal("topic_state note without the tool")
 	}
-	if !strings.Contains(Resolve("", false, "", "", false, "", "", true), TopicStatusInstruction) {
-		t.Fatal("topic_status note missing")
+	if !strings.Contains(Resolve("", false, "", "", false, "", "", true), TopicStateInstruction) {
+		t.Fatal("topic_state note missing")
 	}
 }

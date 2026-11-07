@@ -600,11 +600,6 @@ type inflightEntry struct {
 	turn   *convo.Turn
 	// started is when the turn began; Busy reports the turn age from it.
 	started time.Time
-	// status is what the `topic_status` tool set during the turn, and
-	// quiet that the turn posted no answer. Both are read and written
-	// under renameMu and applied by endTurn; see topicstatus.go.
-	status string
-	quiet  bool
 }
 
 // Handler implements the event side of the relay.
@@ -662,9 +657,6 @@ type Handler struct {
 	// statusMu holds one *sync.Mutex per topic token, which serialises
 	// the resolves and unresolves of that topic. See topicstatus.go.
 	statusMu sync.Map
-	// waiting holds the token of every topic whose last answered turn
-	// asked the user for input (StatusEmoji only); see topicstatus.go.
-	waiting sync.Map
 
 	// dmNames remembers the display names of a DM's participants,
 	// learned from the messages arriving in it. The key holds user
@@ -1234,6 +1226,12 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 			handled = true
 		}
 	} else {
+		// Every human message in a known conversation is activity,
+		// a command included. A turn it starts counts it again, as a
+		// turn (noteActivity in runOpts).
+		if c, ok := h.cfg.Journal.Lookup(key); ok {
+			h.noteActivity(c.ID, false)
+		}
 		prompt, handled = h.dispatch(ctx, m, key, in)
 	}
 	if handled {
@@ -1456,6 +1454,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	// Before anything is posted: every message of this turn goes to
 	// the topic as markBusy leaves it.
 	conv = h.markBusy(ctx, conv, msgID)
+	h.noteActivity(conv.ID, true)
 	token := conv.Key.Token()
 	st := h.beginSchedTurn(token, fired)
 	defer h.endSchedTurn(token, st)
@@ -1581,7 +1580,6 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		}
 		if res.Abstained {
 			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
-			h.markQuiet(conv.ID)
 			h.recordTurn(conv.ID, msgID, 0, res.LeafID)
 			h.clearTail(conv.ID)
 			h.heartbeat(context.WithoutCancel(ctx), conv, sched)
@@ -1614,7 +1612,6 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	// upload: an attachment is an answer.
 	if suffix == "" && h.cfg.SilentSentinel != "" && strings.TrimSpace(sink.messageText()) == strings.TrimSpace(h.cfg.SilentSentinel) {
 		h.cfg.Logf("handler: agent answered only with the sentinel in %s", conv.ID)
-		h.markQuiet(conv.ID)
 		h.retract(fctx, conv.ID, split)
 		h.recordTurn(conv.ID, msgID, 0, leaf)
 		h.clearTail(conv.ID)

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `zulip-acp import-states <file>` stages a one-time topic state import from a triage file. The relay applies it at its next start or graceful reload, only to topics with no state. An entry with `dup_of` becomes `done`.
+- A branched topic that first moves to `done` or `fyi` posts one line in its parent topic: `⤷ branch result: <link> — <reason>`.
+- `!inbox` lists the open topics of the channel it is sent in (an owner gets every channel), grouped needs_you, blocked, fyi, waiting, then no state, with the age of the last activity and the reason. It flags a state with three or more turns since it was recorded. The `inbox` loopback tool returns the same list. The `!opts` panel has buttons for `!state` and `!inbox`.
+- Mentions in a topic state reason are silenced, because `!inbox` and the branch merge-back show the reason in other topics.
+- `!state` shows the topic state; `!state <needs_you|fyi|waiting|blocked|done> [reason]` sets it as the user.
+- Topic state: each topic can carry a persistent state (`needs_you`, `fyi`, `waiting`, `blocked`, `done`) with a reason, who set it and when, plus its last activity and the turns since the state was recorded. It survives restarts and `!new`.
+
+### Changed
+
+- The relay-commands skill lists the Zulip-only commands, `!state` and `!inbox` included.
+- The `topic_state` loopback tool replaces `topic_status`. The agent records a state only when it changes; the state is no longer per turn. In emoji mode a topic shows ⁇ while its state is `needs_you`. The tool is offered whenever `relay_mcp` is on, in every `topic_status` mode.
+
 ## [0.71.0] - 2026-11-04
 
 ### Added

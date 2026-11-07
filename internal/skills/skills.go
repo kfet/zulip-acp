@@ -9,7 +9,10 @@ package skills
 import (
 	"embed"
 	"errors"
+	"io/fs"
 	"path/filepath"
+	"strings"
+	"testing/fstest" // no dependency on package testing or flag
 
 	"github.com/kfet/acp-kit/command"
 	kitskills "github.com/kfet/acp-kit/skills"
@@ -55,11 +58,35 @@ func LoadBuiltin(stateDir string) ([]Skill, error) {
 	// command table, so it cannot drift from the commands this relay
 	// actually handles. It extracts under its own prefix so the two
 	// bundles never share a content-hash dir.
-	cmds, err := loadBundle(dir, command.SkillBundle(), "zulip-acp-commands")
+	cmds, err := loadBundle(dir, commandsBundle(), "zulip-acp-commands")
 	if err != nil {
 		return nil, err
 	}
 	return append(own, cmds...), nil
+}
+
+// zulipCommands lists the commands only this relay has. The broker
+// table cannot hold them (poe-acp has no topics or widgets), so they are
+// added to the generated skill here, before its passthrough section.
+const zulipCommands = `## Zulip relay commands (handled by this relay)
+
+- ` + "`!state`" + ` — show this topic's state (what the user must do with it)
+- ` + "`!state <needs_you|fyi|waiting|blocked|done> [reason]`" + ` — the user sets it; it overrides yours (see the ` + "`topic_state`" + ` tool)
+- ` + "`!inbox`" + ` — list the open topics of this channel, grouped by state (the ` + "`inbox`" + ` tool reads the same list)
+- ` + "`!opts`" + ` — options panel
+- ` + "`!branch [#**channel**] <text>`" + ` — spin ` + "`<text>`" + ` out into a new topic
+- ` + "`!sched`" + ` — pending schedules with due times (if supported)
+- ` + "`!archive`" + ` — archive this topic (if supported)
+
+`
+
+// commandsBundle is acp-kit's generated relay-commands skill with
+// zulipCommands added before the passthrough section.
+func commandsBundle() fs.FS {
+	// A test checks that the anchor is still there.
+	const anchor = "## Agent passthrough commands"
+	md := strings.Replace(command.SkillMarkdown(), anchor, zulipCommands+anchor, 1)
+	return fstest.MapFS{"bundle/" + command.SkillName + "/SKILL.md": {Data: []byte(md)}}
 }
 
 // loadBundle is a seam so a test can drive the error branches.

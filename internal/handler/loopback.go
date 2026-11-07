@@ -328,6 +328,7 @@ func (h *Handler) rememberPosted(key journal.Key, split *rollover.Splitter) {
 	for _, id := range ids {
 		h.rememberOwn(conv.ID, id)
 	}
+	h.noteActivity(conv.ID, false)
 }
 
 // --- command.Scheduler ---------------------------------------------------
@@ -523,7 +524,7 @@ func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
 	if h.cfg.Loopback != nil {
 		h.cfg.Loopback.EndTurn(conv.Key.Token())
 	}
-	h.noteTurnStatus(conv, entry)
+	h.noteActivity(conv.ID, false)
 	// After the rename and the loopback drain, so the mark is set on
 	// the final topic and sees any schedule the turn left armed.
 	h.settleStatusKey(conv.Key.Token(), anchor)

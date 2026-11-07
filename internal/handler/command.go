@@ -241,6 +241,9 @@ func (h *Handler) beforeFilters() []convo.Filter {
 			h.schedCommand(ctx, metaOf(in).key)
 			return convo.Handled
 		},
+		// `!state` and `!inbox` are this relay's own: they read and write
+		// the journal's topic state (topicstate.go).
+		h.stateFilter,
 		h.settingsFilter,
 		// `!fir`, `!skills` and `!run` run a program on the relay host
 		// with no agent involved. They are handled here, ahead of the
@@ -359,6 +362,7 @@ func (h *Handler) decorate(text, out string) string {
 	if h.CanSchedule() {
 		extra += schedHelp
 	}
+	extra += stateHelp
 	extra += h.quickHelp()
 	extra += settingsHelp()
 	if h.opsEnabled() {

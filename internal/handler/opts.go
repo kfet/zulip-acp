@@ -750,6 +750,8 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 	if h.CanSchedule() {
 		fmt.Fprintf(&sb, "- `%s%s` — pending schedules\n", s, schedVerb)
 	}
+	fmt.Fprintf(&sb, "- `%s%s` — this topic's state; `%s%s <state> [reason]` sets it\n", s, stateVerb, s, stateVerb)
+	fmt.Fprintf(&sb, "- `%s%s` — open topics, grouped by state\n", s, inboxVerb)
 
 	// A panel can be asked for before this place HAS a conversation —
 	// commands never allocate one. Say so, because until it exists
@@ -793,6 +795,9 @@ func (h *Handler) renderPanel(key journal.Key, note, filter string, matched []cl
 	if h.CanSchedule() {
 		buttons = append(buttons, zulipproto.Choice(schedVerb, "Pending schedules", s+schedVerb))
 	}
+	buttons = append(buttons,
+		zulipproto.Choice(stateVerb, "Topic state", s+stateVerb),
+		zulipproto.Choice(inboxVerb, "Inbox", s+inboxVerb))
 	buttons = append(buttons, settingButtons...)
 	return sb.String(), zulipproto.ZForm("⚙️ "+modelLabel(effective), buttons), chips
 }

@@ -1162,10 +1162,17 @@ func (hh *harness) deliver(t *testing.T, topic, content string) {
 	hh.deliverAs(t, humanID, topic, content)
 }
 
+// turnWait bounds how long deliver waits for a turn. It is a hang
+// guard, not a measurement: a passing turn returns at once, and a turn
+// that decodes and downscales an image under -race on a loaded 2-core
+// host can take far longer than 10s. A shorter bound failed those tests
+// at random.
+const turnWait = 2 * time.Minute
+
 func (hh *harness) deliverAs(t *testing.T, sender int64, topic, content string) {
 	t.Helper()
 	hh.h.Handle(context.Background(), channelEvent(sender, topic, content))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), turnWait)
 	defer cancel()
 	if err := hh.h.WaitIdle(ctx); err != nil {
 		t.Fatalf("turn did not finish: %v", err)

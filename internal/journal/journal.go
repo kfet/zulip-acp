@@ -373,6 +373,16 @@ type Conv struct {
 	// leaf. Absent in an older journal, so no version
 	// bump is needed.
 	Turns []Turn `json:"turns,omitempty"`
+	// State is what the user must do with the topic, or nil when
+	// nobody has recorded it yet. See topicstate.go. It belongs to the
+	// PLACE: `!new` carries it to the fresh conversation.
+	State *TopicState `json:"state,omitempty"`
+	// LastActivity is when a human or the relay last wrote in the
+	// topic, in Unix milliseconds, or 0 when unknown. Carried by `!new`.
+	LastActivity int64 `json:"last_activity_at,omitempty"`
+	// ActivitySince counts the turns that started since State was last
+	// recorded. Carried by `!new`.
+	ActivitySince int `json:"activity_since_state,omitempty"`
 	// Retired marks a conversation the user replaced with `!new`. It
 	// keeps its id — and therefore its state/convs/<id>/ directory,
 	// which is never deleted — but it no longer answers to its key,
@@ -791,7 +801,10 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// branched from somewhere, and `!new` does not un-branch it. The
 	// retired conversation keeps its own copy — it is the record of
 	// where that session's context came from.
-	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent, Created: nowMillis()}
+	// So do the topic state and its activity facts: `!new` resets the
+	// session, not what the user must do with the topic.
+	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent, Created: nowMillis(),
+		State: old.State, LastActivity: old.LastActivity, ActivitySince: old.ActivitySince}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commitSync(func() {

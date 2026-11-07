@@ -59,19 +59,3 @@ func TestStatusGlyphs(t *testing.T) {
 		t.Fatalf("glyphs = %q %q", cfg.GetStatusBusy(), cfg.GetStatusQuestion())
 	}
 }
-
-func TestOffersTopicStatus(t *testing.T) {
-	resolve := TopicStatusResolve
-	for _, c := range []struct {
-		cfg  Config
-		want bool
-	}{
-		{Config{}, false},
-		{Config{RelayMCP: true}, true},
-		{Config{RelayMCP: true, TopicStatus: &resolve}, false},
-	} {
-		if got := c.cfg.OffersTopicStatus(); got != c.want {
-			t.Errorf("%+v: %v", c.cfg, got)
-		}
-	}
-}

@@ -12,7 +12,8 @@ agent — so the agent can drive the relay from inside a turn: post out of band,
 schedule a prompt back into the same conversation, and read that
 conversation's own earlier messages (`history`), and rename the topic it is
 talking in (`rename_topic`), and branch work out into new topics
-(`branch`), and react to a message in its own conversation (`react`). ACP has no
+(`branch`), and react to a message in its own conversation (`react`), and
+record its topic's state (`topic_state`) and read the `inbox`. ACP has no
 agent-initiated message and the streaming sink is bound per turn, but an MCP
 tool call runs agent→client, so this is the mechanism the protocol already
 gives us. It is **off by default** (`"relay_mcp": true`), because it widens
@@ -90,7 +91,10 @@ internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
 internal/mcpapps/       MCP Apps host (NO Zulip imports): instance store + tokens,
                         loopback HTTP listener, embedded host shell (shell/),
                         WebSocket bridge to fir's dev.fir.mcp/v1 extension
-internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids
+internal/journal/       (stream_id, topic) → conv-id alias map + tail/opts msg ids;
+                        topicstate.go = the persistent topic state behind
+                        `topic_state`, `!state` and `!inbox`;
+                        stateimport.go = the staged `import-states` file
 internal/reload/        graceful reload: drain + re-exec in place, cursor handoff
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status-line renderer (live spinner +
@@ -176,7 +180,8 @@ Zulip wire protocol it stays here.
   Zulip knows: conv-id → broker token / `journal.Key`, posting through the
   splitter, and re-applying the relay's gates when a schedule fires.
 - **A tool that needs something only Zulip knows lives in
-  `internal/zulipmcp`.** That is `history`, `rename_topic`, `branch` and `react` today —
+  `internal/zulipmcp`.** That is `history`, `rename_topic`, `branch`, `react`,
+  `topic_state` and `inbox` today —
   a narrow over a topic or a DM, a topic move, and a topic fan-out, all
   resolved from `Handler.ConvKey`, and a reaction on a message in the
   caller's own conversation. None has a Broker action, because none is a
@@ -208,6 +213,15 @@ Zulip wire protocol it stays here.
   `Handler.endTurn`, and why `rename_topic` is deferred to the same place — a
   turn posts into the topic it started in, so a topic that moves underneath it
   splits its own answer between two topics. Do not "fix" any of the three.
+- **The topic state is change-only, and `topic_state` is its only agent
+  tool.** Do not bring back a per-turn status tool or a sysprompt line that
+  asks for a state every turn — the user rejected that as too invasive — and
+  do not reword the `topic_state` description: it was tested on a cheap
+  model. `import-states` STAGES a file for the relay to apply; it must never
+  write `journal.json`, which the running relay owns.
+- **A listing is a read: same channel only, owner excepted.** `!inbox` and
+  the `inbox` tool follow the link-hydration rule (`link.go`). Never make
+  either list another channel to a non-owner.
 - **`post` has no target parameter, and must not grow one casually.** The
   conversation comes from the MCP connection token. An agent that can post
   anywhere is a realm-wide megaphone for anything that can prompt-inject it.

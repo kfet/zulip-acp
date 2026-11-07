@@ -225,6 +225,9 @@ offer the same surface.
 | `!schedules` | list the prompts the agent has armed here (needs `relay_mcp`) |
 | `!unschedule <id>` | cancel one of them |
 | `!sched` | the same list, with due times in your own time zone |
+| `!state` | show what you must do with this topic: its state, reason, who set it and when |
+| `!state <needs_you\|fyi\|waiting\|blocked\|done> [reason]` | set it yourself; it overrides the agent's |
+| `!inbox` | list the open topics of this channel (an owner in `update_owner_ids`: of every channel), grouped needs_you, blocked, fyi, waiting, then no state; done topics are left out |
 | `!login [provider]` | connect an LLM provider by OAuth; paste the redirect URL back as your next message |
 | `!login cancel` | abort a login in progress |
 
@@ -390,7 +393,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `seal_marker` | `*(continued below)*` | closes a rolled-over message |
 | `continuation_marker` | `*(continued from above)*` | opens a continuation |
 | `edit_interval_ms` | `300` | streaming edit coalescing |
-| `topic_status` | `"emoji"` | show in the topic list where agent work is live. `"emoji"`: put `status_busy` in front of the topic name while a turn runs and `status_question` while the agent waits for the user (it says so with the `topic_status` loopback tool, so that state needs `relay_mcp`); an idle topic has no prefix, and a pending schedule shows none. A plain topic move posts no notice and keeps every user's follow setting. `"resolve"`: the old behaviour — resolve an idle topic (✔) and unresolve it while a turn runs or a schedule is pending; Zulip posts a "marked as resolved" notice for each resolve, and no API flag suppresses it. `"off"` (or `false`): leave topic names alone. `true` means the default. Both modes need the realm's permission to move topics |
+| `topic_status` | `"emoji"` | show in the topic list where agent work is live. `"emoji"`: put `status_busy` in front of the topic name while a turn runs and `status_question` while the topic's state is `needs_you` (see *Topic state and `!inbox`*); an idle topic has no prefix, and a pending schedule shows none. A plain topic move posts no notice and keeps every user's follow setting. `"resolve"`: the old behaviour — resolve an idle topic (✔) and unresolve it while a turn runs or a schedule is pending; Zulip posts a "marked as resolved" notice for each resolve, and no API flag suppresses it. `"off"` (or `false`): leave topic names alone. `true` means the default. Both modes need the realm's permission to move topics |
 | `status_busy` | `"⧗"` | `"emoji"` mode glyph of a topic with a turn running (U+29D7 BLACK HOURGLASS). Literal Unicode, 1–4 characters, no spaces |
 | `status_question` | `"⁇"` | `"emoji"` mode glyph of a topic that waits for the user (U+2047 DOUBLE QUESTION MARK). The defaults are monochrome: they have no emoji presentation, so web and mobile draw them in the text colour |
 | `stream_edits` | `true` | publish the answer as it arrives. `false` = **quiet mode**: no intra-turn edits, no `Thinking…` placeholder, one message and one push carrying the answer; liveness is the typing indicator. See below |
@@ -883,6 +886,47 @@ A topic a human moves out of the served set by hand is treated the same way: the
 conversation is retired rather than allowed to follow the topic somewhere the
 relay does not answer.
 
+### Topic state and `!inbox`
+
+With many topics, you cannot tell which are finished and which need a look.
+Zulip's ✔ does not mean "done", and the agent writes last in almost every
+topic. So each topic can carry a STATE that lasts across turns:
+
+- `needs_you` — the agent waits for your answer or decision. The topic name
+  shows `status_question` (⁇) in emoji mode.
+- `fyi` — a result is there to read; nothing is needed from you.
+- `waiting` — work goes on without you (a build, a branch, a schedule).
+- `blocked` — the agent cannot continue, and an answer alone will not fix it.
+- `done` — nothing is left to read or do. `!inbox` leaves it out.
+
+A new topic has no state. The agent records a state with the `topic_state`
+loopback tool (needs `relay_mcp`) only when it changes; it is not asked to state
+it every turn. You override it with `!state <state> [reason]`. `!new` keeps it.
+
+`!inbox` posts one list: each topic as a link, the age of its last activity and
+its reason. A topic with three or more turns since its state was recorded is
+flagged "state may be stale". It lists the channel you send it in, because the
+bot can read every channel it serves and a list of all of them would show one
+channel's topics to the readers of another. An owner (`update_owner_ids`) gets
+every served channel, from any channel or DM. Mentions in a reason are
+silenced, because a reason is shown in places its author did not write in.
+
+When a BRANCHED topic first moves to `done` or `fyi`, the relay posts one line in
+the parent topic: `⤷ branch result: <link> — <reason>`. No message moves.
+
+To seed states once from a triage file
+(`{conv_id: {topic, stream_id, state, reason, dup_of, set_at, set_by}}`):
+
+```
+zulip-acp import-states [-config F] [-state-dir D] topic-states.json
+```
+
+The command checks the file and stages a copy in the state dir; it never writes
+the journal, which the running relay owns. The relay applies it at its next
+start or graceful reload (`systemctl --user reload …`), only to topics with no
+state yet, with `set_by` `import`. An entry with `dup_of` becomes `done` with
+the reason "dup of <dup_of>".
+
 ### The agent→relay loopback (`relay_mcp`)
 
 With `"relay_mcp": true` the relay hosts a small MCP server on a private unix
@@ -913,6 +957,10 @@ socket and advertises it to its own child agent. The agent can then:
   conversation. With the id `post` returns, the agent can ask a question and
   pre-add one emoji per choice, so the user taps an answer instead of typing
   one. A `msg_id` from any other topic or DM is refused.
+- `topic_state` — record what the user must do with **this** topic
+  (`needs_you`, `fyi`, `waiting`, `blocked`, `done`, plus a one-line reason),
+  only when it changes. See *Topic state and `!inbox`*.
+- `inbox` — read the same list `!inbox` shows. Read-only.
 - read `history` — the conversation's **own earlier messages**, oldest first,
   as raw markdown, including the bot's own past replies. That is how an agent
   whose session was cleared (or that started after a restart) recovers what a
@@ -929,7 +977,8 @@ prompt-injected agent could do. Three things bound it:
   user as an argument, so there is no way to address anywhere else — and that
   applies to reading as much as to posting: `history` can only read the topic
   or DM the call came from, `rename_topic` can only rename that same
-  topic, and `react` can only react to a message in it. `branch` is the one tool that writes elsewhere: it opens NEW topics in
+  topic, `react` can only react to a message in it, and `topic_state` can only
+  set that topic's state. `inbox` lists the relay's topics but changes nothing. `branch` is the one tool that writes elsewhere: it opens NEW topics in
   the caller's own channel, posts a notification line in the root topic of its
   branch tree, and its branch point must be in the caller's topic.
 - **Output is bounded.** `history` caps each message body and the reply as a

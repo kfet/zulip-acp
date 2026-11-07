@@ -69,6 +69,12 @@ func main() {
 		os.Exit(discover.Update(os.Args[2:], version, os.Stdin, os.Stdout, os.Stderr, deps))
 	}
 
+	// `import-states` stages a one-time topic state import for the
+	// running relay to apply; it never writes the journal itself.
+	if len(os.Args) > 1 && os.Args[1] == importStatesCmd {
+		os.Exit(runImportStates(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// The redirector subcommand must be intercepted before anything
 	// else: the agent spawns THIS binary as the MCP stdio server, and
 	// that process must not parse flags, read config or start a relay.
@@ -373,6 +379,12 @@ func main() {
 	jr, err := journal.Open(filepath.Join(cfg.StateDir, "journal.json"))
 	if err != nil {
 		log.Fatalf("journal: %v", err)
+	}
+	// A state import staged by `zulip-acp import-states`, applied once.
+	if n, err := jr.ApplyStagedImport(); err != nil {
+		log.Printf("journal: WARN %v", err)
+	} else if n > 0 {
+		log.Printf("journal: imported the topic state of %d conversations", n)
 	}
 
 	// The offline catch-up. A fresh /register starts at the server's
@@ -761,10 +773,11 @@ func main() {
 			Branch: func(k string, tasks []zulipmcp.BranchTask) ([]zulipmcp.BranchResult, error) {
 				return h.BranchTasks(k, tasks)
 			},
-			React:       func(k string, id int64, emoji string) error { return h.ReactTo(k, id, emoji) },
-			TopicStatus: topicStatusHook(cfg, h),
-			Timeout:     config.DefaultZulipCallTimeout,
-			Logf:        log.Printf,
+			React:      func(k string, id int64, emoji string) error { return h.ReactTo(k, id, emoji) },
+			TopicState: h.SetTopicState,
+			Inbox:      h.Inbox,
+			Timeout:    config.DefaultZulipCallTimeout,
+			Logf:       log.Printf,
 		})
 		if err != nil {
 			log.Fatalf("relay-mcp history: %v", err)

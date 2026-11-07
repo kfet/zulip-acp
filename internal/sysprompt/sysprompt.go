@@ -137,23 +137,24 @@ func widgetsInstruction(site string) string {
 // deleteEmoji is the emoji that confirms a topic delete; "" means the
 // default :fire: that Base names.
 // widgetsSite is the realm root URL when inline widgets are on, else "".
-// topicStatus adds the `topic_status` tool note; pass it only when the
+// topicState adds the `topic_state` tool note; pass it only when the
 // relay offers that tool.
-func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji, widgetsSite string, topicStatus bool) string {
-	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel)+widgetsInstruction(widgetsSite)+topicStatusInstruction(topicStatus), extra, disabled, catalog)
+func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bool, deleteEmoji, widgetsSite string, topicState bool) string {
+	return kit.Resolve(withDeleteEmoji(deleteEmoji)+silentInstruction(sentinel)+reactionInstruction(reactions, sentinel)+widgetsInstruction(widgetsSite)+topicStateInstruction(topicState), extra, disabled, catalog)
 }
 
-// TopicStatusInstruction tells the agent when to call the relay's
-// `topic_status` tool. The relay sees on its own that a turn runs; only
-// the agent knows that its answer waits for the user.
-const TopicStatusInstruction = "\n\nBefore you end a turn that asks the user a question, asks them to decide, or offers choice reactions, call the relay `topic_status` tool with state=needs_input, so the topic list shows that the topic waits for them. Do not call it otherwise."
+// TopicStateInstruction points the agent at the relay's `topic_state`
+// tool. The tool description says when to call it; this note only
+// makes sure the agent knows the tool matters. It does not ask for a
+// state every turn: the user rejected that as too invasive.
+const TopicStateInstruction = "\n\nWhen a turn changes what the user must do with this topic (you now wait for them, you delivered a result, work goes on without them, you are blocked, or nothing is left), call the relay `topic_state` tool. Do not call it when the state stays the same."
 
-// topicStatusInstruction returns TopicStatusInstruction when on.
-func topicStatusInstruction(on bool) string {
+// topicStateInstruction returns TopicStateInstruction when on.
+func topicStateInstruction(on bool) string {
 	if !on {
 		return ""
 	}
-	return TopicStatusInstruction
+	return TopicStateInstruction
 }
 
 // withDeleteEmoji returns Base with the configured delete emoji in

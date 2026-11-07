@@ -128,3 +128,22 @@ func TestLoadBuiltinBundleErrors(t *testing.T) {
 		}
 	}
 }
+
+// TestRelayCommandsListsTheZulipCommands: the Zulip-only commands are
+// in the generated skill, before its passthrough section.
+func TestRelayCommandsListsTheZulipCommands(t *testing.T) {
+	b, err := fs.ReadFile(commandsBundle(), "bundle/"+command.SkillName+"/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(b)
+	i, j := strings.Index(md, "## Zulip relay commands"), strings.Index(md, "## Agent passthrough commands")
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("zulip section at %d, passthrough at %d", i, j)
+	}
+	for _, want := range []string{"`!state`", "`!inbox`", "topic_state"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("skill lacks %s", want)
+		}
+	}
+}

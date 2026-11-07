@@ -26,12 +26,12 @@ func emojiHarness(t *testing.T) *loopHarness {
 	return lh
 }
 
-// askDuring makes the agent call `topic_status` during its next turn.
+// askDuring makes the agent call `topic_state` during its next turn.
 func (lh *loopHarness) askDuring(t *testing.T, state string) {
 	lh.armDuring(func() {
 		id := lh.j.Convs()[0].ID
-		if _, err := lh.h.SetTopicStatus(id, state); err != nil {
-			t.Errorf("SetTopicStatus: %v", err)
+		if _, err := lh.h.SetTopicState(id, state, "why"); err != nil {
+			t.Errorf("SetTopicState: %v", err)
 		}
 	})
 }
@@ -53,12 +53,13 @@ func TestEmojiTopicIsBusyThenBare(t *testing.T) {
 	}
 }
 
-// TestEmojiNeedsInputShowsTheQuestion, and the next answered turn
-// clears it: the state is per turn and defaults to done.
-func TestEmojiNeedsInputShowsTheQuestion(t *testing.T) {
+// TestEmojiNeedsYouShowsTheQuestion: the state lasts across turns. A
+// turn that records nothing keeps the question; a turn that records
+// fyi clears it.
+func TestEmojiNeedsYouShowsTheQuestion(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
-	lh.askDuring(t, StateNeedsInput)
+	lh.askDuring(t, journal.StateNeedsYou)
 	lh.deliverTurn(t, "work", mention("go"))
 	id := lh.j.Convs()[0].ID
 	if got := lh.convTopic(t, id); got != "⁇ work" {
@@ -66,15 +67,26 @@ func TestEmojiNeedsInputShowsTheQuestion(t *testing.T) {
 	}
 	lh.clearMoves()
 	lh.seedTrigger("⁇ work")
+	lh.deliverTurn(t, "⁇ work", "a follow-up")
+	if got := lh.convTopic(t, id); got != "⁇ work" {
+		t.Fatalf("topic = %q, a turn that records nothing must keep the state", got)
+	}
+	lh.clearMoves()
+	lh.askDuring(t, journal.StateFYI)
+	lh.seedTrigger("⁇ work")
 	lh.deliverTurn(t, "⁇ work", "yes")
 	if m := lh.z.moved(); len(m) != 2 || m[0] != "1:⧗ work:change_all" {
 		t.Fatalf("moves = %v", m)
 	}
 	if got := lh.convTopic(t, id); got != "work" {
-		t.Fatalf("topic = %q, want bare after a done turn", got)
+		t.Fatalf("topic = %q, want bare after fyi", got)
 	}
 	if n := len(lh.j.Convs()); n != 1 {
 		t.Fatalf("%d conversations, want 1", n)
+	}
+	c, _ := lh.j.LookupID(id)
+	if c.ActivitySince != 0 || c.LastActivity == 0 {
+		t.Fatalf("activity = %d since, last %d", c.ActivitySince, c.LastActivity)
 	}
 }
 
@@ -83,7 +95,7 @@ func TestEmojiNeedsInputShowsTheQuestion(t *testing.T) {
 func TestEmojiSilentTurnKeepsTheState(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
-	lh.askDuring(t, StateNeedsInput)
+	lh.askDuring(t, journal.StateNeedsYou)
 	lh.deliverTurn(t, "work", mention("go"))
 	id := lh.j.Convs()[0].ID
 
@@ -105,7 +117,7 @@ func TestEmojiSilentTurnKeepsTheState(t *testing.T) {
 func TestEmojiSentinelOnlyAnswerKeepsTheState(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
-	lh.askDuring(t, StateNeedsInput)
+	lh.askDuring(t, journal.StateNeedsYou)
 	lh.deliverTurn(t, "work", mention("go"))
 	id := lh.j.Convs()[0].ID
 	lh.a.mu.Lock()
@@ -152,57 +164,54 @@ func TestEmojiMarkBusyReadsTheServer(t *testing.T) {
 	}
 }
 
-// TestSetTopicStatusRefusals: the tool records only for a live turn of
-// a live conversation, in emoji mode, with a known state.
-func TestSetTopicStatusRefusals(t *testing.T) {
+// TestSetTopicStateRefusals: the tool records only for a live
+// conversation, with a known state.
+func TestSetTopicStateRefusals(t *testing.T) {
 	lh := emojiHarness(t)
 	c, _ := lh.j.Ensure(journal.Channel(4, "work"))
 	for _, tc := range []struct{ id, state, want string }{
-		{c.ID, "maybe", "state must be"},
-		{"nope", StateDone, "no longer active"},
-		{c.ID, StateDone, "no turn is running"},
+		{c.ID, "maybe", "not a topic state"},
+		{"nope", journal.StateDone, "no longer active"},
 	} {
-		if _, err := lh.h.SetTopicStatus(tc.id, tc.state); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := lh.h.SetTopicState(tc.id, tc.state, "r"); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v: err = %v", tc, err)
 		}
 	}
 	prev, _, _, _ := lh.j.Retire(c.Key)
-	if _, err := lh.h.SetTopicStatus(prev.ID, StateDone); err == nil {
+	if _, err := lh.h.SetTopicState(prev.ID, journal.StateDone, "r"); err == nil {
 		t.Error("a retired conversation must be refused")
 	}
-
-	off := statusHarness(t)
-	if _, err := off.h.SetTopicStatus(c.ID, StateDone); err != errStatusOff {
-		t.Fatalf("resolve mode: err = %v", err)
-	}
 }
 
-// TestSetTopicStatusTellsTheAgent: the reply says nothing moved yet.
-func TestSetTopicStatusTellsTheAgent(t *testing.T) {
+// TestSetTopicStateTellsTheAgent, and says so when nothing changed.
+func TestSetTopicStateTellsTheAgent(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
-	var out string
-	lh.armDuring(func() { out, _ = lh.h.SetTopicStatus(lh.j.Convs()[0].ID, StateDone) })
+	var out, again string
+	lh.armDuring(func() {
+		id := lh.j.Convs()[0].ID
+		out, _ = lh.h.SetTopicState(id, journal.StateDone, "r")
+		again, _ = lh.h.SetTopicState(id, journal.StateDone, "r")
+	})
 	lh.deliverTurn(t, "work", mention("go"))
-	if !strings.Contains(out, "when this turn ends") {
-		t.Fatalf("out = %q", out)
+	if out != "State done recorded." || !strings.Contains(again, "nothing changed") {
+		t.Fatalf("out = %q, again = %q", out, again)
 	}
 }
 
-// TestMarkQuietWithoutATurn is a no-op, not a panic.
-func TestMarkQuietWithoutATurn(t *testing.T) {
+// TestUserStateSettlesAnIdleTopic: `!state needs_you` on an idle topic
+// moves it to the question glyph at once.
+func TestUserStateSettlesAnIdleTopic(t *testing.T) {
 	lh := emojiHarness(t)
-	lh.h.markQuiet("nope")
-}
-
-// TestNoteTurnStatusWithoutAnEntry: endTurn can run with no entry.
-func TestNoteTurnStatusWithoutAnEntry(t *testing.T) {
-	lh := emojiHarness(t)
-	c, _ := lh.j.Ensure(journal.Channel(4, "work"))
-	lh.h.waiting.Store(c.Key.Token(), struct{}{})
-	lh.h.noteTurnStatus(c, nil)
-	if _, ok := lh.h.waiting.Load(c.Key.Token()); !ok {
-		t.Fatal("a nil entry changed the state")
+	lh.seedTrigger("work")
+	lh.deliverTurn(t, "work", mention("go"))
+	c := lh.j.Convs()[0]
+	lh.clearMoves()
+	if got := lh.h.stateCommand(c.Key, "needs-you check the diff"); !strings.Contains(got, "**needs_you** — check the diff (by user") {
+		t.Fatalf("reply = %q", got)
+	}
+	if got := lh.convTopic(t, c.ID); got != "⁇ work" {
+		t.Fatalf("topic = %q", got)
 	}
 }
 

@@ -5,7 +5,8 @@
 //
 // It owns the tools that cannot live anywhere else: `history`, which
 // reads back the conversation's own earlier messages; `rename_topic`;
-// and `branch`, which spins new topics out of this one. Everything relay-generic — status, model, post,
+// `branch`, which spins new topics out of this one; `react`; and
+// `topic_state` and `inbox`, which record and read topic states. Everything relay-generic — status, model, post,
 // schedule — is acp-kit/relaytool's, because poe-acp and slack-acp
 // need those identically. The dividing line the package doc always
 // stated still holds: if a tool needs to know something only Zulip

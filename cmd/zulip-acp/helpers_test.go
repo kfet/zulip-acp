@@ -522,12 +522,3 @@ func TestStatusModeOf(t *testing.T) {
 		}
 	}
 }
-
-func TestTopicStatusHook(t *testing.T) {
-	if topicStatusHook(&config.Config{}, nil) != nil {
-		t.Fatal("hook without the loopback")
-	}
-	if topicStatusHook(&config.Config{RelayMCP: true}, &handler.Handler{}) == nil {
-		t.Fatal("no hook in emoji mode with the loopback")
-	}
-}

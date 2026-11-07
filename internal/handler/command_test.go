@@ -76,6 +76,13 @@ func (hh *harness) awaitTurnCleanup(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("cancelled turn never finished unwinding")
 	}
+	// The reaction goes before endTurn, which still writes the journal.
+	// Wait for it, or the write races the test's TempDir cleanup.
+	ctx, cancel := context.WithTimeout(context.Background(), turnWait)
+	defer cancel()
+	if err := hh.h.WaitIdle(ctx); err != nil {
+		t.Fatalf("turn did not finish: %v", err)
+	}
 }
 
 // only returns the single message the surface holds. A command reply is

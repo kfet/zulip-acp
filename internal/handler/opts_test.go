@@ -568,7 +568,7 @@ func TestOptsButtonsAreOnlyEverTypeableCommands(t *testing.T) {
 	if heading == "" {
 		t.Fatal("widget has no heading")
 	}
-	want := []string{"!new", "!stop", "!status"}
+	want := []string{"!new", "!stop", "!status", "!state", "!inbox"}
 	if strings.Join(replies, "|") != strings.Join(want, "|") {
 		t.Fatalf("replies = %v, want %v", replies, want)
 	}
@@ -630,7 +630,7 @@ func TestOptsWithNoModelsPointsAtLogin(t *testing.T) {
 		t.Fatalf("an empty model poll %d was posted", id)
 	}
 	// Session buttons still make sense with no provider.
-	if _, replies := panelWidget(t, hh, lastMsg(t, hh)); len(replies) != 3 {
+	if _, replies := panelWidget(t, hh, lastMsg(t, hh)); len(replies) != 5 {
 		t.Fatalf("replies = %v, want only the session buttons", replies)
 	}
 }
@@ -1038,17 +1038,17 @@ func TestDecoratePlacesTheLineWithTheRelayCommands(t *testing.T) {
 		{
 			name: "next to !help",
 			out:  "Available commands:\n\n- `!help` — show this\n- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
-			want: "Available commands:\n\n- `!help` — show this\n" + optsHelpLine + branchHelp + settingsHelp() + "- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
+			want: "Available commands:\n\n- `!help` — show this\n" + optsHelpLine + branchHelp + stateHelp + settingsHelp() + "- `!status` — state\n\nAgent commands:\n\n- `!reload`\n",
 		},
 		{
 			name: "no !help bullet to anchor to",
 			out:  "Commands:\n\n- `!status`\n",
-			want: "Commands:\n\n- `!status`\n" + optsHelpLine + branchHelp + settingsHelp(),
+			want: "Commands:\n\n- `!status`\n" + optsHelpLine + branchHelp + stateHelp + settingsHelp(),
 		},
 		{
 			name: "unterminated !help bullet",
 			out:  "- `!help` — show this",
-			want: "- `!help` — show this\n" + optsHelpLine + branchHelp + settingsHelp(),
+			want: "- `!help` — show this\n" + optsHelpLine + branchHelp + stateHelp + settingsHelp(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1324,7 +1324,9 @@ func TestChipsMatchTheButtons(t *testing.T) {
 
 	_, replies := panelWidget(t, hh, panelMsg(t, hh))
 	chips := hh.h.optsChips()
-	if len(chips) != len(replies) {
+	// The chips are the first buttons; `!state` and `!inbox` have
+	// buttons but no chip.
+	if len(chips) != len(replies)-2 {
 		t.Fatalf("%d chips against %d buttons", len(chips), len(replies))
 	}
 	for i, c := range chips {

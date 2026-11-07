@@ -112,10 +112,3 @@ func (c *Config) validateTopicStatus() error {
 	}
 	return nil
 }
-
-// OffersTopicStatus reports whether the relay offers the agent the
-// `topic_status` loopback tool: only in emoji mode, and only with the
-// loopback on.
-func (c *Config) OffersTopicStatus() bool {
-	return c.RelayMCP && c.GetTopicStatus() == TopicStatusEmoji
-}

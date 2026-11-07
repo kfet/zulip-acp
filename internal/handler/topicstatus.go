@@ -7,15 +7,15 @@
 // # StatusEmoji (the default)
 //
 // A glyph in front of the name: StatusBusy while a turn runs,
-// StatusQuestion while the agent waits for the user, and no glyph while
-// the topic is idle. A pending schedule alone shows no glyph: a topic
-// that a check will look at later is idle until the check runs.
+// StatusQuestion while the topic's persistent state (journal.TopicState,
+// see topicstate.go) is needs_you, and no glyph otherwise. A pending
+// schedule alone shows no glyph: a topic that a check will look at
+// later is idle until the check runs.
 //
-// The agent says that it waits for the user with the `topic_status`
-// loopback tool (SetTopicStatus). The state is per turn: a turn that
-// does not call the tool is "done". A turn that posts no answer (the
-// silent sentinel) keeps the state the topic had, because nothing the
-// user sees has changed.
+// The state is NOT per turn. The agent records it with the
+// `topic_state` loopback tool only when it changes, and the user can
+// override it with `!state`. A turn that records nothing leaves it as
+// it was.
 //
 // A plain topic move with send_notification_to_old/new_thread=false
 // posts no notice and keeps every user's follow/mute setting —
@@ -42,7 +42,7 @@
 // settleStatus does nothing while a turn runs. Moving the topic under a
 // running turn splits the turn's own answer in two (see rename.go), and
 // the turn's end settles the topic anyway. For the same reason the
-// `topic_status` tool only records; endTurn applies it.
+// `topic_state` tool only records; endTurn applies the glyph.
 //
 // # Why a lock per topic
 //
@@ -73,7 +73,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"unicode/utf8"
 
@@ -91,15 +90,6 @@ const (
 	StatusResolve
 	// StatusEmoji puts a glyph in front of the topic name.
 	StatusEmoji
-)
-
-// The states the `topic_status` tool accepts.
-const (
-	// StateDone: the turn needs nothing from the user. The default.
-	StateDone = "done"
-	// StateNeedsInput: the turn asked the user a question or offered a
-	// choice, and the agent waits for the answer.
-	StateNeedsInput = "needs_input"
 )
 
 // markBusy marks conv's topic busy at the start of a turn and returns
@@ -204,13 +194,13 @@ func (h *Handler) settleStatusKey(token string, anchor int64) {
 // idleTopic is the name conv's topic has while no turn runs in it.
 //
 // StatusResolve: resolved, unless a schedule is pending.
-// StatusEmoji: the question glyph if the last answered turn waits for
-// the user, else the bare name. A schedule does not count.
+// StatusEmoji: the question glyph if the topic's state is needs_you,
+// else the bare name. A schedule does not count.
 func (h *Handler) idleTopic(conv journal.Conv) string {
 	base := journal.BaseTopic(conv.Topic)
 	token := conv.Key.Token()
 	if h.cfg.TopicStatus == StatusEmoji {
-		if _, ok := h.waiting.Load(token); ok {
+		if conv.State != nil && conv.State.State == journal.StateNeedsYou {
 			return journal.StatusPrefix(h.cfg.StatusQuestion) + base
 		}
 		return base
@@ -267,63 +257,4 @@ func (h *Handler) moveStatus(ctx context.Context, conv journal.Conv, topic strin
 		return conv
 	}
 	return h.followTopic(conv, topic)
-}
-
-// markQuiet records that the turn running in convID posts no answer,
-// so endTurn keeps the topic's state as it was.
-func (h *Handler) markQuiet(convID string) {
-	h.renameMu.Lock()
-	defer h.renameMu.Unlock()
-	if e := h.inflightOf(convID); e != nil {
-		e.quiet = true
-	}
-}
-
-// noteTurnStatus records the state the turn that has just ended left
-// its topic in: "waits for the user" when it called `topic_status` with
-// StateNeedsInput, "done" otherwise. A quiet turn changes nothing.
-// Called from endTurn, before settleStatus reads the state.
-func (h *Handler) noteTurnStatus(conv journal.Conv, e *inflightEntry) {
-	if h.cfg.TopicStatus != StatusEmoji || e == nil {
-		return
-	}
-	h.renameMu.Lock()
-	status, quiet := e.status, e.quiet
-	h.renameMu.Unlock()
-	if quiet {
-		return
-	}
-	token := conv.Key.Token()
-	if status == StateNeedsInput {
-		h.waiting.Store(token, struct{}{})
-		return
-	}
-	h.waiting.Delete(token)
-}
-
-// errStatusOff is the refusal when the relay shows no glyph status.
-var errStatusOff = errors.New("topic status glyphs are off in this relay; nothing to set")
-
-// SetTopicStatus is zulipmcp.Config.TopicStatus: it records state for
-// the turn running in the conversation sessionKey names. Nothing moves
-// until the turn ends (endTurn), for the reason rename.go gives.
-func (h *Handler) SetTopicStatus(sessionKey, state string) (string, error) {
-	if h.cfg.TopicStatus != StatusEmoji {
-		return "", errStatusOff
-	}
-	if state != StateDone && state != StateNeedsInput {
-		return "", errors.New("state must be " + StateNeedsInput + " or " + StateDone)
-	}
-	conv, ok := h.cfg.Journal.LookupID(sessionKey)
-	if !ok || conv.Retired {
-		return "", errors.New("this conversation is no longer active")
-	}
-	h.renameMu.Lock()
-	defer h.renameMu.Unlock()
-	e := h.inflightOf(conv.ID)
-	if e == nil {
-		return "", errors.New("no turn is running in this conversation")
-	}
-	e.status = state
-	return "Topic status " + state + " recorded; the relay shows it when this turn ends.", nil
 }
