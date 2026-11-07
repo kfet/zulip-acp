@@ -1,8 +1,8 @@
 {
-  "zulip_acp": "0.72.0",
+  "zulip_acp": "0.73.0",
   "fir": "1.49.0",
   "exts": {
     "github.com/kfet/fir-exts": "885107524ff3119d93b390d180c684c51c2f0432"
   },
-  "resolved_at": "2026-11-07T04:37:25Z"
+  "resolved_at": "2026-11-07T19:45:21Z"
 }
