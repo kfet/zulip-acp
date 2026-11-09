@@ -799,7 +799,7 @@ A finished conversation can be got out of the way with one gesture: react
 that warning** and the topic is moved, whole, to `archive_channel`. The relay
 adds `:wastebasket:` to the warning itself, so one tap confirms.
 React `:fire:` (or the `delete.emoji` you configure) instead to **delete** the topic for good. The relay pre-adds
-`:fire:` only when a delete can succeed: a `delete` block is configured (below),
+`:fire:`, and the warning and `!help` name it, only when a delete can succeed: a `delete` block is configured (below),
 or the relay bot is an organisation administrator. Without either, a `:fire:`
 still tries, and the relay names the `delete` block in the topic when Zulip
 refuses.

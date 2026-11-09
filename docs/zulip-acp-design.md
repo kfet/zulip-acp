@@ -601,7 +601,7 @@ stays retryable.
 The gesture: react `:wastebasket:` to the relay's **last** message in a topic,
 or type `!archive` (`!arch`). Either arms a confirmation and posts a warning;
 the **only** confirmations are reactions on that warning message. The relay
-pre-adds both to the warning, so the user confirms with one tap:
+pre-adds its answers to the warning, so the user confirms with one tap:
 `:wastebasket:` archives, `:fire:` (`delete.emoji`, configurable) **deletes** the topic instead
 (`POST /streams/{id}/delete_topic`, repeated while the server answers
 `complete=false`). `:fire:` never arms; on any other message it is an ordinary
@@ -613,7 +613,8 @@ so a streaming turn cannot re-create the topic. Zulip lets only users in
 block names a second bot in that group; the relay builds a second client from
 its key file and uses it for this one call only, so the relay bot need not be
 an administrator. Without the block the relay bot tries itself. `:fire:` is
-pre-added only when a delete can succeed (block set, or relay bot is admin). A
+pre-added, and named in the warning, the already-armed reply and `!help`, only
+when a delete can succeed (block set, or relay bot is admin). A
 refusal is reported in the topic and names the fix (the conversation is
 already ended; nothing is deleted). With `owners_only` (the default) a `:fire:`
 from anyone but `update_owner_ids` deletes nothing and leaves the arm. Both entry

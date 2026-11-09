@@ -759,13 +759,24 @@ func TestArchiveAskingTwiceIsOneArm(t *testing.T) {
 	if second != first {
 		t.Fatalf("the arm moved: %d → %d", first, second)
 	}
-	if got := hh.z.lastBody(); !strings.Contains(got, "already waiting to be archived") {
+	if got := hh.z.lastBody(); !strings.Contains(got, "already waiting to be archived") || strings.Contains(got, ":"+defaultDeleteEmoji+":") {
 		t.Fatalf("reply = %q", got)
 	}
 	// The original warning still confirms.
 	hh.tap(humanID, first)
 	if len(hh.z.moved()) != 1 {
 		t.Fatalf("moves = %v", hh.z.moved())
+	}
+}
+
+// TestArchiveAskingTwiceNamesDeleteWhenReady: the already-armed reply
+// offers the delete emoji only when a delete can work.
+func TestArchiveAskingTwiceNamesDeleteWhenReady(t *testing.T) {
+	hh, _ := archiveHarness(t, func(c *Config) { c.DeleteReady = true })
+	hh.deliver(t, "t", "!archive")
+	hh.deliver(t, "t", "!archive")
+	if got := hh.z.lastBody(); !strings.Contains(got, ":"+defaultDeleteEmoji+": (delete)") {
+		t.Fatalf("reply = %q", got)
 	}
 }
 

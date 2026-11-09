@@ -109,7 +109,7 @@ func TestDeleteConfirmCustomEmoji(t *testing.T) {
 	if body := hh.z.body(prompt); !strings.Contains(body, ":bomb:") || strings.Contains(body, ":fire:") {
 		t.Fatalf("warning = %q", body)
 	}
-	if !strings.Contains(archiveHelp(hh.h.deleteEmoji()), ":bomb:") {
+	if !strings.Contains(archiveHelp(hh.h.deleteEmoji(), true), ":bomb:") {
 		t.Fatal("help does not name :bomb:")
 	}
 	hh.fireTap(humanID, prompt)
@@ -279,8 +279,8 @@ func TestFireNotOfferedWhenDeleteCannotWork(t *testing.T) {
 	if !slices.Contains(added, fmt.Sprintf("%d:%s", prompt, archiveEmoji)) {
 		t.Fatalf("no :wastebasket: pre-added: %v", added)
 	}
-	if body := hh.z.body(prompt); !strings.Contains(body, "`delete` config block") {
-		t.Fatalf("warning does not say what the delete needs: %q", body)
+	if body := hh.z.body(prompt); strings.Contains(body, ":"+defaultDeleteEmoji+":") {
+		t.Fatalf("warning offers a delete that cannot work: %q", body)
 	}
 }
 
@@ -343,5 +343,22 @@ func TestDeleteOwnersOnly(t *testing.T) {
 	hh.fireTap(owner, prompt)
 	if len(d.got) != 1 {
 		t.Fatalf("the owner could not delete: %v", d.got)
+	}
+}
+
+// TestArchivePromptsOmitDeleteWhenNotReady: without a usable delete
+// bot, no prompt the user reads names the delete emoji.
+func TestArchivePromptsOmitDeleteWhenNotReady(t *testing.T) {
+	if w := archiveWarning("A", "archive", "fire", false); strings.Contains(w, ":fire:") || strings.Contains(w, "for good") {
+		t.Fatalf("warning names delete: %q", w)
+	}
+	if w := archiveWarning("A", "archive", "fire", true); !strings.Contains(w, ":fire:") {
+		t.Fatalf("warning lacks :fire: when ready: %q", w)
+	}
+	if h := archiveHelp("fire", false); strings.Contains(h, ":fire:") {
+		t.Fatalf("help names :fire:: %q", h)
+	}
+	if h := archiveHelp("fire", true); !strings.Contains(h, ":fire:") {
+		t.Fatalf("help lacks :fire: when ready: %q", h)
 	}
 }

@@ -256,7 +256,11 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	// confirmation is bound to, and each re-arm would park another
 	// expiry timer.
 	if id, live := h.liveArm(conv.ID); live {
-		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react :%s: (archive) or :%s: (delete) to the warning above (message %d) to confirm, or ignore it.", archiveEmoji, h.deleteEmoji(), id))
+		answers := fmt.Sprintf(":%s:", archiveEmoji)
+		if h.cfg.DeleteReady {
+			answers = fmt.Sprintf(":%s: (archive) or :%s: (delete)", archiveEmoji, h.deleteEmoji())
+		}
+		h.reply(ctx, conv.Key, fmt.Sprintf("This topic is already waiting to be archived — react %s to the warning above (message %d) to confirm, or ignore it.", answers, id))
 		return
 	}
 	// Preflight BEFORE the warning. A warning that invites a
@@ -293,9 +297,14 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 	go h.expireArchive(conv.ID, id)
 }
 
-// archiveHelp is the !help line for !archive.
-func archiveHelp(del string) string {
-	return "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (confirm with :" + archiveEmoji + ":, or :" + del + ": to delete it)\n"
+// archiveHelp is the !help line for !archive. It names the delete
+// emoji only when a delete can succeed.
+func archiveHelp(del string, deleteReady bool) string {
+	confirm := "confirm with :" + archiveEmoji + ":"
+	if deleteReady {
+		confirm += ", or :" + del + ": to delete it"
+	}
+	return "- `" + command.DisplaySigil + archiveVerb + "` — end this conversation and move the topic to the archive channel (" + confirm + ")\n"
 }
 
 // deleteEmoji is the emoji that confirms a delete: Config.DeleteEmoji,
@@ -633,15 +642,14 @@ func senderName(m *zulipproto.Message) string {
 // deleted), and how to walk away — a destructive prompt that does not
 // explain how to decline is a trap.
 func archiveWarning(who, channel, del string, deleteReady bool) string {
-	needs := ""
-	if !deleteReady {
-		needs = " (needs the relay's `delete` config block)"
+	deletePart := ""
+	if deleteReady {
+		deletePart = fmt.Sprintf("React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered.\n\n", del)
 	}
 	return fmt.Sprintf("⚠️ **Archive this topic?** — %s asked to end this conversation and move the whole topic to **#%s**, a channel I do not serve.\n\n"+
 		"React :%s: **to this message** within %s to confirm. Nothing is deleted: every message travels with the topic, and the session's files stay on disk.\n\n"+
-		"React :%s: instead to **delete the topic for good** — every message in it is gone and cannot be recovered%s.\n\n"+
-		"Ignore this message to cancel.",
-		who, channel, archiveEmoji, archiveConfirmTTL, del, needs)
+		"%sIgnore this message to cancel.",
+		who, channel, archiveEmoji, archiveConfirmTTL, deletePart)
 }
 
 // archiveNotice is the last thing said in the topic before it moves,
