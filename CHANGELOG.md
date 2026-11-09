@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.1] - 2026-11-09
+
 ### Fixed
 - The notes index read `<state_dir>/notes`, so a relay with a custom `state_dir` reported an empty store. It now reads the store the notes skill names (`~/.local/state/zulip-acp/notes`), and adds nothing to the prompt when the store is empty or missing.
 
