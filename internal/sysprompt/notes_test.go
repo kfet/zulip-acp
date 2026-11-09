@@ -12,11 +12,12 @@ import (
 )
 
 func TestNotesIndexEmpty(t *testing.T) {
-	got := NotesIndex(fstest.MapFS{}, "/n")
-	if !strings.Contains(got, "`/n`") || !strings.Contains(got, "The store is empty.") {
+	// An empty store costs no prompt.
+	if got := NotesIndex(fstest.MapFS{"x.txt": {}}, "/n"); got != "" {
 		t.Fatalf("got %q", got)
 	}
-	if !strings.Contains(got, "OVERRIDES your assumptions") {
+	got := NotesIndex(fstest.MapFS{"a.md": {Data: []byte("# A")}}, "/n")
+	if !strings.Contains(got, "`/n`") || !strings.Contains(got, "OVERRIDES your assumptions") {
 		t.Fatalf("rule missing: %q", got)
 	}
 }
@@ -94,8 +95,8 @@ func TestNotesIndexSymlinks(t *testing.T) {
 	if !strings.Contains(got, "- fleet/build.md — Build box") {
 		t.Fatalf("symlinked dir not followed:\n%s", got)
 	}
-	if NotesIndex(os.DirFS(filepath.Join(root, "missing")), "x") == "" {
-		t.Fatal("missing dir must still give the rule")
+	if NotesIndex(os.DirFS(filepath.Join(root, "missing")), "x") != "" {
+		t.Fatal("missing dir must give nothing")
 	}
 }
 

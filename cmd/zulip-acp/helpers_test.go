@@ -285,15 +285,13 @@ func TestSystemPromptProvider_CarriesLivenessNote(t *testing.T) {
 	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 
-	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // no notes: no notes block
 	got := systemPromptProvider("", &config.Config{
-		StateDir:                 state,
+		StateDir:                 t.TempDir(),
 		NoProgressTimeoutSeconds: 300,
 	})()
 	want := kit.LivenessNote(5 * time.Minute)
-	notesDir := filepath.Join(state, "notes")
-	notes := sysprompt.NotesIndex(os.DirFS(notesDir), notesDir)
-	if !strings.HasSuffix(got, "\n\n"+want+"\n\n"+notes) {
+	if !strings.HasSuffix(got, "\n\n"+want) {
 		t.Fatalf("liveness note missing or misjoined:\n%s", got)
 	}
 	if strings.Contains(sysprompt.Base, "Turn watchdog") {
@@ -531,18 +529,22 @@ func TestStatusModeOf(t *testing.T) {
 func TestSystemPromptProvider_NotesIndexIsLive(t *testing.T) {
 	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
-	state := t.TempDir()
-	p := systemPromptProvider("", &config.Config{StateDir: state})
-	if strings.Contains(p(), "build.md") {
-		t.Fatal("note listed before it exists")
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	// Regression (v0.74/v0.75): a custom state_dir must not move
+	// the store away from where the notes skill says it is.
+	p := systemPromptProvider("", &config.Config{StateDir: t.TempDir()})
+	if strings.Contains(p(), "Notes —") {
+		t.Fatal("notes block with no notes")
 	}
-	if err := os.MkdirAll(filepath.Join(state, "notes"), 0o700); err != nil {
+	notes := filepath.Join(xdg, "zulip-acp", "notes")
+	if err := os.MkdirAll(notes, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state, "notes", "build.md"), []byte("# Where to build"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(notes, "build.md"), []byte("# Where to build"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(p(), "- build.md — Where to build") {
-		t.Fatal("new note not in the next session's index")
+	if got := p(); !strings.Contains(got, "- build.md — Where to build") || !strings.Contains(got, notes) {
+		t.Fatalf("note not indexed from %s:\n%s", notes, got)
 	}
 }

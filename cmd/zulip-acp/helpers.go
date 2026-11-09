@@ -162,7 +162,7 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 		dir = filepath.Dir(cfgPath)
 	}
 	hostDir := filepath.Join(dir, "skills")
-	notesDir := filepath.Join(cfg.StateDir, "notes")
+	notesDir := config.NotesDir()
 	return func() string {
 		// The watchdog note is acp-kit's, rendered from the window
 		// this relay actually arms, so the agent knows the window

@@ -8,8 +8,12 @@ description: Persistent notes across conversations — the record of how this ho
 
 `~/.local/state/zulip-acp/notes/` is your persistent memory across conversations. Read and write freely.
 
-The system prompt holds an index of every note, with a one-line summary each.
-The relay builds it from this directory at the start of each session.
+(`$XDG_STATE_HOME/zulip-acp/notes/` when that is set.) It does not move with
+the relay's `state_dir`.
+
+When the store has notes, the system prompt holds an index of every note,
+with a one-line summary each. The relay builds it from this directory at the
+start of each session.
 
 ## When to read
 

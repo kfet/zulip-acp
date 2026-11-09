@@ -917,3 +917,10 @@ func TestGetSiteAliasesAddsPublicURL(t *testing.T) {
 		t.Fatalf("set: %v", got)
 	}
 }
+
+func TestNotesDirIgnoresStateDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/x")
+	if got := NotesDir(); got != "/x/zulip-acp/notes" {
+		t.Fatal(got)
+	}
+}

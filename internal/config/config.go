@@ -1170,6 +1170,11 @@ func DefaultConfigDir() string {
 func DefaultConfigPath() string { return filepath.Join(DefaultConfigDir(), "config.json") }
 
 // DefaultStateDir is the conventional per-conversation state root.
+// NotesDir is the agent's notes store. It does NOT follow state_dir:
+// it is the fixed place the builtin notes skill names, so a relay with
+// a custom state_dir still finds the notes its agents wrote.
+func NotesDir() string { return filepath.Join(DefaultStateDir(), "notes") }
+
 func DefaultStateDir() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
 		return filepath.Join(d, "zulip-acp")

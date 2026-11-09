@@ -32,21 +32,21 @@ const (
 // matching note is visible before the guess is made. It is generated
 // from the store, so it holds for any fact anyone writes down.
 //
-// dir is the absolute path the agent uses to read the notes. An empty
-// store gives only the rule, so the agent still knows where to write.
+// dir is the absolute path the agent uses to read the notes. A missing
+// or empty store gives "": the block costs prompt on every session, and
+// the notes skill already says where to write.
 func NotesIndex(fsys fs.FS, dir string) string {
 	files := listNotes(fsys, ".", 0)
 	sort.Strings(files)
 
+	if len(files) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("Notes — your persistent memory, in `" + dir + "`:\n")
 	b.WriteString("- Earlier sessions, the operator and you wrote these down because the obvious guess was wrong or unknown. A note OVERRIDES your assumptions.\n")
 	b.WriteString("- Before you act on any fact about the environment — which host, where code lives, how to build, deploy, update, configure or reach something, what the user prefers — find the notes below that cover it and read them. Do this also when you feel sure: that feeling is how notes get skipped.\n")
 	b.WriteString("- Ask the user only what the notes do not answer. When you learn such a fact, write or update a note.\n")
-	if len(files) == 0 {
-		b.WriteString("\nThe store is empty.")
-		return b.String()
-	}
 	b.WriteString("\nIndex (file — summary):\n")
 	shown := 0
 	for _, f := range files {
