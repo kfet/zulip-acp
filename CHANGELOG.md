@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-11-09
+
 ### Added
 - `zulip-acp check-config [-config F]` runs the checks a start and a reload run (fields, credentials, delete key file) and exits 1 with the error when the file is invalid.
 - `zulip-acp config-schema [prefix]` prints every config key, nested keys included, with its type and doc. It is generated from the config structs, and a test fails when it or the README table drifts.
