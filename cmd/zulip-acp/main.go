@@ -75,6 +75,15 @@ func main() {
 		os.Exit(runImportStates(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
+	// The config subcommands: check a file before a reload, and list
+	// every key.
+	if len(os.Args) > 1 && os.Args[1] == checkConfigCmd {
+		os.Exit(runCheckConfig(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == configSchemaCmd {
+		os.Exit(runConfigSchema(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// The redirector subcommand must be intercepted before anything
 	// else: the agent spawns THIS binary as the MCP stdio server, and
 	// that process must not parse flags, read config or start a relay.
@@ -98,6 +107,7 @@ func main() {
 	stopDrain := flag.Duration("drain-deadline", reload.DefaultStopDrain,
 		"how long a SIGINT/SIGTERM shutdown waits for in-flight turns to finish posting. Something external IS waiting "+
 			"(systemd SIGKILLs the cgroup at TimeoutStopSec), so keep it comfortably underneath that")
+	flag.Usage = func() { usage(os.Stderr, flag.CommandLine) }
 	flag.Parse()
 
 	kitlog.Register("ZULIP_ACP_DEBUG")
@@ -107,13 +117,21 @@ func main() {
 		return
 	}
 
+	// A config that fails the checks falls back to the last good copy,
+	// so a bad edit does not take the relay down (incident 2026-11-09:
+	// a bad SIGHUP reload crash-looped it). The fallback is reported
+	// loudly below, once the relay can post.
 	cfg := &config.Config{}
+	var cfgFallback error
 	if *configPath != "" {
-		c, err := config.Load(*configPath)
+		c, fellBack, err := config.LoadOrLastGood(*configPath, os.Getenv, log.Printf)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
-		cfg = c
+		cfg, cfgFallback = c, fellBack
+		if fellBack != nil {
+			log.Printf("config: ERROR %s", fallbackNotice(*configPath, fellBack))
+		}
 	}
 	// Name both turn bounds once at startup, so a cut turn is never
 	// the first an operator hears of them.
@@ -128,15 +146,7 @@ func main() {
 		ceiling, cfg.NoProgressTimeout(), *reloadDrain)
 	// Environment overrides, so the API key never has to live in a
 	// config file on the host.
-	if v := os.Getenv("ZULIP_SITE"); v != "" {
-		cfg.Site = v
-	}
-	if v := os.Getenv("ZULIP_EMAIL"); v != "" {
-		cfg.BotEmail = v
-	}
-	if v := os.Getenv("ZULIP_API_KEY"); v != "" {
-		cfg.BotAPIKey = v
-	}
+	cfg.ApplyEnv(os.Getenv)
 	if *agentCmd != "" {
 		cfg.AgentCmd = strings.Fields(*agentCmd)
 	}
@@ -199,8 +209,21 @@ func main() {
 	intakeCtx, stopIntake := context.WithCancel(ctx)
 	defer stopIntake()
 	var hupOnce sync.Once
+	// refusedReload reports a refused reload in the conversations that
+	// have a turn in flight. It is set once the handler exists.
+	var refusedReload atomic.Pointer[func(string)]
 	go func() {
 		for range hupSig {
+			// The gate: an invalid config file never gets as far as the
+			// re-exec. The relay keeps intake and its current config, and
+			// a later SIGHUP tries again.
+			if err := checkForReload(*configPath, os.Getenv); err != nil {
+				log.Printf("zulip-acp: ERROR SIGHUP %v", err)
+				if f := refusedReload.Load(); f != nil {
+					(*f)("❌ " + err.Error())
+				}
+				continue
+			}
 			hupOnce.Do(func() {
 				log.Printf("zulip-acp: SIGHUP — graceful reload: no longer polling, draining in-flight turns (up to %s), then re-exec", *reloadDrain)
 				close(handoff)
@@ -610,7 +633,9 @@ func main() {
 	},
 		// h is assigned just below, before any event can arrive.
 		func() []string { return h.CancelAll() },
-		func(ctx context.Context) error { return h.WaitCancelled(ctx) })
+		func(ctx context.Context) error { return h.WaitCancelled(ctx) },
+		// A refused reload is the `!update` reply: "❌ Reload failed: …".
+		gatedReload(*configPath, os.Getenv, func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) }))
 
 	selfBin, _ := os.Executable()
 	au, err := newAutoUpdater(cfg, autoUpdateDeps{
@@ -631,7 +656,7 @@ func main() {
 			}
 			return nil
 		},
-		reload: func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
+		reload: gatedReload(*configPath, os.Getenv, func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) }),
 		logf:   log.Printf,
 	})
 	if err != nil {
@@ -721,6 +746,15 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("handler: %v", err)
+	}
+	notify := func(text string) {
+		if h.NotifyBusy(context.Background(), text) == 0 {
+			log.Printf("zulip-acp: no turn in flight to report the refused reload to")
+		}
+	}
+	refusedReload.Store(&notify)
+	if cfgFallback != nil {
+		reportFallback(ctx, zc.SendDirectMessage, cfg.UpdateOwnerIDs, fallbackNotice(*configPath, cfgFallback), log.Printf)
 	}
 	var appServer *http.Server
 	if apps != nil {

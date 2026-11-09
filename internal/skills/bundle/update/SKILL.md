@@ -60,7 +60,8 @@ upgrade/recycle mechanics.
 Use **reload** for:
 
 - a new binary staged on disk;
-- an edited `config.json`;
+- an edited `config.json` — run `zulip-acp check-config -config <file>` first
+  and reload only on `OK` (see the `config` skill);
 - picking up a newly-installed `fir` (the relay holds one long-lived agent
   process; the exec starts a fresh one).
 
@@ -346,7 +347,12 @@ is one of the cases that needs a hard restart:
 ssh <host> 'systemctl --user daemon-reload && systemctl --user restart zulip-acp'
 ```
 
-Config- or channel-only change (edited `config.json`): `reload`.
+Config- or channel-only change (edited `config.json`): `reload`, after
+`zulip-acp check-config -config <file>` says `OK`. The relay checks the file
+again on SIGHUP and refuses an invalid one: it keeps running on its current
+config and posts the error into each topic with a turn in flight. A start
+with an invalid file runs on `<file>.last-good` and DMs the owners. Either
+way the edit has NOT taken effect until the check passes.
 
 ### 4. Reloading the relay you are running inside
 

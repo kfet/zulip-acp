@@ -346,15 +346,15 @@ func TestConvergeWrap(t *testing.T) {
 
 func TestNewUpdater(t *testing.T) {
 	cfg := &config.Config{StateDir: t.TempDir()}
-	if newUpdater(cfg, "1", "", nil, nil, nil) != nil {
+	if newUpdater(cfg, "1", "", nil, nil, nil, nil) != nil {
 		t.Fatal("no owners must disable")
 	}
 	cfg.UpdateOwnerIDs = []int64{7}
 	idle := func(context.Context) error { return errors.New("busy") }
 	fir := filepath.Join(t.TempDir(), "fir")
 	os.WriteFile(fir, []byte("#!/bin/sh\necho fir 1.0\n"), 0o755)
-	u := newUpdater(cfg, "1", fir, func() string { return "" }, func() []string { return nil }, idle)
-	if u == nil || newUpdater(cfg, "1", "", nil, nil, nil) == nil {
+	u := newUpdater(cfg, "1", fir, func() string { return "" }, func() []string { return nil }, idle, nil)
+	if u == nil || newUpdater(cfg, "1", "", nil, nil, nil, nil) == nil {
 		t.Fatal("want updater")
 	}
 	// --force exercises CancelAll/WaitIdle; --check exercises AgentPID.

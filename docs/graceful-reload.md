@@ -344,3 +344,24 @@ pid stable at 833097/854272 throughout):
   queue lifespan: a server that ignores `queue_lifespan_secs` collects the
   queue after about 10 minutes.
 - `-drain-deadline` (30s) — stop drain. Keep it under `TimeoutStopSec`.
+
+## The config gate
+
+A reload re-reads the config file in the new image. Before v0.75 an invalid
+file made the new image exit, and systemd restarted it into the same file: a
+crash loop with every conversation down (incident 2026-11-09).
+
+Now the old image checks the file with `config.CheckFile` — the check that
+`zulip-acp check-config` and a start run — when SIGHUP arrives, before it
+stops intake. An invalid file refuses the reload: the relay logs an ERROR,
+keeps polling on its current config, and posts the error into each topic with
+a turn in flight (a SIGHUP has no sender; an agent that reloads does so from
+inside a turn). `!update` and auto-update use the same gate through their
+reload hook, so `!update` replies "Reload failed" with the reason. A later
+SIGHUP tries again.
+
+A start (cold, or a reload whose file changed after the check) that finds an
+invalid file runs on `<file>.last-good`, the copy saved at the last start
+that passed, logs an ERROR and DMs `update_owner_ids`. With no good copy it
+exits as before. The server-side checks (login, channel names) are not part
+of the gate.

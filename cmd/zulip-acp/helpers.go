@@ -222,7 +222,7 @@ func buildSkillsCatalog(builtin []skills.Skill, hostDir string) string {
 
 // newUpdater builds the `!update` command for this relay, or nil when no
 // owner is configured (the command then stays unrecognised).
-func newUpdater(cfg *config.Config, version string, agentBin string, agentVersion func() string, cancelAll func() []string, waitIdle func(context.Context) error) *update.Updater {
+func newUpdater(cfg *config.Config, version string, agentBin string, agentVersion func() string, cancelAll func() []string, waitIdle func(context.Context) error, reload func() error) *update.Updater {
 	if len(cfg.UpdateOwnerIDs) == 0 {
 		return nil
 	}
@@ -249,6 +249,7 @@ func newUpdater(cfg *config.Config, version string, agentBin string, agentVersio
 		AgentPID:       func() int { return childPID(procRoot, os.Getpid(), agentBin) },
 		CancelAll:      cancelAll,
 		WaitIdle:       waitIdle,
+		Reload:         reload,
 	}
 	if agentBin != "" {
 		u.UpdateAgent = update.CommandHook(agentBin, "update")

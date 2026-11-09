@@ -2273,6 +2273,24 @@ func (h *Handler) Busy() []string {
 	return out
 }
 
+// NotifyBusy posts text into every conversation with a turn in flight
+// and returns how many it posted to. A SIGHUP carries no sender, so a
+// refused reload is reported where it most likely came from: an agent
+// that reloads the relay does so from inside its own turn.
+func (h *Handler) NotifyBusy(ctx context.Context, text string) int {
+	n := 0
+	for _, c := range h.cfg.Journal.Convs() {
+		for _, k := range h.turnKeys(c.ID) {
+			if _, ok := h.convo.Active().Get(k); ok {
+				h.reply(ctx, h.cfg.Journal.Current(c.Key), text)
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
 // WaitCancelled blocks until every turn CancelAll cancelled has
 // unwound, then until no turn is in flight, or ctx is done.
 func (h *Handler) WaitCancelled(ctx context.Context) error {

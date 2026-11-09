@@ -232,3 +232,30 @@ func TestUpdateCommandAckFailureIsLogged(t *testing.T) {
 		t.Fatalf("ack failure not logged: %q", hh.logs)
 	}
 }
+
+// TestNotifyBusyPostsOncePerBusyConversation: a refused reload reaches
+// each conversation with a turn in flight once, even when two users'
+// turns run in it, and never an idle conversation.
+func TestNotifyBusyPostsOncePerBusyConversation(t *testing.T) {
+	agent := newAgent("answer")
+	agent.block = make(chan struct{})
+	hh := newHarness(t, agent, func(c *Config) { c.PerUserSessions = true })
+	if _, err := hh.h.cfg.Journal.Ensure(journal.Key{StreamID: 999999, Topic: "idle"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := hh.h.NotifyBusy(context.Background(), "nobody"); n != 0 {
+		t.Fatalf("idle relay notified %d", n)
+	}
+	hh.h.Handle(context.Background(), userEvent(1, humanID, "Kfet", "shared", mention("mine")))
+	<-agent.entered
+	hh.h.Handle(context.Background(), userEvent(2, otherID, "Ada", "shared", "theirs"))
+	<-agent.entered
+	if n := hh.h.NotifyBusy(context.Background(), "RELOAD REFUSED"); n != 1 {
+		t.Fatalf("notified %d conversations, want 1", n)
+	}
+	close(agent.block)
+	hh.idle(t)
+	if got := strings.Count(strings.Join(hh.z.stored(), "\n"), "RELOAD REFUSED"); got != 1 {
+		t.Fatalf("notice posted %d times", got)
+	}
+}

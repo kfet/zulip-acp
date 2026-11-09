@@ -130,8 +130,11 @@ type Config struct {
 	// cannot reach. Links the agent gives to humans use it. Unset
 	// means Site.
 	PublicURL string `json:"public_url,omitempty"`
-	// BotEmail and BotAPIKey are the bot's HTTP Basic credentials.
-	BotEmail  string `json:"bot_email,omitempty"`
+	// BotEmail is the relay bot's e-mail, half of its HTTP Basic
+	// credentials. ZULIP_EMAIL overrides it.
+	BotEmail string `json:"bot_email,omitempty"`
+	// BotAPIKey is the relay bot's API key, the other half.
+	// ZULIP_API_KEY overrides it; prefer the environment.
 	BotAPIKey string `json:"bot_api_key,omitempty"`
 
 	// Channels lists the Zulip channels the relay serves, by name or
@@ -181,13 +184,6 @@ type Config struct {
 	// (acp-kit/update). Empty disables the command for everyone.
 	UpdateOwnerIDs []int64 `json:"update_owner_ids,omitempty"`
 
-	// FleetManaged marks a host whose versions are owned by
-	// converge/dist.lock: `!update` then runs UpdateConvergeCmd (a
-	// shell command) instead of updating binaries in place, and refuses
-	// when it is unset. FleetLockFile, if set, is that host's
-	// dist.lock, shown by `!update --check` and diffed in the report.
-	// Setting either FleetLockFile or UpdateConvergeCmd implies
-	// FleetManaged.
 	// AutoUpdate is acp-kit/autoupdate's mode: "off", "notify",
 	// "stage" (default) or "auto". It needs UpdateOwnerIDs: offers are
 	// a DM to the owners, and only their reactions decide. "auto" is
@@ -197,6 +193,13 @@ type Config struct {
 	AutoUpdate           string `json:"auto_update,omitempty"`
 	AutoUpdateQuietHours string `json:"auto_update_quiet_hours,omitempty"`
 
+	// FleetManaged marks a host whose versions are owned by
+	// converge/dist.lock: `!update` then runs UpdateConvergeCmd (a
+	// shell command) instead of updating binaries in place, and refuses
+	// when it is unset. FleetLockFile, if set, is that host's
+	// dist.lock, shown by `!update --check` and diffed in the report.
+	// Setting either FleetLockFile or UpdateConvergeCmd implies
+	// FleetManaged.
 	FleetManaged      bool   `json:"fleet_managed,omitempty"`
 	FleetLockFile     string `json:"fleet_lock_file,omitempty"`
 	UpdateConvergeCmd string `json:"update_converge_cmd,omitempty"`

@@ -362,6 +362,12 @@ allocates a conversation: `!help` in a fresh topic leaves nothing on disk.
 
 ## Configuration
 
+`zulip-acp config-schema [prefix]` prints every key, nested ones included,
+with its type and doc, generated from the code. `zulip-acp check-config
+-config F` checks a file; run it before every reload. The relay refuses a
+SIGHUP reload of an invalid file and keeps running, and a start with an
+invalid file runs on `F.last-good` and DMs the owners.
+
 Every key is optional except the credentials and `channels` (which may be
 omitted only when `"dms": true` makes it a DM-only relay).
 
@@ -377,6 +383,12 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `autotopic_channels` | `[]` | channels (names or ids) where a **general chat** message is moved to a topic named after it |
 | `dms` | `false` | serve direct messages (1:1 and group). Not gated by `channels` |
 | `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
+| `update_owner_ids` | none | user ids that may run `!update`, approve auto-updates and confirm a delete. With none, those controls are off |
+| `auto_update` | `stage` | auto-update mode: `off`, `notify`, `stage` or `auto` (needs `update_owner_ids`; `auto` is refused on a fleet host) |
+| `auto_update_quiet_hours` | none | `"HH:MM-HH:MM"` local window in which no update is applied |
+| `fleet_managed` | `false` | versions are owned by converge/`dist.lock`: `!update` runs `update_converge_cmd` |
+| `fleet_lock_file` | none | this host's `dist.lock`, shown by `!update --check`; implies `fleet_managed` |
+| `update_converge_cmd` | none | shell command `!update` runs on a fleet host; implies `fleet_managed` |
 | `agent_cmd` | `["fir","--mode","acp"]` | agent argv |
 | `state_dir` | `$XDG_STATE_HOME/zulip-acp` | per-conversation cwds + journal |
 | `session_scope` | `thread` | `thread` = one agent session per topic or DM. `thread_user` = one session per (topic, sender). See [Session scope and cwd mode](#session-scope-and-cwd-mode) |

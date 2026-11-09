@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `zulip-acp check-config [-config F]` runs the checks a start and a reload run (fields, credentials, delete key file) and exits 1 with the error when the file is invalid.
+- `zulip-acp config-schema [prefix]` prints every config key, nested keys included, with its type and doc. It is generated from the config structs, and a test fails when it or the README table drifts.
+- Builtin `config` skill: find keys, back up, edit, `check-config`, reload, verify the log.
+- `zulip-acp -h` lists the subcommands.
+
+### Fixed
+- A SIGHUP reload (also from `!update` and auto-update) checks the config file first and refuses an invalid one: the relay keeps running on its current config, and the error goes to the `!update` topic or to each topic with a turn in flight. Before, the relay re-execed into the bad file and crash-looped.
+- A start with an invalid config file runs on the last good copy (`<file>.last-good`, saved at each good start), logs an ERROR and DMs the owners, instead of crash-looping.
+
 ## [0.74.0] - 2026-11-09
 
 ### Added
