@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-11-09
+
 ### Added
 - Every session's system prompt now holds an index of the notes store (file and one-line summary per note), rebuilt per session, with the rule that a note overrides the agent's guess about the environment. The notes store was pull-only: the agent read it only when it felt lost, so it acted on guesses while a note held the answer.
 
