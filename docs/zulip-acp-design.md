@@ -2181,3 +2181,22 @@ internal/zulipproto/zform.go
                         the ONLY coupling to Zulip's widget subsystem
 test/                   live-server tests (ZULIP_LIVE=1), coverage-exempt
 ```
+
+## The notes index
+
+The relay keeps a notes store under `<state_dir>/notes/` (see the builtin
+`notes` skill). Until v0.74 the store was pull-only: the skill told the agent
+to read it "when you do not know". That gate failed (incident 2026-11-09). An
+agent does not know what it does not know: it had a plausible guess about the
+fleet, so it never felt lost, and it acted on the guess while a note held the
+real answer. A store whose content the agent cannot see at decision time is
+not consulted.
+
+So the relay pushes what the store covers. `sysprompt.NotesIndex` walks the
+store at every session create and resume, and adds one line per `.md` file
+(path and summary: frontmatter `description`, else first heading, else first
+line) under a rule that a note overrides the agent's assumptions. Nothing in
+it is hardcoded: it holds for any fact anyone writes down. It follows
+symlinked directories (a shared `fleet/` is often one), skips dot entries,
+and is bounded (entries, summary length, block size) so a big store cannot
+bloat every session.

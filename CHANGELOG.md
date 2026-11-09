@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Every session's system prompt now holds an index of the notes store (file and one-line summary per note), rebuilt per session, with the rule that a note overrides the agent's guess about the environment. The notes store was pull-only: the agent read it only when it felt lost, so it acted on guesses while a note held the answer.
+
+### Fixed
+- `converge.sh` now sees a macOS host as itself when its ssh alias resolves to a tailnet name: it resolves the name with `dscacheutil` where `getent` is absent.
+
+### Changed
+- The builtin `notes` skill now says to read matching notes BEFORE any environment decision (host, repo, build, deploy, config), not only when lost, and how to write a note so the index summarises it.
+
 ## [0.73.0] - 2026-11-07
 
 ### Changed

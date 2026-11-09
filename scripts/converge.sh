@@ -505,7 +505,11 @@ host_is_self() {
     return 0
   fi
 
+  # getent is absent on macOS; dscacheutil is its resolver there (it sees
+  # MagicDNS too, which a tailnet ssh alias usually points at).
   ip=$(getent hosts "$real" 2>/dev/null | awk '{print $1; exit}' || true)
+  [ -n "$ip" ] || ip=$(dscacheutil -q host -a name "$real" 2>/dev/null |
+    awk '/^ip_address:/{print $2; exit}' || true)
   [ -n "$ip" ] || return 1
 
   # Every address this machine holds: tailscale first (the fleet talks over

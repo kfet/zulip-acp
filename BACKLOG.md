@@ -57,6 +57,10 @@ compare — so the block has no key for it.
 > still has its own `internal/selfupdate` to delete, and `slack-acp` still
 > has no self-update at all.
 
+- **`sysprompt.NotesIndex` → `acp-kit/sysprompt`.** It has no Zulip
+  coupling: an fs.FS and a path in, a prompt block out. `poe-acp` and
+  `slack-acp` agents have the same pull-only notes gap. Move it when a second
+  relay adopts a notes store.
 - **`internal/imagefit` → `acp-kit` (a second consumer already exists).**
   The pixel ceiling is a MODEL-provider fact, not a Zulip one: Anthropic
   rejects a whole many-image request over 2000px a side, and `poe-acp`'s

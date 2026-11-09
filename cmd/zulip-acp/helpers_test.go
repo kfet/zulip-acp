@@ -285,12 +285,15 @@ func TestSystemPromptProvider_CarriesLivenessNote(t *testing.T) {
 	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
 
+	state := t.TempDir()
 	got := systemPromptProvider("", &config.Config{
-		StateDir:                 t.TempDir(),
+		StateDir:                 state,
 		NoProgressTimeoutSeconds: 300,
 	})()
 	want := kit.LivenessNote(5 * time.Minute)
-	if !strings.HasSuffix(got, "\n\n"+want) {
+	notesDir := filepath.Join(state, "notes")
+	notes := sysprompt.NotesIndex(os.DirFS(notesDir), notesDir)
+	if !strings.HasSuffix(got, "\n\n"+want+"\n\n"+notes) {
 		t.Fatalf("liveness note missing or misjoined:\n%s", got)
 	}
 	if strings.Contains(sysprompt.Base, "Turn watchdog") {
@@ -520,5 +523,26 @@ func TestStatusModeOf(t *testing.T) {
 		if got := statusModeOf(in); got != want {
 			t.Errorf("statusModeOf(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// A note written while the relay runs must reach the NEXT session: the
+// index is rebuilt on every call, never cached at startup.
+func TestSystemPromptProvider_NotesIndexIsLive(t *testing.T) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
+	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) { return nil, nil })()
+	state := t.TempDir()
+	p := systemPromptProvider("", &config.Config{StateDir: state})
+	if strings.Contains(p(), "build.md") {
+		t.Fatal("note listed before it exists")
+	}
+	if err := os.MkdirAll(filepath.Join(state, "notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "notes", "build.md"), []byte("# Where to build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p(), "- build.md — Where to build") {
+		t.Fatal("new note not in the next session's index")
 	}
 }

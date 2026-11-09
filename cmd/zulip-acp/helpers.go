@@ -162,13 +162,16 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 		dir = filepath.Dir(cfgPath)
 	}
 	hostDir := filepath.Join(dir, "skills")
+	notesDir := filepath.Join(cfg.StateDir, "notes")
 	return func() string {
 		// The watchdog note is acp-kit's, rendered from the window
 		// this relay actually arms, so the agent knows the window
 		// before it picks a poll interval.
 		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
 			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji(), widgetsSite, cfg.RelayMCP),
-			kit.LivenessNote(cfg.NoProgressTimeout()), "")
+			kit.LivenessNote(cfg.NoProgressTimeout()),
+			// Rebuilt per session: notes change while the relay runs.
+			sysprompt.NotesIndex(os.DirFS(notesDir), notesDir))
 	}
 }
 
