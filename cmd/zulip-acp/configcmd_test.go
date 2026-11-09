@@ -129,3 +129,21 @@ func TestReportFallback(t *testing.T) {
 		t.Fatalf("send failure not logged: %q", logs)
 	}
 }
+
+// TestReadyToApply: an invalid config holds an auto-update apply
+// instead of letting the refused reload block a good release.
+func TestReadyToApply(t *testing.T) {
+	var logs []string
+	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	busy := func() bool { return false }
+	idle := func() bool { return true }
+	if readyToApply(cfgFile(t, goodCfgJSON), noEnv, busy, logf)() {
+		t.Fatal("busy relay ready")
+	}
+	if !readyToApply(cfgFile(t, goodCfgJSON), noEnv, idle, logf)() || len(logs) != 0 {
+		t.Fatalf("good config held: %q", logs)
+	}
+	if readyToApply(cfgFile(t, incidentCfgJSON), noEnv, idle, logf)() || len(logs) != 1 || !strings.Contains(logs[0], "apply held") {
+		t.Fatalf("bad config not held: %q", logs)
+	}
+}

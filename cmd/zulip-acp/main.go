@@ -146,6 +146,8 @@ func main() {
 		ceiling, cfg.NoProgressTimeout(), *reloadDrain)
 	// Environment overrides, so the API key never has to live in a
 	// config file on the host.
+	// LoadOrLastGood applied the environment to a config file; this
+	// covers a start with no file.
 	cfg.ApplyEnv(os.Getenv)
 	if *agentCmd != "" {
 		cfg.AgentCmd = strings.Fields(*agentCmd)
@@ -643,7 +645,7 @@ func main() {
 		relayBin: strings.TrimSuffix(selfBin, " (deleted)"), agentBin: agentBin,
 		agentVersion: func() string { return agent.AgentInfo().Version },
 		upd:          upd,
-		idle:         func() bool { return h.Idle() },
+		idle:         readyToApply(*configPath, os.Getenv, func() bool { return h.Idle() }, log.Printf),
 		health: func(ctx context.Context) error {
 			if !queueUp.Load() {
 				return errors.New("event queue not resumed yet")

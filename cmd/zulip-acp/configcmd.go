@@ -119,3 +119,21 @@ func reportFallback(ctx context.Context, send func(context.Context, []int64, str
 		logf("config: cannot DM the owners about the config fallback: %v", err)
 	}
 }
+
+// readyToApply is the auto-update idle gate. An invalid config file
+// holds the apply back, as a running turn does: the apply's reload
+// would be refused, and acp-kit/autoupdate treats a failed reload as a
+// bad release (it restores .prev and blocks the version). The cause is
+// logged each time it holds an apply.
+func readyToApply(path string, getenv func(string) string, idle func() bool, logf func(string, ...any)) func() bool {
+	return func() bool {
+		if !idle() {
+			return false
+		}
+		if err := checkForReload(path, getenv); err != nil {
+			logf("autoupdate: apply held: %v", err)
+			return false
+		}
+		return true
+	}
+}
