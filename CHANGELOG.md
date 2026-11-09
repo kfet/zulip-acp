@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.2] - 2026-11-09
+
 ### Changed
 - The archive warning, the reply to a second `!archive` and the `!help` line name the delete emoji only when a delete can succeed. Before, the warning offered :fire: with a note that it needs the `delete` config block.
 
