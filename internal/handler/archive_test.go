@@ -1017,3 +1017,43 @@ func TestHumanLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestArchiveRearmsFromTheAnswerAfterAWarningLapses: a lapsed warning
+// does not displace the answer above it, so a :wastebasket: on that
+// answer starts a fresh cycle.
+func TestArchiveRearmsFromTheAnswerAfterAWarningLapses(t *testing.T) {
+	hh, own := archiveHarness(t, nil)
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	first, ok := hh.armed(conv.ID)
+	if !ok {
+		t.Fatal("nothing armed")
+	}
+	hh.atimer <- time.Now()
+	select {
+	case <-hh.expired:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the arm never expired")
+	}
+	hh.tap(humanID, own)
+	second, ok := hh.armed(conv.ID)
+	if !ok || second == first {
+		t.Fatalf("the answer did not re-arm after the warning lapsed (armed=%v, %d vs %d)", ok, second, first)
+	}
+}
+
+// TestArchiveEndForgetsTheLastWarning: a conversation that ends keeps
+// no record of its last warning.
+func TestArchiveEndForgetsTheLastWarning(t *testing.T) {
+	hh, own := archiveHarness(t, nil)
+	conv := archiveConv(t, hh)
+	hh.tap(humanID, own)
+	warning, ok := hh.armed(conv.ID)
+	if !ok || !hh.h.isLastWarning(conv.ID, warning) {
+		t.Fatal("the warning was not recorded")
+	}
+	hh.h.dropArchiveArm(conv.ID)
+	if hh.h.isLastWarning(conv.ID, warning) {
+		t.Fatal("the last warning outlived the arm drop")
+	}
+}

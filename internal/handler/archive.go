@@ -176,7 +176,10 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 		}
 		return true
 	}
-	last := ev.MessageID == h.lastOwnMessage(ctx, conv)
+	// The warning itself is not recorded as the last answer (see
+	// armArchive), so it counts as last while nothing has come after it.
+	lastOwn := h.lastOwnMessage(ctx, conv)
+	last := ev.MessageID == lastOwn || (ev.MessageID > lastOwn && h.isLastWarning(conv.ID, ev.MessageID))
 	if !confirm && !last {
 		// Not the arming target and not the confirmation: an ordinary
 		// reaction that happens to be a wastebasket.
@@ -277,8 +280,12 @@ func (h *Handler) armArchive(ctx context.Context, conv journal.Conv, who string)
 		h.cfg.Logf("handler: could not post the archive confirmation in %s: %v", h.describe(conv.Key), err)
 		return
 	}
-	h.rememberOwn(conv.ID, id)
+	// The warning is ours, but it is not the conversation's last
+	// answer: once it lapses, a :wastebasket: on the answer above it
+	// must arm again, as it did before the warning was posted.
+	h.ownMsgs.put(id, conv.ID)
 	h.archiveMu.Lock()
+	h.lastWarning[conv.ID] = id
 	h.archivePending[conv.ID] = &pendingArchive{promptID: id, expires: h.now().Add(archiveConfirmTTL), who: who}
 	h.archiveMu.Unlock()
 	h.cfg.Logf("handler: %s armed an archive of %s (%s); confirm with :%s: on message %d within %s",
@@ -363,6 +370,14 @@ func (h *Handler) liveArm(convID string) (int64, bool) {
 	return p.promptID, true
 }
 
+// isLastWarning reports whether msgID is the newest archive warning
+// posted in convID.
+func (h *Handler) isLastWarning(convID string, msgID int64) bool {
+	h.archiveMu.Lock()
+	defer h.archiveMu.Unlock()
+	return h.lastWarning[convID] == msgID
+}
+
 // armedFor reports whether msgID is the message an armed confirmation
 // for convID is waiting on. It does not consume the arm.
 func (h *Handler) armedFor(convID string, msgID int64) bool {
@@ -403,6 +418,7 @@ func (h *Handler) takeArchiveConfirm(convID string, msgID int64) bool {
 func (h *Handler) dropArchiveArm(convID string) {
 	h.archiveMu.Lock()
 	delete(h.archivePending, convID)
+	delete(h.lastWarning, convID)
 	h.archiveMu.Unlock()
 }
 

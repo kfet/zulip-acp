@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A :wastebasket: on the last answer arms an archive again after an archive warning lapsed. Before, the relay recorded the warning as the last answer, so the reaction went to the agent. While a warning is live, a :wastebasket: on the answer now gets the "already waiting" reply.
+
 ## [0.75.3] - 2026-11-11
 
 ### Changed
