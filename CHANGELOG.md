@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.3] - 2026-11-11
+
 ### Changed
 - The notes index in the system prompt lists at most 20 notes, the most recently modified first, then one line with the count of the rest.
 
