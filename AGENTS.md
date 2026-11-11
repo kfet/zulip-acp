@@ -84,6 +84,9 @@ internal/handler/       event → ACP prompt; streaming sink; topic poster; comm
 internal/discover/      `zulip-acp status` + the discovery flow of `update`: finds
                         relays, systemd/launchd units and binaries on THIS host
                         (behind the Sys interface), then swaps + SIGHUP-reloads
+internal/fileshare/     one-shot relay upload endpoint for large `send_file`
+                        uploads (NO Zulip imports): PUT /up/<token>, forwards
+                        through Config.Store; handler/files.go is the Zulip half
 internal/imagefit/      pure image downscaler for the INLINED copy of an inbound
                         photo (NO Zulip imports) — a provider rejects a
                         many-image request over 2000px a side; promotion

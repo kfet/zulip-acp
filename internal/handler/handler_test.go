@@ -123,6 +123,7 @@ type fakeZulip struct {
 	downloads    map[string]fakeUpload
 	downloadGets []string
 	downloadErr  error
+	tempBase     string
 	// history backs Messages, and narrows records every narrow asked
 	// for — the archive gesture's last-resort lookup is a claim about
 	// CALLS (at most one, cached afterwards) as much as about its
@@ -542,6 +543,25 @@ func (z *fakeZulip) DownloadUpload(ctx context.Context, path string, max int64) 
 		return nil, "", fmt.Errorf("%w: %s", zulipproto.ErrUploadTooLarge, path)
 	}
 	return append([]byte(nil), f.data...), f.ctype, nil
+}
+
+// TemporaryUpload plays the temporary-URL endpoint over the same
+// store as DownloadUpload. tempBase is the realm root it answers under.
+func (z *fakeZulip) TemporaryUpload(_ context.Context, path string) (string, int64, string, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.downloadErr != nil {
+		return "", 0, "", z.downloadErr
+	}
+	f, ok := z.downloads[path]
+	if !ok {
+		return "", 0, "", &zulipproto.APIError{Status: 404, Msg: "Not Found"}
+	}
+	base := z.tempBase
+	if base == "" {
+		base = "https://zulip.example"
+	}
+	return base + "/user_uploads/temporary/tok/" + strings.TrimPrefix(path, "/user_uploads/"), int64(len(f.data)), f.ctype, nil
 }
 
 // addUpload makes an attachment exist at an upload path.

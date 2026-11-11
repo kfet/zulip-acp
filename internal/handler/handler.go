@@ -203,6 +203,11 @@ type Poster interface {
 	// message carries a link, never a file, so this is the only way
 	// the agent ever sees what a human attached.
 	DownloadUpload(ctx context.Context, uploadPath string, max int64) ([]byte, string, error)
+	// TemporaryUpload mints Zulip's temporary signed URL to an
+	// attachment and measures it. Only `fetch_attachment` uses it:
+	// the URL goes to the agent's client, so it must carry no
+	// credentials of ours. See files.go.
+	TemporaryUpload(ctx context.Context, uploadPath string) (url string, size int64, contentType string, err error)
 	AddReaction(ctx context.Context, messageID int64, emoji string) error
 	RemoveReaction(ctx context.Context, messageID int64, emoji string) error
 	// SetTyping raises or lowers the typing indicator for one

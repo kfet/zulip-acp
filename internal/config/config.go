@@ -503,6 +503,13 @@ type Config struct {
 	// docs/mcp-apps-design.md.
 	MCPApps *MCPApps `json:"mcp_apps,omitempty"`
 
+	// Files turns on large out-of-band `send_file` uploads: the agent's
+	// client PUTs a file to a one-shot relay endpoint, which forwards it
+	// to Zulip. Off unless files.public_url is set. Inline `send_file`
+	// and the attachment download tools need only relay_mcp. See
+	// docs/zulip-acp-design.md.
+	Files *Files `json:"files,omitempty"`
+
 	// Delete names a second Zulip bot that performs the delete-emoji topic
 	// delete, so the relay bot need not be an administrator. Absent =
 	// the relay bot tries itself. See Delete and docs/zulip-acp-design.md.
@@ -527,6 +534,76 @@ type MCPApps struct {
 	Listen string `json:"listen,omitempty"`
 	// TTLHours is how long an app link stays valid. 0 is 24.
 	TTLHours int `json:"ttl_hours,omitempty"`
+}
+
+// DefaultFilesListen is the loopback address the upload endpoint
+// binds when files.listen is unset.
+const DefaultFilesListen = "127.0.0.1:8738"
+
+// DefaultFilesMaxMB is the largest file `send_file` takes when
+// files.max_mb is unset. It matches Zulip's default upload limit.
+const DefaultFilesMaxMB = 25
+
+// Files configures the one-shot upload endpoint.
+type Files struct {
+	// PublicURL is the https origin a reverse proxy serves the upload
+	// listener at, for example "https://up.example.com". REQUIRED for
+	// large uploads: the agent's client must reach it.
+	PublicURL string `json:"public_url,omitempty"`
+	// Listen is the address the upload listener binds. It must be a
+	// loopback address.
+	Listen string `json:"listen,omitempty"`
+	// MaxMB is the largest file `send_file` takes, in MiB. 0 is 25.
+	// Keep it at or under the realm's max_file_upload_size.
+	MaxMB int `json:"max_mb,omitempty"`
+}
+
+// FilesEnabled reports whether the upload endpoint is on.
+func (c *Config) FilesEnabled() bool {
+	return c.Files != nil && c.Files.PublicURL != ""
+}
+
+// FilesListen is the upload listener address.
+func (c *Config) FilesListen() string {
+	if c.Files == nil || c.Files.Listen == "" {
+		return DefaultFilesListen
+	}
+	return c.Files.Listen
+}
+
+// FilesMaxBytes is the largest file `send_file` takes.
+func (c *Config) FilesMaxBytes() int64 {
+	if c.Files == nil || c.Files.MaxMB == 0 {
+		return DefaultFilesMaxMB << 20
+	}
+	return int64(c.Files.MaxMB) << 20
+}
+
+// validateFiles refuses a non-https public URL, a listener off
+// loopback and a negative size.
+func (c *Config) validateFiles() error {
+	if c.Files == nil {
+		return nil
+	}
+	if c.Files.MaxMB < 0 {
+		return fmt.Errorf("files.max_mb must be >= 0")
+	}
+	if c.Files.PublicURL != "" && !strings.HasPrefix(c.Files.PublicURL, "https://") {
+		return fmt.Errorf("files.public_url %q must be https", c.Files.PublicURL)
+	}
+	return checkLoopback("files.listen", c.FilesListen())
+}
+
+// checkLoopback refuses a listen address that is not on loopback.
+func checkLoopback(key, addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("%s %q must be a loopback address; put a reverse proxy in front of it", key, addr)
+	}
+	return nil
 }
 
 // MCPAppsEnabled reports whether MCP Apps are on.
@@ -559,14 +636,7 @@ func (c *Config) validateMCPApps() error {
 	if c.MCPApps.TTLHours < 0 {
 		return fmt.Errorf("mcp_apps.ttl_hours must be >= 0")
 	}
-	host, _, err := net.SplitHostPort(c.MCPAppsListen())
-	if err != nil {
-		return fmt.Errorf("mcp_apps.listen: %w", err)
-	}
-	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("mcp_apps.listen %q must be a loopback address; put a reverse proxy in front of it", c.MCPAppsListen())
-	}
-	return nil
+	return checkLoopback("mcp_apps.listen", c.MCPAppsListen())
 }
 
 // Load reads and validates the config file. Unknown fields are an
@@ -672,6 +742,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateMCPApps(); err != nil {
+		return err
+	}
+	if err := c.validateFiles(); err != nil {
 		return err
 	}
 	if err := c.validateDelete(); err != nil {

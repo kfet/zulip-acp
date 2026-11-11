@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/discover"
+	"github.com/kfet/zulip-acp/internal/fileshare"
 	"github.com/kfet/zulip-acp/internal/handler"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/mcpapps"
@@ -614,7 +616,10 @@ func main() {
 		tools, err = relaytool.New(relaytool.Config{
 			Broker:    broker,
 			ConvToken: func(k string) (string, bool) { return h.ConvToken(k) },
-			Logf:      log.Printf,
+			// The handler is the FilePoster and the DownloadLinker;
+			// large uploads need files.public_url (below).
+			MaxFileBytes: cfg.FilesMaxBytes(),
+			Logf:         log.Printf,
 		})
 		if err != nil {
 			log.Fatalf("relay-mcp: %v", err)
@@ -794,6 +799,31 @@ func main() {
 	// Tools are registered only once the Handler exists: handler.New is
 	// what wires it in as the broker's Controller, and relaytool asks
 	// the broker which optional capabilities that Controller has.
+	var filesServer *http.Server
+	if cfg.RelayMCP && cfg.FilesEnabled() {
+		fs, err := fileshare.New(fileshare.Config{
+			PublicURL: cfg.Files.PublicURL,
+			Store: func(ctx context.Context, name, mimeType string, data []byte) (string, error) {
+				return zc.Upload(ctx, name, zulipproto.ContentType(name, data), bytes.NewReader(data))
+			},
+			Logf: log.Printf,
+		})
+		if err != nil {
+			log.Fatalf("files: %v", err)
+		}
+		broker.SetUploadTargeter(handler.NewUploads(func() *handler.Handler { return h }, fs))
+		ln, err := net.Listen("tcp", cfg.FilesListen())
+		if err != nil {
+			log.Fatalf("files listener: %v", err)
+		}
+		filesServer = &http.Server{Handler: fs.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: fileshare.DefaultTTL}
+		go func() {
+			if err := filesServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("zulip-acp: WARN files listener: %v", err)
+			}
+		}()
+		log.Printf("zulip-acp: upload endpoint on %s, targets at %s", ln.Addr(), cfg.Files.PublicURL)
+	}
 	if cfg.RelayMCP {
 		tools.Register(mcpHost)
 		// The Zulip-specific half: `history` and `rename_topic` need a
@@ -928,6 +958,9 @@ func main() {
 		WaitCancelled:  h.WaitCancelled,
 	})
 
+	if filesServer != nil {
+		_ = filesServer.Close()
+	}
 	if appServer != nil {
 		_ = appServer.Close()
 	}

@@ -1918,6 +1918,31 @@ It posts through the **rollover splitter**, like every agent answer. Zulip
 truncates past `MAX_MESSAGE_LENGTH` silently; a `post` that called
 `SendMessage` directly would be a brand-new way to lose output.
 
+### Files: `send_file`, `list_attachments`, `fetch_attachment`
+
+These tools are relay-generic (acp-kit `relaytool`, see acp-kit
+`docs/files-oob.md`). zulip-acp implements the optional capabilities in
+`internal/handler/files.go`:
+
+- `command.FilePoster` (Handler): upload the inline bytes to `/user_uploads`,
+  then post `[name](/user_uploads/…)` through the splitter.
+- `command.DownloadLinker` (Handler): `AttachmentsIn` parses the upload links
+  in the conversation's last 100 messages, skipping the relay's own and other
+  bots' messages: the agent can `post` any upload path, and listing it would
+  turn `fetch_attachment` into a realm-wide read. `DownloadLinkFor` accepts only an
+  id from that list, then mints a temporary signed URL
+  (`GET /api/v1/user_uploads/…`) and measures it with a HEAD sent without
+  credentials. It refuses a non-https realm.
+- `command.UploadTargeter` (`handler.Uploads`, only with `files.public_url`):
+  Zulip's upload API needs the bot's credentials, so the target is a one-shot
+  relay endpoint (`internal/fileshare`): a 128-bit token, PUT only, 10 minutes,
+  the exact announced size, bound to the conversation token, at most 16
+  pending per conversation and 2 bodies in memory at a time. A received file
+  waits 30 minutes for the retry (`mcphost.UploadStateTTL`). The relay
+  forwards the bytes to `/user_uploads` with its own credentials and keeps the
+  path under the token until `FinishUploadFor` collects it. Tokens are in
+  memory only: a reload forgets them, and the client gets "upload again".
+
 ### `history` and `rename_topic`: the Zulip-specific tools
 
 Every other loopback tool is relay-generic and lives in `acp-kit/relaytool`,

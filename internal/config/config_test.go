@@ -880,6 +880,27 @@ func TestMCPApps(t *testing.T) {
 	}
 }
 
+func TestFiles(t *testing.T) {
+	c := &Config{}
+	if c.FilesEnabled() || c.FilesListen() != DefaultFilesListen || c.FilesMaxBytes() != DefaultFilesMaxMB<<20 {
+		t.Fatal("defaults")
+	}
+	c.Files = &Files{}
+	if c.FilesEnabled() || c.Validate() != nil {
+		t.Fatal("empty object must be off and valid")
+	}
+	c.Files = &Files{PublicURL: "https://up.example.com", Listen: "127.0.0.1:9001", MaxMB: 3}
+	if !c.FilesEnabled() || c.FilesListen() != "127.0.0.1:9001" || c.FilesMaxBytes() != 3<<20 || c.Validate() != nil {
+		t.Fatal("set values")
+	}
+	for _, bad := range []Files{{PublicURL: "http://up.example.com"}, {Listen: "0.0.0.0:1"}, {MaxMB: -1}} {
+		c.Files = &bad
+		if c.Validate() == nil {
+			t.Errorf("%+v: want error", bad)
+		}
+	}
+}
+
 func TestReactSettle(t *testing.T) {
 	if d := (&Config{}).ReactSettle(); d != DefaultReactSettle {
 		t.Fatalf("unset = %v", d)
