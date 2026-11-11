@@ -13,7 +13,7 @@ import (
 // Notes index limits. They bound what the index can add to EVERY
 // session's system prompt, whatever the operator keeps in the store.
 const (
-	notesMaxEntries = 60
+	notesMaxEntries = 20   // the most recently modified notes
 	notesMaxSummary = 120  // code points per summary line
 	notesMaxBlock   = 6000 // code points for the whole block
 	notesHeadBytes  = 2048 // bytes read from each note to find a summary
@@ -37,7 +37,7 @@ const (
 // the notes skill already says where to write.
 func NotesIndex(fsys fs.FS, dir string) string {
 	files := listNotes(fsys, ".", 0)
-	sort.Strings(files)
+	sortByRecency(fsys, files)
 
 	if len(files) == 0 {
 		return ""
@@ -62,7 +62,7 @@ func NotesIndex(fsys fs.FS, dir string) string {
 		shown++
 	}
 	if more := len(files) - shown; more > 0 {
-		b.WriteString("- … and " + strconv.Itoa(more) + " more: list the directory or grep it.\n")
+		b.WriteString("- … " + strconv.Itoa(more) + " more: list or grep the dir.\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -146,4 +146,22 @@ func listNotes(fsys fs.FS, dir string, depth int) []string {
 		}
 	}
 	return out
+}
+
+// sortByRecency orders files newest first, by modification time, then
+// by path. A file it cannot stat sorts last.
+func sortByRecency(fsys fs.FS, files []string) {
+	mod := make(map[string]int64, len(files))
+	for _, f := range files {
+		if st, err := fs.Stat(fsys, f); err == nil {
+			mod[f] = st.ModTime().UnixNano()
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		a, b := mod[files[i]], mod[files[j]]
+		if a != b {
+			return a > b
+		}
+		return files[i] < files[j]
+	})
 }

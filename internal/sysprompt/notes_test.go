@@ -2,6 +2,7 @@ package sysprompt
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func TestNotesIndexCaps(t *testing.T) {
 		fsys[filepath.Join("n", strings.Repeat("a", 3)+string(rune('A'+i%26))+string(rune('a'+i/26))+".md")] = &fstest.MapFile{Data: []byte("# t")}
 	}
 	got := NotesIndex(fsys, "/n")
-	if !strings.Contains(got, "… and 5 more") {
+	if !strings.Contains(got, "… 5 more: list or grep the dir") {
 		t.Fatalf("entry cap: %s", got)
 	}
 	big := fstest.MapFS{}
@@ -76,7 +77,7 @@ func TestNotesIndexCaps(t *testing.T) {
 	if n := len([]rune(got)); n > notesMaxBlock+200 {
 		t.Fatalf("block too big: %d", n)
 	}
-	if !strings.Contains(got, "more: list the directory") {
+	if !strings.Contains(got, "more: list or grep the dir") {
 		t.Fatalf("size cap: %s", got)
 	}
 }
@@ -120,5 +121,28 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestNotesIndexNewestFirst: past the cap, the index keeps the most
+// recently modified notes, newest first.
+func TestNotesIndexNewestFirst(t *testing.T) {
+	base := time.Unix(1_000_000, 0)
+	fsys := fstest.MapFS{}
+	for i := 0; i < notesMaxEntries+3; i++ {
+		fsys[fmt.Sprintf("n%02d.md", i)] = &fstest.MapFile{Data: []byte("# t"), ModTime: base.Add(time.Duration(i) * time.Hour)}
+	}
+	got := NotesIndex(fsys, "/n")
+	newest := fmt.Sprintf("- n%02d.md", notesMaxEntries+2)
+	if strings.Index(got, newest) < 0 || strings.Index(got, newest) > strings.Index(got, "- n03.md") {
+		t.Fatalf("newest not first:\n%s", got)
+	}
+	for _, old := range []string{"- n00.md", "- n01.md", "- n02.md"} {
+		if strings.Contains(got, old) {
+			t.Fatalf("oldest %s kept:\n%s", old, got)
+		}
+	}
+	if !strings.Contains(got, "- … 3 more: list or grep the dir") {
+		t.Fatalf("no more line:\n%s", got)
 	}
 }
