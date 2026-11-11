@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.1] - 2026-11-11
+
 ### Fixed
 - Without `files.public_url`, `send_file` keeps acp-kit's inline limit. Before, it advertised 25 MiB, and a file over the inline limit failed. The docs now say the upload URL needs to be reachable by the agent only (a tailnet name or an agentbox share), not by the internet.
 
