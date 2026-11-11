@@ -546,14 +546,16 @@ const DefaultFilesMaxMB = 25
 
 // Files configures the one-shot upload endpoint.
 type Files struct {
-	// PublicURL is the https origin a reverse proxy serves the upload
-	// listener at, for example "https://up.example.com". REQUIRED for
-	// large uploads: the agent's client must reach it.
+	// PublicURL is the https origin that serves the upload listener.
+	// Only the agent (the MCP client) must reach it, not the internet:
+	// a tailnet https name (tailscale serve) or an agentbox share is
+	// enough. Unset means off, and `send_file` stays inline-only.
 	PublicURL string `json:"public_url,omitempty"`
 	// Listen is the address the upload listener binds. It must be a
 	// loopback address.
 	Listen string `json:"listen,omitempty"`
-	// MaxMB is the largest file `send_file` takes, in MiB. 0 is 25.
+	// MaxMB is the largest file `send_file` takes, in MiB, when
+	// public_url is set. 0 is 25.
 	// Keep it at or under the realm's max_file_upload_size.
 	MaxMB int `json:"max_mb,omitempty"`
 }
@@ -571,9 +573,15 @@ func (c *Config) FilesListen() string {
 	return c.Files.Listen
 }
 
-// FilesMaxBytes is the largest file `send_file` takes.
+// FilesMaxBytes is the largest file `send_file` takes. It is 0 (the
+// acp-kit inline limit) when the upload endpoint is off: a file over
+// that limit cannot go inline, so a larger cap would only advertise a
+// size that fails.
 func (c *Config) FilesMaxBytes() int64 {
-	if c.Files == nil || c.Files.MaxMB == 0 {
+	if !c.FilesEnabled() {
+		return 0
+	}
+	if c.Files.MaxMB == 0 {
 		return DefaultFilesMaxMB << 20
 	}
 	return int64(c.Files.MaxMB) << 20

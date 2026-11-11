@@ -882,12 +882,16 @@ func TestMCPApps(t *testing.T) {
 
 func TestFiles(t *testing.T) {
 	c := &Config{}
-	if c.FilesEnabled() || c.FilesListen() != DefaultFilesListen || c.FilesMaxBytes() != DefaultFilesMaxMB<<20 {
+	if c.FilesEnabled() || c.FilesListen() != DefaultFilesListen || c.FilesMaxBytes() != 0 {
 		t.Fatal("defaults")
 	}
 	c.Files = &Files{}
 	if c.FilesEnabled() || c.Validate() != nil {
 		t.Fatal("empty object must be off and valid")
+	}
+	c.Files = &Files{PublicURL: "https://up.example.com"}
+	if c.FilesMaxBytes() != DefaultFilesMaxMB<<20 {
+		t.Fatal("default max")
 	}
 	c.Files = &Files{PublicURL: "https://up.example.com", Listen: "127.0.0.1:9001", MaxMB: 3}
 	if !c.FilesEnabled() || c.FilesListen() != "127.0.0.1:9001" || c.FilesMaxBytes() != 3<<20 || c.Validate() != nil {

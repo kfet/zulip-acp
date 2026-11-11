@@ -1933,8 +1933,11 @@ These tools are relay-generic (acp-kit `relaytool`, see acp-kit
   id from that list, then mints a temporary signed URL
   (`GET /api/v1/user_uploads/…`) and measures it with a HEAD sent without
   credentials. It refuses a non-https realm.
-- `command.UploadTargeter` (`handler.Uploads`, only with `files.public_url`):
-  Zulip's upload API needs the bot's credentials, so the target is a one-shot
+- `command.UploadTargeter` (`handler.Uploads`, OPTIONAL, only with
+  `files.public_url`; without it `send_file` is inline-only and `max_mb` does
+  not apply). The URL needs to be reachable by the agent only, not the
+  internet (tailnet https name, agentbox share). Zulip uploads (web and API)
+  need a session or the API key, so the target is a one-shot
   relay endpoint (`internal/fileshare`): a 128-bit token, PUT only, 10 minutes,
   the exact announced size, bound to the conversation token, at most 16
   pending per conversation and 2 bodies in memory at a time. A received file

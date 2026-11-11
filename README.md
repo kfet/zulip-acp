@@ -421,7 +421,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `quick_models_menu_emoji` | `gear` | reaction that opens the switcher menu |
 | `quick_models_sweep_emoji` | `www` | reaction on a switch confirmation that applies it to all sessions |
 | `repost_on_close` | `true` | at the end of a **streamed** turn, re-post the finished answer as new messages and delete the placeholder-seeded originals, so the mobile push carries the answer instead of `Thinking...`. A no-op in quiet mode. See below |
-| `files` | off | **Large `send_file` uploads** — a one-shot relay upload endpoint. Off unless `files.public_url` is set. See below |
+| `files` | off | **Large `send_file` uploads** — an optional one-shot relay upload endpoint, reachable by the agent only (not public). Off unless `files.public_url` is set; without it `send_file` is inline-only. See below |
 | `mcp_apps` | off | **MCP Apps** — host the `ui://` app a tool opens and post a link to it. Off unless `mcp_apps.public_url` is set. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
@@ -1050,22 +1050,25 @@ With `relay_mcp` on and fir 1.52.0 or later, the agent gets three file tools
   **temporary signed URL** (valid for about 60 s) for one of them. The client
   downloads the file itself. The Zulip server must be on https.
 
-A larger file needs an https endpoint the agent's client can upload to.
-Zulip's upload API needs the bot's credentials, so the relay serves its own
-endpoint:
+This works with no extra config. A file over the inline limit needs an
+https endpoint the agent's client can upload to. Zulip has no
+credential-free upload URL (its uploads, web and API, need a session or the
+API key), so the relay can serve a one-shot endpoint of its own. It is
+OPTIONAL and off unless you set:
 
 ```json
-"files": { "public_url": "https://up.example.com" }
+"files": { "public_url": "https://relay-host.tailnet.ts.net" }
 ```
 
-For each file the relay makes a random, single-use URL
-`<public_url>/up/<token>` that expires after 10 minutes. The client PUTs
+The relay does NOT need to be public. Only the agent (the MCP client) must
+reach this URL: a tailnet https name (`tailscale serve` to the listener) or an
+agentbox share is enough. For each file the relay makes a random, single-use
+URL `<public_url>/up/<token>` that expires after 10 minutes. The client PUTs
 exactly the announced number of bytes to it; the relay forwards them to
 `/user_uploads` and posts the link. No credential is in the URL. The relay
-listens on a loopback address only (`listen`, default `127.0.0.1:8738`); put a
-reverse proxy with TLS at `public_url`, with a body limit of at least
-`max_mb` (default 25, keep it at or under the realm's upload limit). A
-restart forgets the pending tokens; the client then uploads again.
+listens on a loopback address only (`listen`, default `127.0.0.1:8738`); the
+https front must allow a body of at least `max_mb` (default 25, keep it at or
+under the realm's upload limit). A restart forgets the pending tokens; the client then uploads again.
 
 Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 `--state-dir`. Set `ZULIP_ACP_DEBUG=1` for protocol-level logging.
