@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-11-11
+
 ### Added
 - The MCP file tools from acp-kit v0.45.0: `send_file` posts a file into the topic, `list_attachments` and `fetch_attachment` give the agent's client the topic's attachments as Zulip temporary signed URLs.
 - `files.public_url`, `files.listen`, `files.max_mb`: a one-shot relay upload endpoint for large `send_file` uploads. It forwards the bytes to Zulip; no credential goes to the client.
