@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-11-11
+
 ### Added
 - Large `send_file` uploads use zlite's own upload targets (`POST /api/v1/zlite/upload_targets`) when the server has them. The relay probes at startup; on stock Zulip it uses `files.public_url`, and with neither `send_file` is inline-only. Not yet verified against a running zlite.
 
