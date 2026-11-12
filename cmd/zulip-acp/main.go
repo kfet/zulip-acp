@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/kfet/acp-kit/interject"
 	"io"
 	"log"
 	"net"
@@ -742,6 +743,7 @@ func main() {
 		HideThinking:       cfg.HideThinking,
 		PerUserSessions:    cfg.PerUserSessions(),
 		AgentCwd:           cfg.AgentCwd(),
+		Interject:          interject.New(agent, cfg.Interject),
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Reactions:          cfg.GetReactions(),

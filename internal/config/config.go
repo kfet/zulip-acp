@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kfet/acp-kit/autoupdate"
+	"github.com/kfet/acp-kit/interject"
 	"io"
 	"net"
 	"os"
@@ -483,6 +484,12 @@ type Config struct {
 	// with no human watching, which is a real widening of what a
 	// prompt-injected agent could do. Turn it on knowingly.
 	RelayMCP bool `json:"relay_mcp,omitempty"`
+
+	// Interject answers a message that arrives during a running turn
+	// from a fork of the session, and lets the fork decide whether to
+	// stop the turn. Off by default. Without it, such a message
+	// supersedes the turn.
+	Interject interject.Config `json:"interject,omitempty"`
 
 	// MaxSchedulesPerConv, MaxSchedulesTotal and MaxScheduleDepth
 	// bound scheduled prompts. 0 uses acp-kit/schedule's defaults

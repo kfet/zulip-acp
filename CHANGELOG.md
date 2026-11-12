@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `interject` config (acp-kit `interject`): a message that arrives during a running turn gets a quick reply from a fork of the session, and the fork decides whether to leave, queue for, redirect or stop the main turn. Off by default; without it, or when the fork fails, the message supersedes the turn as before.
+
 ## [0.77.0] - 2026-11-11
 
 ### Added

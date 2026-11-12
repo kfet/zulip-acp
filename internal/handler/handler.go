@@ -31,6 +31,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/interject"
 	"github.com/kfet/acp-kit/probe"
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/schedule"
@@ -499,6 +500,11 @@ type Config struct {
 	// AgentCwd(key), an opaque placeholder, and never a directory on
 	// this host. Login commands then run in the sender's own scope.
 	AgentCwd bool
+
+	// Interject, when non-nil, answers a message that arrives during a
+	// running turn from a fork of the session, and lets the fork decide
+	// whether to stop the turn. See interject.go.
+	Interject *interject.Interjector
 
 	// Updater runs the owner-only `!update` command (acp-kit/update).
 	// Nil leaves `!update` unrecognised.
@@ -1082,7 +1088,11 @@ func (h *Handler) handleMessage(ctx context.Context, m *zulipproto.Message) {
 	}
 	if r, ok := h.route(ctx, m, nil); ok {
 		h.liveTurns.Store(r.conv.SessionKey(), m.ID)
-		h.startTurn(origin.With(ctx, r.origin), r.conv, r.prompt, r.addressed, m.ID)
+		ctx = origin.With(ctx, r.origin)
+		if h.interject(ctx, r, m.ID) {
+			return
+		}
+		h.startTurn(ctx, r.conv, r.prompt, r.addressed, m.ID)
 	}
 }
 
@@ -1556,7 +1566,9 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		// front, it would stop the agent seeing the leading "/".
 		blocks = []acp.ContentBlock{acp.TextBlock(prompt)}
 	} else {
-		text := prompt
+		// The side Q&A and queued messages of the turn before (see
+		// interject.go) go first, so the new message stays last.
+		text := h.cfg.Interject.Take(conv.SessionKey()) + prompt
 		if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
 			text = prefix + "\n\n" + text
 		}

@@ -194,6 +194,21 @@ Thought chunks are **force-hidden** on the ambient path regardless of
 `hide_thinking`: a thought that reached the surface before the verdict could not
 be retracted.
 
+### A message during a running turn (`interject`)
+
+By default, a message that arrives while its conversation's turn runs
+supersedes that turn: the relay cancels it and prompts again.
+
+With `interject.enabled`, the relay first asks a fork of the session
+(acp-kit `interject`, ACP `session/fork`). The fork answers briefly, and
+the relay posts that answer with a `*(quick reply · …)*` tag. The fork
+also gives a verdict on the main turn: leave it, queue the message for
+its next prompt, redirect it (the old supersede), or stop it. A verdict
+below `min_conf` leaves the main turn. The side Q&A and any queued
+message go in front of the next main prompt. When the fork fails, the
+relay supersedes as before. The fork runs off the event loop, bounded to
+60 s.
+
 ### Reactions as a third turn source (`reactions`)
 
 An emoji reaction is a real conversational signal — often the only response a
