@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Interject: a steer the agent refuses is now logged, before the relay falls back to cancel-and-reprompt. The live cause of such refusals (fir reaped a session with a running turn) is fixed in fir 1.54.1 (requires fir >= 1.54.1 for interject); `internal/handler/e2e_fir_test.go` (build tag `e2e`, `FIR_BIN`) tests none, inform and abort against a real fir.
+
 ## [0.78.1] - 2026-11-12
 
 ### Changed

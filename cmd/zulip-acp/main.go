@@ -743,7 +743,7 @@ func main() {
 		HideThinking:       cfg.HideThinking,
 		PerUserSessions:    cfg.PerUserSessions(),
 		AgentCwd:           cfg.AgentCwd(),
-		Interject:          interject.New(agent, cfg.Interject),
+		Interject:          interject.New(agent, interjectConfig(cfg.Interject)),
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Reactions:          cfg.GetReactions(),
@@ -1063,4 +1063,11 @@ func quickModels(in []config.QuickModel) []handler.QuickModel {
 		out = append(out, handler.QuickModel{Emoji: q.Emoji, Model: q.Model, Label: q.Label})
 	}
 	return out
+}
+
+// interjectConfig adds the relay log to the operator's interject
+// config, so a steer the agent refuses is never silent.
+func interjectConfig(c interject.Config) interject.Config {
+	c.Logf = log.Printf
+	return c
 }

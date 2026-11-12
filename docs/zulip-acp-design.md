@@ -208,7 +208,10 @@ it. A verdict below `min_conf` means answer only. With fir's
 model never sees, and inform injects the Q&A (plus an optional note
 from the fork) into the running turn. Agents without it get the old
 path: the Q&A goes in front of the next main prompt and inform
-supersedes the turn. When the fork fails, the
+supersedes the turn. The same old path applies when fir refuses the
+steer (no running turn); the relay logs each refusal. fir before 1.54.1
+reaped a session whose turn ran longer than its idle TTL, which made
+every steer to it fail. When the fork fails, the
 relay supersedes as before. The fork runs off the event loop, bounded to
 60 s.
 
