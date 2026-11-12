@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -187,5 +188,70 @@ func putBody(t *testing.T, fs *fileshare.Server, url, body string) {
 	fs.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body)
+	}
+}
+
+type fakeTargets struct {
+	createErr error
+	st        zulipproto.UploadTargetStatus
+	stErr     error
+	created   string
+}
+
+func (f *fakeTargets) CreateUploadTarget(_ context.Context, name string, size int64, mt string, ttl time.Duration) (zulipproto.UploadTarget, error) {
+	f.created = fmt.Sprintf("%s:%d:%s:%v", name, size, mt, ttl)
+	if f.createErr != nil {
+		return zulipproto.UploadTarget{}, f.createErr
+	}
+	return zulipproto.UploadTarget{URL: "https://z.example/put/t1", Token: "t1", ExpiresAt: time.Unix(5, 0)}, nil
+}
+
+func (f *fakeTargets) GetUploadTarget(_ context.Context, token string) (zulipproto.UploadTargetStatus, error) {
+	if token != "t1" {
+		return zulipproto.UploadTargetStatus{}, errors.New("unknown")
+	}
+	return f.st, f.stErr
+}
+
+func TestZliteUploads(t *testing.T) {
+	lh := newLoopHarness(t, newAgent("ok"), nil)
+	api := &fakeTargets{}
+	z := NewZliteUploads(func() *Handler { return lh.h }, api, time.Second)
+	tok := chanToken("t")
+	spec := mcphost.UploadSpec{Name: "dir/big.bin", MimeType: "x/y", Size: 3}
+	if _, err := z.UploadTargetFor("bad", spec); err == nil {
+		t.Fatal("bad token")
+	}
+	tgt, err := z.UploadTargetFor(tok, spec)
+	if err != nil || tgt.URL != "https://z.example/put/t1" || tgt.Method != "PUT" || !tgt.ExpiresAt.Equal(time.Unix(5, 0)) || tgt.Ref != "t1" || api.created != "big.bin:3:x/y:10m0s" {
+		t.Fatalf("%+v %v %s", tgt, err, api.created)
+	}
+	api.createErr = errors.New("no")
+	if _, err := z.UploadTargetFor(tok, spec); err == nil {
+		t.Fatal("create error")
+	}
+	if _, err := z.FinishUploadFor(tok, spec, "t1"); err == nil {
+		t.Fatal("nothing stored")
+	}
+	api.st = zulipproto.UploadTargetStatus{Status: "done", Path: "https://evil/user_uploads/x"}
+	if _, err := z.FinishUploadFor(tok, spec, "t1"); err == nil {
+		t.Fatal("foreign path accepted")
+	}
+	api.stErr = errors.New("down")
+	if _, err := z.FinishUploadFor(tok, spec, "t1"); err == nil {
+		t.Fatal("status error")
+	}
+	api.stErr = nil
+	api.st = zulipproto.UploadTargetStatus{Status: "done", Path: "/user_uploads/2/ab/big.bin", Size: 3}
+	f, err := z.FinishUploadFor(tok, spec, "t1")
+	if err != nil || f.Ref != "/user_uploads/2/ab/big.bin" || f.Size != 3 {
+		t.Fatalf("%+v %v", f, err)
+	}
+	f.Name = "big.bin"
+	if _, err := z.PostUploadedTo(tok, f, ""); err != nil {
+		t.Fatal(err)
+	}
+	if b := lh.z.stored()[0]; b != "[big.bin](/user_uploads/2/ab/big.bin)" {
+		t.Fatalf("%q", b)
 	}
 }

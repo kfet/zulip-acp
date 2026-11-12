@@ -503,9 +503,10 @@ type Config struct {
 	// docs/mcp-apps-design.md.
 	MCPApps *MCPApps `json:"mcp_apps,omitempty"`
 
-	// Files turns on large out-of-band `send_file` uploads: the agent's
-	// client PUTs a file to a one-shot relay endpoint, which forwards it
-	// to Zulip. Off unless files.public_url is set. Inline `send_file`
+	// Files configures large out-of-band `send_file` uploads. A zlite
+	// server mints the upload URLs itself and needs no config here. On
+	// stock Zulip, files.public_url turns on a one-shot relay endpoint
+	// that forwards the bytes to Zulip. Neither means inline-only. Inline `send_file`
 	// and the attachment download tools need only relay_mcp. See
 	// docs/zulip-acp-design.md.
 	Files *Files `json:"files,omitempty"`
@@ -554,8 +555,8 @@ type Files struct {
 	// Listen is the address the upload listener binds. It must be a
 	// loopback address.
 	Listen string `json:"listen,omitempty"`
-	// MaxMB is the largest file `send_file` takes, in MiB, when
-	// public_url is set. 0 is 25.
+	// MaxMB is the largest file `send_file` takes, in MiB, when the
+	// relay has an upload target (zlite's own, or public_url). 0 is 25.
 	// Keep it at or under the realm's max_file_upload_size.
 	MaxMB int `json:"max_mb,omitempty"`
 }
@@ -573,13 +574,13 @@ func (c *Config) FilesListen() string {
 	return c.Files.Listen
 }
 
-// FilesMaxBytes is the largest file `send_file` takes. It is 0 (the
-// acp-kit inline limit) when the upload endpoint is off: a file over
-// that limit cannot go inline, so a larger cap would only advertise a
-// size that fails.
+// FilesMaxBytes is the largest file `send_file` takes when the relay
+// has an upload target (zlite's, or the files endpoint). Without one,
+// the caller keeps the acp-kit inline limit: a file over it cannot go
+// inline, so a larger cap would only advertise a size that fails.
 func (c *Config) FilesMaxBytes() int64 {
-	if !c.FilesEnabled() {
-		return 0
+	if c.Files == nil {
+		return DefaultFilesMaxMB << 20
 	}
 	if c.Files.MaxMB == 0 {
 		return DefaultFilesMaxMB << 20

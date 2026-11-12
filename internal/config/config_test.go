@@ -882,7 +882,7 @@ func TestMCPApps(t *testing.T) {
 
 func TestFiles(t *testing.T) {
 	c := &Config{}
-	if c.FilesEnabled() || c.FilesListen() != DefaultFilesListen || c.FilesMaxBytes() != 0 {
+	if c.FilesEnabled() || c.FilesListen() != DefaultFilesListen || c.FilesMaxBytes() != DefaultFilesMaxMB<<20 {
 		t.Fatal("defaults")
 	}
 	c.Files = &Files{}

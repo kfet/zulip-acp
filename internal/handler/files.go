@@ -200,3 +200,61 @@ func (u *Uploads) FinishUploadFor(token string, spec mcphost.UploadSpec, ref str
 func (u *Uploads) PostUploadedTo(token string, f mcphost.UploadedFile, caption string) ([]string, error) {
 	return u.h().postFileLink(token, f.Name, f.Ref, caption)
 }
+
+// UploadTargetAPI is the zlite upload-target extension of the Zulip
+// client (zulipproto/uploadtargets.go).
+type UploadTargetAPI interface {
+	CreateUploadTarget(ctx context.Context, name string, size int64, mimeType string, ttl time.Duration) (zulipproto.UploadTarget, error)
+	GetUploadTarget(ctx context.Context, token string) (zulipproto.UploadTargetStatus, error)
+}
+
+// zliteTargetTTL is how long a zlite target stays usable.
+const zliteTargetTTL = 10 * time.Minute
+
+// ZliteUploads is the command.UploadTargeter over zlite's own upload
+// targets: the server mints the credential-free PUT URL, so the relay
+// needs no endpoint of its own. It is preferred over Uploads.
+type ZliteUploads struct {
+	h       func() *Handler
+	api     UploadTargetAPI
+	timeout time.Duration
+}
+
+// NewZliteUploads returns an UploadTargeter. h is called at use time.
+func NewZliteUploads(h func() *Handler, api UploadTargetAPI, timeout time.Duration) *ZliteUploads {
+	return &ZliteUploads{h: h, api: api, timeout: timeout}
+}
+
+// UploadTargetFor asks the server for a single-use PUT URL.
+func (z *ZliteUploads) UploadTargetFor(token string, spec mcphost.UploadSpec) (mcphost.UploadTarget, error) {
+	if _, err := journal.ParseToken(token); err != nil {
+		return mcphost.UploadTarget{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	t, err := z.api.CreateUploadTarget(ctx, command.SafeFileName(spec.Name), spec.Size, spec.MimeType, zliteTargetTTL)
+	if err != nil {
+		return mcphost.UploadTarget{}, fmt.Errorf("upload target: %w", err)
+	}
+	return mcphost.UploadTarget{URL: t.URL, Method: "PUT", ExpiresAt: t.ExpiresAt, Ref: t.Token}, nil
+}
+
+// FinishUploadFor asks the server what it stored for the target. It
+// fails unless the server holds a valid upload path.
+func (z *ZliteUploads) FinishUploadFor(_ string, spec mcphost.UploadSpec, ref string) (mcphost.UploadedFile, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	st, err := z.api.GetUploadTarget(ctx, ref)
+	if err != nil {
+		return mcphost.UploadedFile{}, fmt.Errorf("upload status: %w", err)
+	}
+	if _, ok := zulipproto.UploadRest(st.Path); !ok || !strings.HasPrefix(st.Path, zulipproto.UploadPrefix) {
+		return mcphost.UploadedFile{}, fmt.Errorf("the file was not uploaded (status %q)", st.Status)
+	}
+	return mcphost.UploadedFile{Ref: st.Path, Name: spec.Name, MimeType: spec.MimeType, Size: st.Size}, nil
+}
+
+// PostUploadedTo posts the stored file's link into the conversation.
+func (z *ZliteUploads) PostUploadedTo(token string, f mcphost.UploadedFile, caption string) ([]string, error) {
+	return z.h().postFileLink(token, f.Name, f.Ref, caption)
+}

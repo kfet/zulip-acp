@@ -600,6 +600,8 @@ func main() {
 	}
 	var schedules *schedule.Store
 	var tools *relaytool.Tools
+	var uploadVia string
+	var maxFileBytes int64
 	if cfg.RelayMCP {
 		schedules, err = schedule.Open(schedule.Config{
 			Path:        filepath.Join(cfg.StateDir, "schedules.json"),
@@ -613,12 +615,34 @@ func main() {
 		if err != nil {
 			log.Fatalf("schedules: %v", err)
 		}
+		// Large uploads: zlite's own targets when the server has them,
+		// else the static files endpoint, else inline-only.
+		probeCtx, cancelProbe := context.WithTimeout(ctx, config.DefaultZulipCallTimeout)
+		zliteUploads, perr := zc.HasUploadTargets(probeCtx)
+		cancelProbe()
+		if perr != nil {
+			log.Printf("zulip-acp: WARN upload-target probe: %v", perr)
+		}
+		switch {
+		case zliteUploads:
+			uploadVia = "zlite"
+		case cfg.FilesEnabled():
+			uploadVia = "endpoint"
+		}
+		if uploadVia != "" {
+			maxFileBytes = cfg.FilesMaxBytes()
+		}
+		if uploadVia == "" {
+			log.Printf("zulip-acp: send_file is inline-only (no zlite upload targets, no files.public_url)")
+		} else {
+			log.Printf("zulip-acp: send_file uploads via %s", uploadVia)
+		}
 		tools, err = relaytool.New(relaytool.Config{
 			Broker:    broker,
 			ConvToken: func(k string) (string, bool) { return h.ConvToken(k) },
 			// The handler is the FilePoster and the DownloadLinker;
 			// large uploads need files.public_url (below).
-			MaxFileBytes: cfg.FilesMaxBytes(),
+			MaxFileBytes: maxFileBytes,
 			Logf:         log.Printf,
 		})
 		if err != nil {
@@ -800,7 +824,10 @@ func main() {
 	// what wires it in as the broker's Controller, and relaytool asks
 	// the broker which optional capabilities that Controller has.
 	var filesServer *http.Server
-	if cfg.RelayMCP && cfg.FilesEnabled() {
+	if uploadVia == "zlite" {
+		broker.SetUploadTargeter(handler.NewZliteUploads(func() *handler.Handler { return h }, zc, config.DefaultZulipCallTimeout))
+	}
+	if uploadVia == "endpoint" {
 		fs, err := fileshare.New(fileshare.Config{
 			PublicURL: cfg.Files.PublicURL,
 			Store: func(ctx context.Context, name, mimeType string, data []byte) (string, error) {

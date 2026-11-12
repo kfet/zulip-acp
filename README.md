@@ -1051,10 +1051,17 @@ With `relay_mcp` on and fir 1.52.0 or later, the agent gets three file tools
   downloads the file itself. The Zulip server must be on https.
 
 This works with no extra config. A file over the inline limit needs an
-https endpoint the agent's client can upload to. Zulip has no
-credential-free upload URL (its uploads, web and API, need a session or the
-API key), so the relay can serve a one-shot endpoint of its own. It is
-OPTIONAL and off unless you set:
+https URL the agent's client can upload to without credentials. The relay
+finds one in this order:
+
+1. **zlite.** At startup the relay probes `POST /api/v1/zlite/upload_targets`.
+   If the server has it, the server mints a single-use PUT URL per file
+   (`GET /api/v1/zlite/upload_targets/<token>` then reports the stored
+   `/user_uploads/…` path). No relay config is needed.
+2. **Stock Zulip** (the probe gets 404). Zulip has no credential-free upload
+   URL (its uploads, web and API, need a session or the API key), so the relay
+   can serve a one-shot endpoint of its own. It is OPTIONAL and off unless you
+   set:
 
 ```json
 "files": { "public_url": "https://relay-host.tailnet.ts.net" }
@@ -1069,6 +1076,9 @@ exactly the announced number of bytes to it; the relay forwards them to
 listens on a loopback address only (`listen`, default `127.0.0.1:8738`); the
 https front must allow a body of at least `max_mb` (default 25, keep it at or
 under the realm's upload limit). A restart forgets the pending tokens; the client then uploads again.
+
+With neither, `send_file` is inline-only. `max_mb` applies to both upload
+paths. The relay logs which one it uses at startup.
 
 Useful flags: `--print-paths`, `--version`, `--channels`, `--agent-cmd`,
 `--state-dir`. Set `ZULIP_ACP_DEBUG=1` for protocol-level logging.

@@ -1933,7 +1933,14 @@ These tools are relay-generic (acp-kit `relaytool`, see acp-kit
   id from that list, then mints a temporary signed URL
   (`GET /api/v1/user_uploads/…`) and measures it with a HEAD sent without
   credentials. It refuses a non-https realm.
-- `command.UploadTargeter` (`handler.Uploads`, OPTIONAL, only with
+- `command.UploadTargeter`, chosen once at startup:
+  1. `handler.ZliteUploads` when `zulipproto.HasUploadTargets` finds zlite's
+     `POST /api/v1/zlite/upload_targets` (an empty POST; 404 or 405 means
+     absent). zlite mints the credential-free PUT URL; `FinishUploadFor` reads
+     `GET …/upload_targets/<token>` and accepts only a `/user_uploads/…` path.
+     The contract is from the zlite design and is NOT yet verified against a
+     running zlite.
+  2. `handler.Uploads` (OPTIONAL, only with
   `files.public_url`; without it `send_file` is inline-only and `max_mb` does
   not apply). The URL needs to be reachable by the agent only, not the
   internet (tailnet https name, agentbox share). Zulip uploads (web and API)
