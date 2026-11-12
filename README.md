@@ -424,7 +424,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `files` | off | **Large `send_file` uploads** — an optional one-shot relay upload endpoint, reachable by the agent only (not public). Off unless `files.public_url` is set; without it `send_file` is inline-only. See below |
 | `mcp_apps` | off | **MCP Apps** — host the `ui://` app a tool opens and post a link to it. Off unless `mcp_apps.public_url` is set. See below |
 | `relay_mcp` | `false` | **agent→relay loopback** — let the agent post out of band and schedule prompts back into its own conversation. See below |
-| `interject` | off | **mid-turn quick replies** — `{"enabled": true, "min_conf": 7}`. A message that arrives during a running turn is answered by a fork of the session; the fork decides to leave, queue for, redirect or stop the main turn. Without it, or when the fork fails, the message supersedes the turn |
+| `interject` | off | **mid-turn quick replies** — `{"enabled": true, "min_conf": 7}`. A message that arrives during a running turn is answered by a fork of the session; the fork decides to just answer, inform the running main turn (fir `_fir/session/steer`; otherwise supersede it) or stop it. Without it, or when the fork fails, the message supersedes the turn |
 | `inbound_attachments` | `true` | download the files a human attaches into the conversation's `inbox/` and put their local paths (and images, inline, where the agent takes them) in front of the agent. See below |
 | `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
 | `max_attachment_total_bytes` | `62914560` (60 MB) | cap on one message's worth of inbound attachments; must be ≥ `max_attachment_bytes` |

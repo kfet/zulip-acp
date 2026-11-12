@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,23 @@ type ijAgent struct {
 	asked   []string
 	// during runs inside the fork's prompt.
 	during func()
+	// steer advertises _fir/session/steer; ext logs its calls.
+	steer bool
+	ext   []map[string]any
+}
+
+func (a *ijAgent) Caps() client.Caps {
+	if !a.steer {
+		return client.Caps{}
+	}
+	return client.Caps{Extensions: map[string]json.RawMessage{interject.SteerCap: json.RawMessage(`{}`)}}
+}
+
+func (a *ijAgent) ExtMethod(_ context.Context, _ acp.SessionId, _ string, p map[string]any) (json.RawMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ext = append(a.ext, p)
+	return json.RawMessage(`{}`), nil
 }
 
 func (a *ijAgent) ForkSession(_ context.Context, _ string, parent acp.SessionId, _ string, sink client.SessionUpdateSink) (acp.SessionId, error) {
@@ -124,8 +142,8 @@ func TestInterjectFallsBackWhenForkFails(t *testing.T) {
 	}
 }
 
-func TestInterjectSteerRepromptsMain(t *testing.T) {
-	ij := &ijAgent{out: "Switching.\n3 9"}
+func TestInterjectInformFallbackRepromptsMain(t *testing.T) {
+	ij := &ijAgent{out: "Switching.\n2 9"}
 	hh, agent := interjectHarness(t, ij)
 	agent.mu.Lock()
 	agent.block = nil
@@ -142,7 +160,7 @@ func TestInterjectSteerRepromptsMain(t *testing.T) {
 }
 
 func TestInterjectAbortStopsMainOnly(t *testing.T) {
-	ij := &ijAgent{out: "4 9"}
+	ij := &ijAgent{out: "3 9"}
 	hh, agent := interjectHarness(t, ij)
 	hh.h.Handle(context.Background(), busyMsg("stop that"))
 	hh.idle(t)
@@ -157,39 +175,38 @@ func TestInterjectAbortStopsMainOnly(t *testing.T) {
 	}
 }
 
-func TestInterjectQueueWhileMainRuns(t *testing.T) {
-	ij := &ijAgent{out: "Will do after.\n2 9"}
+func TestInterjectNativeInformSteersRunningTurn(t *testing.T) {
+	ij := &ijAgent{steer: true, out: "Will do.\nNOTE: user wants tests\n2 9"}
 	hh, agent := interjectHarness(t, ij)
 	hh.h.Handle(context.Background(), busyMsg("also add tests"))
 	hh.h.ops.Wait()
+	if n := hh.cancelCount(); n != 0 || len(ij.ext) != 1 || ij.ext[0]["mode"] != "steer" {
+		t.Fatalf("cancels %d, ext %v", n, ij.ext)
+	}
+	if !strings.Contains(hh.z.lastBody(), "*(quick reply · told main)*") {
+		t.Fatalf("tag: %q", hh.z.lastBody())
+	}
 	close(agent.block)
 	hh.idle(t)
-	if p := agent.promptList(); len(p) != 1 {
-		t.Fatalf("prompts = %q, want only the main one", p)
-	}
 	hh.deliver(t, "busy", "go on")
-	p := agent.promptList()
-	if !strings.Contains(p[1], "[queued messages from the user]\nalso add tests") {
-		t.Fatalf("queued message not delivered: %q", p[1])
+	if p := agent.promptList(); len(p) != 2 || strings.Contains(p[1], "[while you were working") {
+		t.Fatalf("prompts = %q", p)
 	}
 }
 
-func TestInterjectQueueAfterMainEnded(t *testing.T) {
-	ij := &ijAgent{out: "Will do after.\n2 9"}
+func TestInterjectNativeNoneRecordsOnly(t *testing.T) {
+	ij := &ijAgent{steer: true, out: "Half done.\n1 9"}
 	hh, agent := interjectHarness(t, ij)
-	ij.during = func() {
-		// The main turn ends while the fork answers.
-		close(agent.block)
-		ctx, cancel := context.WithTimeout(context.Background(), turnWait)
-		defer cancel()
-		_ = hh.h.convo.Active().WaitIdle(ctx)
-		hh.h.endWG.Wait()
+	hh.h.Handle(context.Background(), busyMsg("how far?"))
+	hh.h.ops.Wait()
+	if len(ij.ext) != 1 || ij.ext[0]["mode"] != "record" || ij.ext[0]["answer"] != "Half done." {
+		t.Fatalf("ext %v", ij.ext)
 	}
-	hh.h.Handle(context.Background(), busyMsg("also add tests"))
+	close(agent.block)
 	hh.idle(t)
-	p := agent.promptList()
-	if len(p) != 2 || !strings.Contains(p[1], "also add tests") {
-		t.Fatalf("prompts = %q", p)
+	hh.deliver(t, "busy", "next")
+	if p := agent.promptList(); strings.Contains(p[1], "[while you were working") {
+		t.Fatalf("digest leaked: %q", p[1])
 	}
 }
 

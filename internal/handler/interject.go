@@ -47,14 +47,12 @@ func (h *Handler) interject(ctx context.Context, r routed, msgID int64) bool {
 			h.reply(ctx, h.cfg.Journal.Current(r.conv.Key), rep.Text+"\n\n"+rep.Tag())
 		}
 		switch rep.Action {
-		case interject.Queue:
-			// Take delivers it with the next prompt. When the main turn
-			// ended while the fork was answering, no prompt is coming.
-			if !h.turnRunning(key) && ij.Queued(key) {
-				h.startTurn(ctx, r.conv, "", r.addressed, msgID)
+		case interject.Inform:
+			// Delivered: the running turn already has it. Otherwise
+			// supersede the turn, as before; Take carries the side Q&A.
+			if !rep.Delivered {
+				h.startTurn(ctx, r.conv, r.prompt, r.addressed, msgID)
 			}
-		case interject.Steer:
-			h.startTurn(ctx, r.conv, r.prompt, r.addressed, msgID)
 		case interject.Abort:
 			h.convo.Active().Stop(ctx, key)
 		}

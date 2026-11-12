@@ -202,10 +202,13 @@ supersedes that turn: the relay cancels it and prompts again.
 With `interject.enabled`, the relay first asks a fork of the session
 (acp-kit `interject`, ACP `session/fork`). The fork answers briefly, and
 the relay posts that answer with a `*(quick reply · …)*` tag. The fork
-also gives a verdict on the main turn: leave it, queue the message for
-its next prompt, redirect it (the old supersede), or stop it. A verdict
-below `min_conf` leaves the main turn. The side Q&A and any queued
-message go in front of the next main prompt. When the fork fails, the
+also gives a verdict on the main turn: answer only, inform it, or stop
+it. A verdict below `min_conf` means answer only. With fir's
+`_fir/session/steer`, answer-only is logged as a transcript entry the
+model never sees, and inform injects the Q&A (plus an optional note
+from the fork) into the running turn. Agents without it get the old
+path: the Q&A goes in front of the next main prompt and inform
+supersedes the turn. When the fork fails, the
 relay supersedes as before. The fork runs off the event loop, bounded to
 60 s.
 

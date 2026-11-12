@@ -1566,8 +1566,8 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		// front, it would stop the agent seeing the leading "/".
 		blocks = []acp.ContentBlock{acp.TextBlock(prompt)}
 	} else {
-		// The side Q&A and queued messages of the turn before (see
-		// interject.go) go first, so the new message stays last.
+		// Side Q&A the agent could not take mid-turn (see
+		// interject.go) goes first, so the new message stays last.
 		text := h.cfg.Interject.Take(conv.SessionKey()) + prompt
 		if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
 			text = prefix + "\n\n" + text

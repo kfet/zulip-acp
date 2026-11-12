@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `interject` (acp-kit v0.49.0): the fork's verdict is answer / inform / stop. On fir ≥ 1.53 an answer-only exchange is recorded where the model never sees it and inform steers the running turn without cancelling it (with an optional note from the fork); other agents keep the next-prompt digest and supersede on inform. The queue verdict is gone.
+
 ## [0.78.0] - 2026-11-11
 
 ### Added
