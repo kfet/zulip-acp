@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.3] - 2026-11-13
+
 ### Fixed
 
 - The relay now mints a zlite upload target with a JSON body (`application/json`), as zlite v0.6.0 requires; a form body got 400 "Expected JSON {name, size, mime, ttl}".
