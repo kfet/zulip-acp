@@ -5,21 +5,22 @@ package zulipproto
 // web and API, need a session or the API key), so the relay probes for
 // it at startup.
 //
-// Contract (zlite, NOT yet verified against a running zlite):
+// Contract (zlite v0.6.0, internal/front/uptarget.go and
+// docs/upload-targets.md):
 //
-//	POST /api/v1/zlite/upload_targets  name, size, mime, ttl (seconds)
+//	POST /api/v1/zlite/upload_targets  JSON {name, size, mime, ttl (seconds)}
 //	  → {url, expiresAt, token}        url takes one PUT with no auth
 //	GET  /api/v1/zlite/upload_targets/<token>
 //	  → {status, path, size}           path is the /user_uploads/… path
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -48,7 +49,7 @@ func (c *Client) HasUploadTargets(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("zulip: probe upload targets: %w", err)
@@ -70,18 +71,25 @@ func (c *Client) HasUploadTargets(ctx context.Context) (bool, error) {
 // CreateUploadTarget asks the server for a single-use PUT URL for one
 // file of size bytes, valid for ttl.
 func (c *Client) CreateUploadTarget(ctx context.Context, name string, size int64, mimeType string, ttl time.Duration) (UploadTarget, error) {
-	form := url.Values{
-		"name": {name},
-		"size": {strconv.FormatInt(size, 10)},
-		"mime": {mimeType},
-		"ttl":  {strconv.Itoa(int(ttl / time.Second))},
-	}
+	// zlite reads a JSON object, not a form: it answers 400 "Expected
+	// JSON {name, size, mime, ttl}" to anything else.
+	in, _ := json.Marshal(struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+		Mime string `json:"mime"`
+		TTL  int64  `json:"ttl"`
+	}{name, size, mimeType, int64(ttl / time.Second)})
 	var resp struct {
 		URL       string          `json:"url"`
 		Token     string          `json:"token"`
 		ExpiresAt json.RawMessage `json:"expiresAt"`
 	}
-	if err := c.do(ctx, http.MethodPost, uploadTargetsPath, nil, form, &resp); err != nil {
+	req, err := c.newRequest(ctx, http.MethodPost, uploadTargetsPath, nil, bytes.NewReader(in))
+	if err != nil {
+		return UploadTarget{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := c.send(req, &resp); err != nil {
 		return UploadTarget{}, err
 	}
 	if resp.URL == "" || resp.Token == "" {

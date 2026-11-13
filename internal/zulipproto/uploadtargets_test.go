@@ -46,9 +46,19 @@ func TestHasUploadTargets(t *testing.T) {
 func TestCreateUploadTarget(t *testing.T) {
 	body := ""
 	srv := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		if r.Form.Get("name") != "a.bin" || r.Form.Get("size") != "5" || r.Form.Get("mime") != "x/y" || r.Form.Get("ttl") != "600" {
-			t.Errorf("form %v", r.Form)
+		// Decode the body the way zlite's mintTarget does
+		// (internal/front/uptarget.go): a JSON object, size a number.
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("content type %q", ct)
+		}
+		var in struct {
+			Name string `json:"name"`
+			Size *int64 `json:"size"`
+			Mime string `json:"mime"`
+			TTL  int64  `json:"ttl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name != "a.bin" || in.Size == nil || *in.Size != 5 || in.Mime != "x/y" || in.TTL != 600 {
+			t.Errorf("body %+v %v", in, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
@@ -70,6 +80,10 @@ func TestCreateUploadTarget(t *testing.T) {
 		if _, err := c.CreateUploadTarget(ctx, "a.bin", 5, "x/y", 10*time.Minute); err == nil {
 			t.Fatalf("%s: no error", b)
 		}
+	}
+	var nilCtx context.Context
+	if _, err := c.CreateUploadTarget(nilCtx, "a.bin", 5, "x/y", time.Minute); err == nil {
+		t.Fatal("nil context")
 	}
 }
 
