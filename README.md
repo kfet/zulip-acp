@@ -274,8 +274,14 @@ forward it. Use it to authorise an MCP server that needs OAuth:
 
 1. Send `!mcp login <server>`. The relay replies with a URL.
 2. Open the URL and authorise.
-3. Paste the URL of the page you land on into the topic, even if that page
-   fails to load. The relay sends it to the agent, which completes the login.
+3. Paste the URL of the page you land on into the topic. On a phone or any
+   device other than the agent host that page fails to load — that is
+   expected; copy its address anyway. Pasting just the `code=` value works
+   too. The relay sends it to the agent, which completes the login.
+
+Logging in from a shell on the agent host instead (`fir mcp login <server>`)
+also works: running fir sessions pick up the new credential on their own
+within a few seconds.
 
 `!mcp login cancel` stops a login that is in progress. The conversation must
 have a live session, so send a message first if the topic is new. Other `!mcp`
