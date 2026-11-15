@@ -1189,6 +1189,36 @@ Event queues get the same treatment. `queue_id` and `last_event_id` are held in
 memory only — queues die on server restart, so persisting them is false comfort.
 `BAD_EVENT_QUEUE_ID` is **routine**: re-register, reset the cursor, log at info.
 
+### Routes, views and notify (`routes`, `views`, `notify`)
+
+Three small config primitives. Together they make a board: a channel where
+humans drop tasks and see the state of all of them. Each is useful alone.
+
+- **Route** (`internal/handler/routes.go`). `Config.Routes` holds only routes
+  between two channels; `main` merges a route from a channel to itself into
+  the autotopic set, so `autotopic_channels` stays the one implementation of
+  that case. `Handler.routeFor` applies a route to a channel message whose
+  key has no conversation. Such a message is addressed with no @-mention, and
+  a route wins over autotopic. The move runs after the command dispatch, as
+  the autotopic move does, and before `Journal.Ensure`, so the conversation is
+  made under the final key. A failed move answers in place. Startup asks
+  `ChannelMovePolicy` once, and turns the cross routes off when the answer is
+  no or unknown.
+- **View** (`internal/handler/views.go`). One message per view, with the
+  heartbeat pattern: edit while newest, else post new and delete old. Its id
+  is in the journal under the view key (`view:<at>`), so a restart edits the
+  same message. `viewsDirty` is called at every place that changes what a view
+  shows; it arms one refresh after `ViewDebounce`. `RunViews` refreshes at start
+  and every hour, so ages and the stalled mark move on.
+- **Notify**. Notice ids are in the journal under the notify key
+  (`notify:<at>:<states>`), per conversation, so a notice is posted once when
+  a topic enters a state and deleted when it leaves it.
+
+The relay never resolves a topic for these (a resolve always posts a
+Notification Bot notice). A topic lifecycle (for example: move a done topic
+away after a time) is not built. It would be one more primitive over the same
+trigger points and the same journal records.
+
 ## Never drop output
 
 Beyond rollover, two backstops:

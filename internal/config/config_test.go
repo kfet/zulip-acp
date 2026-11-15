@@ -91,6 +91,16 @@ func TestValidate(t *testing.T) {
 		{"empty channel", Config{Channels: []string{"fleet", "  "}}},
 		{"empty ambient channel", Config{AmbientChannels: []string{"fleet", "  "}}},
 		{"empty autotopic channel", Config{AutotopicChannels: []string{"fleet", "  "}}},
+		{"route without to", Config{Routes: []Route{{From: "a"}}}},
+		{"view at without topic", Config{Views: []View{{At: "a", Sources: []string{"a"}}}}},
+		{"view without sources", Config{Views: []View{{At: "a/b"}}}},
+		{"view bad stale_after", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, StaleAfter: "soon"}}}},
+		{"view negative stale_after", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, StaleAfter: "-1h"}}}},
+		{"view group without title", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Groups: []ViewGroup{{States: []string{"done"}}}}}}},
+		{"view group bad state", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Groups: []ViewGroup{{Title: "x", States: []string{"later"}}}}}}},
+		{"notify at", Config{Notify: []Notify{{At: "/b", OnEnter: []string{"done"}}}}},
+		{"notify without on_enter", Config{Notify: []Notify{{At: "a/b"}}}},
+		{"notify bad state", Config{Notify: []Notify{{At: "a/b", OnEnter: []string{"running"}}}}},
 		{"markers exceed budget", Config{MaxMessageChars: 100, SealMarker: strings.Repeat("s", 90)}},
 		{"negative per-file attachment cap", Config{MaxAttachmentBytes: -1}},
 		{"negative per-message attachment cap", Config{MaxAttachmentTotalBytes: -1}},
@@ -947,5 +957,72 @@ func TestNotesDirIgnoresStateDir(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/x")
 	if got := NotesDir(); got != "/x/zulip-acp/notes" {
 		t.Fatal(got)
+	}
+}
+
+func TestViewsConfigValid(t *testing.T) {
+	c := Config{
+		Routes: []Route{{From: "a", To: "b", LinkBack: true}},
+		Views:  []View{{At: "a/board/x", Sources: []string{"b"}, StaleAfter: "72h", Groups: []ViewGroup{{Title: "R", States: []string{"running", "open"}}}}},
+		Notify: []Notify{{At: "a/n", OnEnter: []string{"needs_you"}}},
+	}
+	if err := c.validateViews(); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := c.Views[0].Stale(); d != 72*time.Hour {
+		t.Fatalf("stale = %v", d)
+	}
+	if d, err := (View{}).Stale(); d != 0 || err != nil {
+		t.Fatalf("unset stale = %v %v", d, err)
+	}
+	if g := (View{}).GetGroups(); len(g) != len(DefaultViewGroups) {
+		t.Fatalf("default groups = %v", g)
+	}
+	if g := c.Views[0].GetGroups(); len(g) != 1 {
+		t.Fatalf("groups = %v", g)
+	}
+}
+
+func TestResolveRoutesViews(t *testing.T) {
+	avail := []zulipproto.Stream{{StreamID: 4, Name: "a"}, {StreamID: 5, Name: "b"}}
+	c := Config{
+		Routes: []Route{{From: "a", To: " 5 ", LinkBack: true}},
+		Views:  []View{{At: "a/board/x", Sources: []string{"b", "a"}, StaleAfter: "1h"}},
+		Notify: []Notify{{At: "a/n", OnEnter: []string{"needs_you", "blocked"}}, {At: "b/m", Sources: []string{"a"}, OnEnter: []string{"done"}}},
+	}
+	r, err := c.ResolveRoutes(avail)
+	if err != nil || len(r) != 1 || r[0] != (ResolvedRoute{From: 4, To: 5, LinkBack: true}) {
+		t.Fatalf("routes = %v %v", r, err)
+	}
+	v, n, err := c.ResolveViews(avail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 1 || v[0].Key != "view:a/board/x" || v[0].StreamID != 4 || v[0].Topic != "board/x" ||
+		len(v[0].Sources) != 2 || v[0].Sources[0] != 5 || v[0].StaleAfter != time.Hour || len(v[0].Groups) != len(DefaultViewGroups) {
+		t.Fatalf("views = %+v", v)
+	}
+	if len(n) != 2 || n[0].Key != "notify:a/n:needs_you,blocked" || n[0].Sources != nil || n[1].StreamID != 5 || n[1].Sources[0] != 4 {
+		t.Fatalf("notify = %+v", n)
+	}
+
+	for _, bad := range []Config{
+		{Routes: []Route{{From: "x", To: "a"}}},
+		{Routes: []Route{{From: "a", To: "x"}}},
+		{Routes: []Route{{From: "a", To: "b"}, {From: "4", To: "b"}}},
+	} {
+		if _, err := bad.ResolveRoutes(avail); err == nil {
+			t.Fatalf("no error for %+v", bad.Routes)
+		}
+	}
+	for _, bad := range []Config{
+		{Views: []View{{At: "x/t", Sources: []string{"a"}}}},
+		{Views: []View{{At: "a/t", Sources: []string{"x"}}}},
+		{Notify: []Notify{{At: "x/t", OnEnter: []string{"done"}}}},
+		{Notify: []Notify{{At: "a/t", Sources: []string{"x"}, OnEnter: []string{"done"}}}},
+	} {
+		if _, _, err := bad.ResolveViews(avail); err == nil || !strings.Contains(err.Error(), "not visible") {
+			t.Fatalf("err = %v for %+v", err, bad)
+		}
 	}
 }

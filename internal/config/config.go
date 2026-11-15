@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +97,72 @@ type QuickModel struct {
 	Model string `json:"model"`
 	// Label is the human name shown in the menu. Unset = Model.
 	Label string `json:"label,omitempty"`
+}
+
+// Route moves a new human post from one channel to another as a new
+// task topic. See Config.Routes.
+type Route struct {
+	// From is the channel, by name or id, where a post is taken.
+	From string `json:"from"`
+	// To is the channel, by name or id, where the task topic is made.
+	To string `json:"to"`
+	// LinkBack posts a link to the new topic where the post was.
+	LinkBack bool `json:"link_back,omitempty"`
+}
+
+// View is one relay-edited message that lists topics by state. See
+// Config.Views.
+type View struct {
+	// At is where the message is: "channel/topic". The channel is a
+	// name or an id; the text up to the first "/" is the channel.
+	At string `json:"at"`
+	// Sources are the channels, by name or id, whose topics are listed.
+	// More than one makes a roll-up.
+	Sources []string `json:"sources"`
+	// Groups are the sections, in order. Unset = DefaultViewGroups.
+	Groups []ViewGroup `json:"groups,omitempty"`
+	// StaleAfter is how long a waiting topic may be idle before it
+	// shows as stalled, as a Go duration such as "72h". Unset = never.
+	StaleAfter string `json:"stale_after,omitempty"`
+}
+
+// ViewGroup is one section of a view.
+type ViewGroup struct {
+	// Title is the section heading.
+	Title string `json:"title"`
+	// States are the topic states in this section: needs_you, fyi,
+	// waiting, blocked, done, plus "running" (a turn runs now) and
+	// "open" (no state yet). A topic in no listed state is not shown.
+	States []string `json:"states"`
+}
+
+// Notify posts a short message when a topic enters a state. See
+// Config.Notify.
+type Notify struct {
+	// At is where the message is posted: "channel/topic", as View.At.
+	At string `json:"at"`
+	// OnEnter are the topic states that post a message.
+	OnEnter []string `json:"on_enter"`
+	// Sources are the channels whose topics are watched. Unset = every
+	// channel the relay serves.
+	Sources []string `json:"sources,omitempty"`
+}
+
+// ViewStates are the states a view group may list: every topic state,
+// plus "running" and "open".
+var ViewStates = []string{"needs_you", "fyi", "waiting", "blocked", "done", "running", "open"}
+
+// NotifyStates are the states notify on_enter may list.
+var NotifyStates = []string{"needs_you", "fyi", "waiting", "blocked", "done"}
+
+// DefaultViewGroups are View.Groups when unset.
+var DefaultViewGroups = []ViewGroup{
+	{Title: "Needs you", States: []string{"needs_you"}},
+	{Title: "Blocked", States: []string{"blocked"}},
+	{Title: "Running", States: []string{"running"}},
+	{Title: "Waiting", States: []string{"waiting"}},
+	{Title: "Open", States: []string{"open"}},
+	{Title: "Done", States: []string{"done", "fyi"}},
 }
 
 // reservedQuickEmojis are emojis that already mean something on a relay
@@ -428,6 +495,33 @@ type Config struct {
 	// the conversation's state/convs/<id>/ directory stays on disk.
 	ArchiveChannel *string `json:"archive_channel,omitempty"`
 
+	// Routes move a new human post in channel `from` (a new topic, or
+	// general chat) to channel `to` as a NEW task topic, where a turn
+	// starts. A post in a new named topic keeps its name; a post in
+	// general chat gets a name made from its first line. A post in
+	// `from` is taken with no @-mention. With link_back the relay posts
+	// a link to the new topic where the post was. A route serves its
+	// from channel. Its to channel must be served (or be the from of
+	// a route) and realm policy must let the bot move messages
+	// between channels: the relay checks this at startup and turns the
+	// routes off with a log line when it does not hold. A route with
+	// from equal to to is the same as listing the channel in
+	// autotopic_channels (link_back is not used there).
+	Routes []Route `json:"routes,omitempty"`
+
+	// Views are relay-edited messages that list the topics of their
+	// source channels, grouped by state. Each line has a link, the age
+	// and the state. The relay edits the message in place while it is
+	// the newest message of its topic, and posts a new one (deleting
+	// the old one) when it is not. Use a channel only the relay writes
+	// in, and pin it in the Zulip sidebar.
+	Views []View `json:"views,omitempty"`
+
+	// Notify posts a short message when a topic enters one of the
+	// on_enter states, and deletes it when the topic leaves the state.
+	// The unread count of the `at` topic then counts those topics.
+	Notify []Notify `json:"notify,omitempty"`
+
 	// InboundAttachments downloads the files a human attaches to a
 	// message into the conversation's working directory (`inbox/`) and
 	// tells the agent where they are — with images additionally sent
@@ -757,6 +851,9 @@ func (c *Config) Validate() error {
 	if err := c.validateQuickModels(); err != nil {
 		return err
 	}
+	if err := c.validateViews(); err != nil {
+		return err
+	}
 	if err := c.validateMCPApps(); err != nil {
 		return err
 	}
@@ -1065,6 +1162,194 @@ func (c *Config) ResolveArchiveChannel(available []zulipproto.Stream) (zulipprot
 		}
 	}
 	return zulipproto.Stream{}, false
+}
+
+// validateViews checks routes, views and notify without a server.
+func (c *Config) validateViews() error {
+	for i, r := range c.Routes {
+		if strings.TrimSpace(r.From) == "" || strings.TrimSpace(r.To) == "" {
+			return fmt.Errorf("routes[%d]: from and to must both be set", i)
+		}
+	}
+	for i, v := range c.Views {
+		if _, _, err := splitAt(v.At); err != nil {
+			return fmt.Errorf("views[%d]: %w", i, err)
+		}
+		if len(v.Sources) == 0 {
+			return fmt.Errorf("views[%d]: sources is empty", i)
+		}
+		if _, err := v.Stale(); err != nil {
+			return fmt.Errorf("views[%d]: %w", i, err)
+		}
+		for g, grp := range v.Groups {
+			if strings.TrimSpace(grp.Title) == "" || len(grp.States) == 0 {
+				return fmt.Errorf("views[%d].groups[%d]: title and states must both be set", i, g)
+			}
+			for _, st := range grp.States {
+				if !slices.Contains(ViewStates, st) {
+					return fmt.Errorf("views[%d].groups[%d]: %q is not one of %s", i, g, st, strings.Join(ViewStates, ", "))
+				}
+			}
+		}
+	}
+	for i, n := range c.Notify {
+		if _, _, err := splitAt(n.At); err != nil {
+			return fmt.Errorf("notify[%d]: %w", i, err)
+		}
+		if len(n.OnEnter) == 0 {
+			return fmt.Errorf("notify[%d]: on_enter is empty", i)
+		}
+		for _, st := range n.OnEnter {
+			if !slices.Contains(NotifyStates, st) {
+				return fmt.Errorf("notify[%d]: %q is not one of %s", i, st, strings.Join(NotifyStates, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// splitAt splits "channel/topic" at the first "/".
+func splitAt(at string) (string, string, error) {
+	ch, topic, ok := strings.Cut(at, "/")
+	ch, topic = strings.TrimSpace(ch), strings.TrimSpace(topic)
+	if !ok || ch == "" || topic == "" {
+		return "", "", fmt.Errorf("at %q must be \"channel/topic\"", at)
+	}
+	return ch, topic, nil
+}
+
+// Stale returns StaleAfter as a duration; 0 when unset.
+func (v View) Stale() (time.Duration, error) {
+	if v.StaleAfter == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v.StaleAfter)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("stale_after %q is not a positive duration such as \"72h\"", v.StaleAfter)
+	}
+	return d, nil
+}
+
+// GetGroups returns the view's groups, or DefaultViewGroups.
+func (v View) GetGroups() []ViewGroup {
+	if len(v.Groups) == 0 {
+		return DefaultViewGroups
+	}
+	return v.Groups
+}
+
+// ResolvedRoute is a Route with channel ids.
+type ResolvedRoute struct {
+	From, To int64
+	LinkBack bool
+}
+
+// ResolvedView is a View with channel ids.
+type ResolvedView struct {
+	// Key names the view's record in the journal: its At.
+	Key        string
+	StreamID   int64
+	Topic      string
+	Sources    []int64
+	Groups     []ViewGroup
+	StaleAfter time.Duration
+}
+
+// ResolvedNotify is a Notify with channel ids. Sources nil = all.
+type ResolvedNotify struct {
+	Key      string
+	StreamID int64
+	Topic    string
+	Sources  []int64
+	OnEnter  []string
+}
+
+// ResolveRoutes maps the routes onto channel ids. Two routes from one
+// channel are an error.
+func (c *Config) ResolveRoutes(available []zulipproto.Stream) ([]ResolvedRoute, error) {
+	var out []ResolvedRoute
+	seen := map[int64]bool{}
+	for i, r := range c.Routes {
+		key := fmt.Sprintf("routes[%d]", i)
+		from, err := resolveChannel(key+".from", r.From, available)
+		if err != nil {
+			return nil, err
+		}
+		to, err := resolveChannel(key+".to", r.To, available)
+		if err != nil {
+			return nil, err
+		}
+		if seen[from] {
+			return nil, fmt.Errorf("%s: channel %d has two routes", key, from)
+		}
+		seen[from] = true
+		out = append(out, ResolvedRoute{From: from, To: to, LinkBack: r.LinkBack})
+	}
+	return out, nil
+}
+
+// ResolveViews maps the views and the notify entries onto channel ids.
+// Validate has already checked their shape.
+func (c *Config) ResolveViews(available []zulipproto.Stream) ([]ResolvedView, []ResolvedNotify, error) {
+	var views []ResolvedView
+	for i, v := range c.Views {
+		key := fmt.Sprintf("views[%d]", i)
+		id, topic, err := resolveAt(key, v.At, available)
+		if err != nil {
+			return nil, nil, err
+		}
+		src, err := resolveList(key+".sources", v.Sources, available)
+		if err != nil {
+			return nil, nil, err
+		}
+		stale, _ := v.Stale()
+		views = append(views, ResolvedView{Key: "view:" + v.At, StreamID: id, Topic: topic, Sources: src, Groups: v.GetGroups(), StaleAfter: stale})
+	}
+	var notes []ResolvedNotify
+	for i, n := range c.Notify {
+		key := fmt.Sprintf("notify[%d]", i)
+		id, topic, err := resolveAt(key, n.At, available)
+		if err != nil {
+			return nil, nil, err
+		}
+		src, err := resolveList(key+".sources", n.Sources, available)
+		if err != nil {
+			return nil, nil, err
+		}
+		notes = append(notes, ResolvedNotify{Key: fmt.Sprintf("notify:%s:%s", n.At, strings.Join(n.OnEnter, ",")), StreamID: id, Topic: topic, Sources: src, OnEnter: n.OnEnter})
+	}
+	return views, notes, nil
+}
+
+// resolveAt resolves "channel/topic".
+func resolveAt(key, at string, available []zulipproto.Stream) (int64, string, error) {
+	ch, topic, _ := splitAt(at)
+	id, err := resolveChannel(key+".at", ch, available)
+	return id, topic, err
+}
+
+// resolveList resolves a list of channels; nil for an empty list.
+func resolveList(key string, wants []string, available []zulipproto.Stream) ([]int64, error) {
+	var out []int64
+	for _, w := range wants {
+		id, err := resolveChannel(key, w, available)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// resolveChannel finds one channel by name or id.
+func resolveChannel(key, want string, available []zulipproto.Stream) (int64, error) {
+	want = strings.TrimSpace(want)
+	for _, s := range available {
+		if s.Name == want || strconv.FormatInt(s.StreamID, 10) == want {
+			return s.StreamID, nil
+		}
+	}
+	return 0, fmt.Errorf("%s: channel %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", key, want)
 }
 
 // GetAgentCmd returns the configured agent argv or the default.

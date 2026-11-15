@@ -99,6 +99,7 @@ func (h *Handler) recordState(conv journal.Conv, s journal.TopicState) (bool, er
 		h.mergeBack(conv, cur.State.Reason)
 	}
 	h.settleStatus(conv.ID, 0)
+	h.viewsDirty()
 	return true, nil
 }
 

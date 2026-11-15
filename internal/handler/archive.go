@@ -538,6 +538,7 @@ func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, wh
 	// would otherwise migrate this conversation into the archive
 	// channel instead of ending it.
 	prev, _, existed, err := h.cfg.Journal.Retire(conv.Key)
+	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: not archiving %s: retiring it failed (%v) — the topic stays where it is", conv.ID, err)
 		h.reply(ctx, conv.Key, fmt.Sprintf("I could not record the end of this conversation (%v), so I did not move the topic. Nothing was changed.", err))
@@ -582,6 +583,7 @@ func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, top
 	defer cancel()
 	h.endSession(ctx, conv.ID)
 	prev, _, existed, err := h.cfg.Journal.Retire(conv.Key)
+	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: not deleting %s: retiring it failed (%v) — the topic stays", conv.ID, err)
 		h.reply(ctx, conv.Key, fmt.Sprintf("I could not record the end of this conversation (%v), so I did not delete the topic. Nothing was deleted.", err))

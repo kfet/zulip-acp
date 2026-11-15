@@ -548,3 +548,69 @@ func TestSystemPromptProvider_NotesIndexIsLive(t *testing.T) {
 		t.Fatalf("note not indexed from %s:\n%s", notes, got)
 	}
 }
+
+func TestResolveRoutes(t *testing.T) {
+	streams := []zulipproto.Stream{{StreamID: 4, Name: "a"}, {StreamID: 5, Name: "b"}, {StreamID: 6, Name: "c"}}
+	cfg := &config.Config{Routes: []config.Route{
+		{From: "a", To: "a", LinkBack: true}, // autotopic
+		{From: "b", To: "a", LinkBack: true}, // cross
+		{From: "c", To: "b"},                 // b is the from of a route: kept
+	}}
+	streams = append(streams, zulipproto.Stream{StreamID: 7, Name: "d"}, zulipproto.Stream{StreamID: 8, Name: "e"})
+	cfg.Routes = append(cfg.Routes, config.Route{From: "e", To: "d"}) // d is not served: dropped
+	run := func(cfg *config.Config, probe *fakeMoveProbe) (map[int64]handler.Route, map[int64]string, map[int64]string, error) {
+		explicit, auto := map[int64]string{4: "a"}, map[int64]string{}
+		r, err := resolveRoutes(context.Background(), cfg, probe, streams, explicit, auto, zulipproto.User{UserID: 9})
+		return r, explicit, auto, err
+	}
+	r, explicit, auto, err := run(cfg, &fakeMoveProbe{allowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r) != 2 || r[5] != (handler.Route{To: 4, LinkBack: true}) || r[6] != (handler.Route{To: 5}) {
+		t.Fatalf("routes = %v", r)
+	}
+	if auto[4] != "a" || explicit[5] != "b" || explicit[4] != "a" || explicit[6] != "c" || len(explicit) != 3 {
+		t.Fatalf("explicit %v auto %v", explicit, auto)
+	}
+
+	// Follow mode serves every channel, so the route to b stays.
+	follow := &config.Config{Channels: []string{config.ChannelSentinel}, Routes: []config.Route{{From: "c", To: "d"}}}
+	if r, _, _, _ := run(follow, &fakeMoveProbe{allowed: true}); len(r) != 1 {
+		t.Fatalf("follow routes = %v", r)
+	}
+
+	// No permission, or no answer: the cross routes are off.
+	for _, p := range []*fakeMoveProbe{{}, {err: errors.New("old")}} {
+		if r, explicit, _, err := run(cfg, p); err != nil || r != nil || len(explicit) != 1 {
+			t.Fatalf("routes = %v explicit %v err %v", r, explicit, err)
+		}
+	}
+
+	// Only autotopic routes: no probe.
+	only := &config.Config{Routes: []config.Route{{From: "a", To: "a"}}}
+	p := &fakeMoveProbe{}
+	if r, _, _, err := run(only, p); err != nil || r != nil || p.asked != 0 {
+		t.Fatalf("routes = %v asked %d", r, p.asked)
+	}
+
+	if _, _, _, err := run(&config.Config{Routes: []config.Route{{From: "x", To: "a"}}}, p); err == nil {
+		t.Fatal("no error for an unknown channel")
+	}
+}
+
+func TestResolveViews(t *testing.T) {
+	streams := []zulipproto.Stream{{StreamID: 4, Name: "a"}, {StreamID: 5, Name: "b"}}
+	cfg := &config.Config{
+		Views:  []config.View{{At: "a/board", Sources: []string{"b"}}, {At: "b/board", Sources: []string{"a"}}},
+		Notify: []config.Notify{{At: "a/n", OnEnter: []string{"needs_you"}}},
+	}
+	v, n, err := resolveViews(cfg, streams, fakeServed{5: "b"})
+	if err != nil || len(v) != 2 || len(n) != 1 {
+		t.Fatalf("views %v notify %v err %v", v, n, err)
+	}
+	bad := &config.Config{Views: []config.View{{At: "x/board", Sources: []string{"b"}}}}
+	if _, _, err := resolveViews(bad, streams, fakeServed{}); err == nil {
+		t.Fatal("no error")
+	}
+}

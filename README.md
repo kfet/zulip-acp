@@ -165,6 +165,56 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   participant, so an allowlisted user can pull agent output in front of people
   who are not on the list. `"dms": true` with no
   `channels` at all is a valid DM-only relay.
+- **Routes, views and notify** <a id="routes-views-and-notify"></a> make a
+  board: a channel where humans drop new tasks and see the state of all of
+  them. Example:
+
+  ```json
+  {
+    "routes": [{"from": "team-board", "to": "team-tasks", "link_back": true}],
+    "views": [{"at": "team-board/board", "sources": ["team-tasks"], "stale_after": "72h",
+               "groups": [{"title": "Needs you", "states": ["needs_you"]},
+                          {"title": "Blocked", "states": ["blocked"]},
+                          {"title": "Running", "states": ["running"]},
+                          {"title": "Done", "states": ["done", "fyi"]}]}],
+    "notify": [{"at": "team-board/board", "on_enter": ["needs_you"]}]
+  }
+  ```
+
+  - **`routes`**: a human post in `from` that starts a new topic (or is in
+    general chat) moves to `to` (`propagate_mode=change_one`) and the turn
+    starts there. A named topic keeps its name; general chat gets a name made
+    from the post, as with `autotopic_channels`. A name that is already used in
+    `to` gets the message id. With `link_back` the relay posts
+    `↪ moved to #**to>topic**` in the source topic. A route serves its `from`
+    channel and needs no @-mention there. Its `to` channel must be served. A
+    route from a channel to itself is autotopic (`link_back` is ignored). At
+    startup the relay checks that realm policy
+    (`can_move_messages_between_channels_group`) lets the bot move messages
+    between channels; if not, it logs that the routes are OFF. If a move fails,
+    the relay answers in place.
+  - **`views`**: one message at `at` (`"channel/topic"`; the text up to the
+    first `/` is the channel). It lists the topics of the `sources` channels,
+    in `groups` (title and states, in order). A state is a topic state
+    (`needs_you`, `fyi`, `waiting`, `blocked`, `done`), `running` (a turn runs
+    now) or `open` (no state yet). A running topic goes to a group that lists
+    `running`, else to the group of its state. A topic in no listed state is
+    not shown. Unset `groups`: Needs you, Blocked, Running, Waiting, Open, Done.
+    A `waiting` topic idle longer than `stale_after` (a Go duration, e.g.
+    `72h`) shows as `stalled`. More than one source makes a roll-up. The relay
+    edits the message while it is the newest in its topic, and else posts a new
+    one and deletes the old one. It refreshes 5s after a change (state set,
+    turn start or end, topic move, retire or archive, schedule), every hour,
+    and at start.
+  - **`notify`**: when a topic (of `sources`; unset = every channel) enters an
+    `on_enter` state, the relay posts one short message at `at`, and deletes it
+    when the topic leaves the state. A view edit does not notify; this does.
+  - The relay never resolves a topic for these. Put `at` in a channel humans
+    read but the relay does not serve, or in the `from` channel of a route: a
+    route does not move a post in a view or notify topic.
+  - A notify entry keeps its notices under a key made of `at` and `on_enter`.
+    If you change either, the notices of the old entry stay; delete them by
+    hand.
 - **`autotopic_channels` names general chat.** Zulip 11's "general chat" is
   the channel's empty topic (which a server reports as the literal string
   `general chat` unless the client declares the `empty_topic_name` capability —
@@ -386,7 +436,10 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `bot_api_key` | — | bot's API key. Env: `ZULIP_API_KEY` (preferred) |
 | `channels` | — | channel names **or** ids to serve; also the allowlist. `"*"` = every channel the bot is subscribed to, tracked live |
 | `ambient_channels` | `[]` | channels (names or ids) that engage with **no** @-mention, like a DM |
-| `autotopic_channels` | `[]` | channels (names or ids) where a **general chat** message is moved to a topic named after it |
+| `autotopic_channels` | `[]` | channels (names or ids) where a **general chat** message is moved to a topic named after it. The same as a route from a channel to itself |
+| `routes` | `[]` | `{from, to, link_back}`: a new topic (or general chat) in `from` moves to `to` as a new task topic, with no @-mention. See [Routes, views and notify](#routes-views-and-notify) |
+| `views` | `[]` | `{at, sources, groups, stale_after}`: one relay-edited message at `"channel/topic"` that lists the topics of `sources` by state |
+| `notify` | `[]` | `{at, on_enter, sources}`: a short message at `"channel/topic"` while a topic is in an `on_enter` state |
 | `dms` | `false` | serve direct messages (1:1 and group). Not gated by `channels` |
 | `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
 | `update_owner_ids` | none | user ids that may run `!update`, approve auto-updates and confirm a delete. With none, those controls are off |

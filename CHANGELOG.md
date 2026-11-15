@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Config `notify`: post a short message when a topic enters a listed state, and delete it when the topic leaves the state.
+- Config `views`: one relay-edited message that lists the topics of its source channels by state, with link, age and a stalled mark (`stale_after`). Debounced, refreshed hourly and at start.
+- Config `routes`: a new topic in channel `from` moves to channel `to` as a new task topic, with an optional link back. `autotopic_channels` is the same as a route from a channel to itself, and works as before.
+
 ## [0.78.3] - 2026-11-13
 
 ### Fixed

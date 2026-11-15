@@ -33,6 +33,7 @@ func (h *Handler) moveConv(oldStreamID int64, oldTopic string, newStreamID int64
 		return c, moved, err
 	}
 	h.rekey(journal.Channel(oldStreamID, oldTopic).Token(), journal.Channel(newStreamID, newTopic).Token())
+	h.viewsDirty()
 	return c, moved, nil
 }
 

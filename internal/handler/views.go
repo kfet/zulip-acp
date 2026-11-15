@@ -1,0 +1,302 @@
+// This file holds the VIEWS and the NOTIFY entries (config `views` and
+// `notify`).
+//
+// # Views
+//
+// A view is ONE relay-edited message in a configured "channel/topic".
+// It lists the topics of its source channels, grouped by state. Each
+// line has a link, the age and the state. A topic in a waiting state
+// that is idle longer than StaleAfter shows as stalled. A view with
+// more than one source is a roll-up of all of them.
+//
+// # How a view stays current
+//
+// Every place that changes what a view shows calls viewsDirty:
+// recordState, turn start and end (a scheduled turn included),
+// moveConv, every Journal.Retire, and a schedule that is armed.
+// viewsDirty arms one refresh after ViewDebounce; more calls in that
+// time join it. RunViews refreshes at start and every hour, so ages
+// and the stalled mark move on without activity.
+//
+// The view is edited in place while it is the newest message in its
+// topic. When something was posted after it, a new view is posted and
+// the old one deleted, as heartbeat.go does for a schedule.
+//
+// # Notify
+//
+// An edit does not notify. So a notify entry posts one short message
+// when a topic ENTERS one of its states, and deletes that message when
+// the topic leaves the state. The relay never resolves a topic: a
+// resolve always posts a Notification Bot notice.
+package handler
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/journal"
+)
+
+// DefaultViewDebounce is Config.ViewDebounce when unset.
+const DefaultViewDebounce = 5 * time.Second
+
+// viewRefreshPeriod is how often RunViews refreshes without a trigger.
+const viewRefreshPeriod = time.Hour
+
+// viewGroupMax is how many topics one group of a view lists.
+const viewGroupMax = 15
+
+// viewMaxRunes bounds a view message under Zulip's limit.
+const viewMaxRunes = 9000
+
+// Pseudo-states a view group may list besides the topic states.
+const (
+	viewRunning = "running"
+	viewOpen    = "open"
+)
+
+// viewsDirty arms one debounced refresh of the views and notify
+// entries. It is a no-op without them, or while a refresh is armed.
+func (h *Handler) viewsDirty() {
+	if !h.hasViews() || !h.viewArmed.CompareAndSwap(false, true) {
+		return
+	}
+	h.cfg.ViewAfter(h.cfg.ViewDebounce, func() {
+		h.viewArmed.Store(false)
+		h.RefreshViews(context.Background())
+	})
+}
+
+func (h *Handler) hasViews() bool {
+	return len(h.cfg.Views) > 0 || len(h.cfg.Notifies) > 0
+}
+
+// RunViews refreshes now, then every hour until ctx ends.
+func (h *Handler) RunViews(ctx context.Context) {
+	if !h.hasViews() {
+		return
+	}
+	t := time.NewTicker(viewRefreshPeriod)
+	defer t.Stop()
+	h.viewLoop(ctx, t.C)
+}
+
+// viewLoop is the testable core of RunViews; see watchdogLoop.
+func (h *Handler) viewLoop(ctx context.Context, tick <-chan time.Time) {
+	h.RefreshViews(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+			h.RefreshViews(ctx)
+		}
+	}
+}
+
+// RefreshViews renders and publishes every view and syncs every notify
+// entry. Failures are logged: the next refresh tries again.
+func (h *Handler) RefreshViews(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.ZulipCallTimeout)
+	defer cancel()
+	h.viewMu.Lock()
+	defer h.viewMu.Unlock()
+	convs := h.cfg.Journal.Convs()
+	for _, v := range h.cfg.Views {
+		rec := h.cfg.Journal.View(v.Key)
+		rec.MsgID = h.publishView(ctx, v, rec.MsgID, h.renderView(v, convs))
+		h.saveView(v.Key, rec)
+	}
+	for _, n := range h.cfg.Notifies {
+		rec := h.cfg.Journal.View(n.Key)
+		rec.Notices = h.syncNotices(ctx, n, rec.Notices, convs)
+		h.saveView(n.Key, rec)
+	}
+}
+
+func (h *Handler) saveView(key string, rec journal.ViewRecord) {
+	if err := h.cfg.Journal.SetView(key, rec); err != nil {
+		h.cfg.Logf("handler: recording %s: %v", key, err)
+	}
+}
+
+// publishView edits the view message msgID to text while it is the
+// newest message of its topic, and posts a new one (deleting msgID)
+// otherwise. It returns the view message id now.
+func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID int64, text string) int64 {
+	if msgID != 0 && h.isNewest(ctx, journal.Channel(v.StreamID, v.Topic), msgID) {
+		if h.viewText[v.Key] == text {
+			return msgID
+		}
+		err := h.cfg.Client.EditMessage(ctx, msgID, text)
+		if err == nil {
+			h.viewText[v.Key] = text
+			return msgID
+		}
+		h.cfg.Logf("handler: editing %s message %d: %v; posting a new one", v.Key, msgID, err)
+	}
+	id, err := h.cfg.Client.SendMessage(ctx, v.StreamID, v.Topic, text)
+	if err != nil {
+		h.cfg.Logf("handler: posting %s: %v", v.Key, err)
+		return msgID
+	}
+	h.viewText[v.Key] = text
+	if msgID != 0 {
+		if err := h.cfg.Client.DeleteMessage(ctx, msgID); err != nil {
+			h.cfg.Logf("handler: deleting old %s message %d: %v", v.Key, msgID, err)
+		}
+	}
+	return id
+}
+
+// inSources reports whether channel id is in src. A nil src is all.
+func inSources(src []int64, id int64) bool {
+	return src == nil || slices.Contains(src, id)
+}
+
+// viewable reports whether a view or notify entry may show conv c.
+func viewable(c journal.Conv, src []int64) bool {
+	return !c.Retired && !c.IsDM() && inSources(src, c.StreamID)
+}
+
+// syncNotices posts a notice for each conv that is in one of n's
+// states and has none, and deletes the notice of each conv that left
+// them. It returns the notices that exist now.
+func (h *Handler) syncNotices(ctx context.Context, n config.ResolvedNotify, have map[string]int64, convs []journal.Conv) map[string]int64 {
+	out := map[string]int64{}
+	for _, c := range convs {
+		if !viewable(c, n.Sources) || c.State == nil || !slices.Contains(n.OnEnter, c.State.State) {
+			continue
+		}
+		if id, ok := have[c.ID]; ok {
+			out[c.ID] = id
+			continue
+		}
+		line := "🔔 " + topicMention(h.channelName(c.StreamID), c.Topic) + " is " + c.State.State
+		if c.State.Reason != "" {
+			line += " — " + c.State.Reason
+		}
+		id, err := h.cfg.Client.SendMessage(ctx, n.StreamID, n.Topic, line)
+		if err != nil {
+			h.cfg.Logf("handler: posting %s notice for %s: %v", n.Key, c.ID, err)
+			continue
+		}
+		out[c.ID] = id
+	}
+	for convID, id := range have {
+		if _, ok := out[convID]; ok {
+			continue
+		}
+		if err := h.cfg.Client.DeleteMessage(ctx, id); err != nil {
+			h.cfg.Logf("handler: deleting %s notice %d: %v", n.Key, id, err)
+		}
+	}
+	return out
+}
+
+// viewGroup is the index of the group of v that conv c goes in, or -1.
+// A conv in a running turn goes to a group that lists "running", if
+// one does; else to the first group that lists its state ("open" when
+// it has none).
+func (h *Handler) viewGroup(v config.ResolvedView, c journal.Conv) int {
+	if h.isInflight(c.ID) {
+		if g := groupOf(v.Groups, viewRunning); g >= 0 {
+			return g
+		}
+	}
+	state := viewOpen
+	if c.State != nil {
+		state = c.State.State
+	}
+	return groupOf(v.Groups, state)
+}
+
+func groupOf(groups []config.ViewGroup, state string) int {
+	return slices.IndexFunc(groups, func(g config.ViewGroup) bool { return slices.Contains(g.States, state) })
+}
+
+// renderView renders view v over convs.
+func (h *Handler) renderView(v config.ResolvedView, convs []journal.Conv) string {
+	groups := make([][]journal.Conv, len(v.Groups))
+	n := 0
+	for _, c := range convs {
+		if !viewable(c, v.Sources) {
+			continue
+		}
+		if g := h.viewGroup(v, c); g >= 0 {
+			groups[g] = append(groups[g], c)
+			n++
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("📋 **" + v.Topic + "** —")
+	for _, id := range v.Sources {
+		sb.WriteString(" #**" + h.channelName(id) + "**")
+	}
+	sb.WriteString("\n")
+	if n == 0 {
+		sb.WriteString("\nNo topics.")
+		return sb.String()
+	}
+	now := h.now()
+	for g, cs := range groups {
+		if len(cs) == 0 {
+			continue
+		}
+		sort.SliceStable(cs, func(a, b int) bool { return lastSeen(cs[a]) > lastSeen(cs[b]) })
+		fmt.Fprintf(&sb, "\n**%s** (%d)\n", v.Groups[g].Title, len(cs))
+		for i, c := range cs {
+			if i == viewGroupMax {
+				fmt.Fprintf(&sb, "- …and %d more\n", len(cs)-i)
+				break
+			}
+			line := h.viewLine(v, c, now)
+			if utf8.RuneCountInString(sb.String())+utf8.RuneCountInString(line) > viewMaxRunes {
+				sb.WriteString("\n…the view is full.")
+				return sb.String()
+			}
+			sb.WriteString(line)
+		}
+	}
+	return sb.String()
+}
+
+// viewLine renders one topic of a view: link, age, state, reason.
+func (h *Handler) viewLine(v config.ResolvedView, c journal.Conv, now time.Time) string {
+	seen := lastSeen(c)
+	line := "- " + topicMention(h.channelName(c.StreamID), c.Topic) + " · " + age(now, seen)
+	if h.isInflight(c.ID) {
+		line += " · " + viewRunning
+	}
+	if c.State == nil {
+		return line + "\n"
+	}
+	state := c.State.State
+	if state == journal.StateWaiting && v.StaleAfter > 0 && now.Sub(time.UnixMilli(seen)) > v.StaleAfter {
+		state = "stalled"
+	}
+	line += " · " + state
+	if c.State.SetBy == journal.SetByImport {
+		line += " (guessed)"
+	}
+	if c.State.Reason != "" {
+		line += " — " + c.State.Reason
+	}
+	return line + "\n"
+}
+
+// channelName is the name of served channel id, or its id when the
+// relay does not serve it.
+func (h *Handler) channelName(id int64) string {
+	if name, ok := h.cfg.Channels.Name(id); ok {
+		return name
+	}
+	return strconv.FormatInt(id, 10)
+}

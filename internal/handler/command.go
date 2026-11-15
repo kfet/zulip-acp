@@ -650,6 +650,7 @@ func (h *Handler) resetSession(token string) error {
 	// separately would split one answer across two branches, the
 	// second of which nothing can reach.
 	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
+	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: retiring conversation in %s: %v", h.describe(key), err)
 		return err

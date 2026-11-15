@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -444,6 +445,17 @@ type file struct {
 	// Heartbeats maps a schedule id to its heartbeat message. See
 	// SetHeartbeat. Absent in an older journal; no version bump.
 	Heartbeats map[string]Heartbeat `json:"heartbeats,omitempty"`
+	// Views maps a view or notify key to what the relay posted for
+	// it. See SetView. Absent in an older journal; no version bump.
+	Views map[string]ViewRecord `json:"views,omitempty"`
+}
+
+// ViewRecord is what the relay posted for one view or notify entry.
+type ViewRecord struct {
+	// MsgID is the view message. A notify entry has none.
+	MsgID int64 `json:"msg_id,omitempty"`
+	// Notices maps a conv-id to its notice message.
+	Notices map[string]int64 `json:"notices,omitempty"`
 }
 
 // Heartbeat is the small message a scheduled turn that had nothing to
@@ -473,13 +485,15 @@ type Journal struct {
 	alarms map[string]int64
 	// heartbeats is file.Heartbeats.
 	heartbeats map[string]Heartbeat
+	// views is file.Views.
+	views map[string]ViewRecord
 }
 
 // Open loads the journal at path, creating an empty one if the file
 // does not exist. A corrupt file is an error, not a silent reset: the
 // operator should see it.
 func Open(path string) (*Journal, error) {
-	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}, heartbeats: map[string]Heartbeat{}}
+	j := &Journal{path: path, byID: map[string]*Conv{}, byKey: map[string]*Conv{}, alarms: map[string]int64{}, heartbeats: map[string]Heartbeat{}, views: map[string]ViewRecord{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		log.Printf("journal: adopted %d conversations", j.adoptSidecars())
@@ -515,6 +529,9 @@ func Open(path string) (*Journal, error) {
 	}
 	for id, hb := range f.Heartbeats {
 		j.heartbeats[id] = hb
+	}
+	for id, b := range f.Views {
+		j.views[id] = b
 	}
 	log.Printf("journal: adopted %d conversations", j.adoptSidecars())
 	return j, nil
@@ -1014,6 +1031,33 @@ func (j *Journal) SetHeartbeat(schedID string, hb Heartbeat) error {
 	})
 }
 
+// View returns the record of the view or notify entry key.
+func (j *Journal) View(key string) ViewRecord {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	b := j.views[key]
+	b.Notices = maps.Clone(b.Notices)
+	return b
+}
+
+// SetView records what the relay posted for the view or notify entry
+// key, so a restart edits the same message and deletes the same
+// notices.
+func (j *Journal) SetView(key string, b ViewRecord) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	prev, had := j.views[key]
+	b.Notices = maps.Clone(b.Notices)
+	j.views[key] = b
+	return j.commit(func() {
+		if had {
+			j.views[key] = prev
+		} else {
+			delete(j.views, key)
+		}
+	})
+}
+
 // DropHeartbeat forgets the heartbeat record of schedID. A failed write
 // only means the record returns on the next start, where nothing reads
 // it; that is why the error is not surfaced.
@@ -1191,7 +1235,7 @@ func (j *Journal) save() error {
 		convs = append(convs, *c)
 	}
 	sort.Slice(convs, func(a, b int) bool { return convs[a].ID < convs[b].ID })
-	b := append(mustMarshal(file{Version: currentVersion, Convs: convs, Alarms: j.alarms, Heartbeats: j.heartbeats}), '\n')
+	b := append(mustMarshal(file{Version: currentVersion, Convs: convs, Alarms: j.alarms, Heartbeats: j.heartbeats, Views: j.views}), '\n')
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
 		return fmt.Errorf("journal: mkdir: %w", err)
 	}

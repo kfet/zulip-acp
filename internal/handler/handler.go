@@ -38,6 +38,7 @@ import (
 	"github.com/kfet/acp-kit/state"
 	"github.com/kfet/acp-kit/update"
 	"github.com/kfet/zulip-acp/internal/autotopic"
+	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
@@ -169,9 +170,9 @@ type Poster interface {
 	// may be refused by realm policy, so the caller degrades.
 	MoveMessage(ctx context.Context, id int64, topic, propagateMode string) error
 	// MoveMessageToChannel moves a message — with change_all, a whole
-	// topic — to ANOTHER channel. Only the archive control uses it,
-	// and only after startup has established that realm policy allows
-	// it; see archive.go.
+	// topic — to ANOTHER channel. The archive control and the routes
+	// use it, and only after startup has established that realm
+	// policy allows it; see archive.go and routes.go.
 	MoveMessageToChannel(ctx context.Context, id, streamID int64, topic, propagateMode string) error
 	TopicDeleter
 	// DeleteMessage removes a message the bot posted. Used to retire a
@@ -411,6 +412,21 @@ type Config struct {
 	QuickMenuEmoji  string
 	QuickSweepEmoji string
 
+	// Routes maps a channel id to the route of its new topics. Only
+	// routes between two channels are here. See routes.go.
+	Routes map[int64]Route
+
+	// Views are the relay-edited state views, and Notifies the notify
+	// entries. See views.go.
+	Views    []config.ResolvedView
+	Notifies []config.ResolvedNotify
+	// ViewDebounce coalesces view refreshes. 0 uses
+	// DefaultViewDebounce.
+	ViewDebounce time.Duration
+	// ViewAfter runs f once after d. Nil uses time.AfterFunc. A test
+	// injects it to fire the debounce by hand.
+	ViewAfter func(d time.Duration, f func())
+
 	// ArchiveStreamID and ArchiveChannel are the destination of the
 	// archive control: the channel a topic is MOVED to when someone
 	// reacts :wastebasket: to the relay's last message or types
@@ -617,6 +633,13 @@ type inflightEntry struct {
 type Handler struct {
 	cfg Config
 
+	// viewArmed is true while a debounced view refresh is pending.
+	viewArmed atomic.Bool
+	// viewMu serialises view refreshes and guards viewText, the last
+	// text each view message was given, by view key.
+	viewMu   sync.Mutex
+	viewText map[string]string
+
 	// ownEcho and echoWG serve reactWhenVisible.
 	ownEcho *ownEcho
 	echoWG  sync.WaitGroup
@@ -806,6 +829,12 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.OpsRunner == nil {
 		cfg.OpsRunner = execRunner
 	}
+	if cfg.ViewDebounce <= 0 {
+		cfg.ViewDebounce = DefaultViewDebounce
+	}
+	if cfg.ViewAfter == nil {
+		cfg.ViewAfter = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+	}
 	h := &Handler{
 		cfg:            cfg,
 		dmNames:        map[string][]string{},
@@ -821,6 +850,7 @@ func New(cfg Config) (*Handler, error) {
 		quickConfirms:  newMsgIndex(reactionIndexSize),
 		reactPending:   map[string]*reactionBatch{},
 		lookupStart:    cfg.Now(),
+		viewText:       map[string]string{},
 	}
 	// Wiring the Controller here rather than in the caller keeps the
 	// broker↔handler construction cycle out of main, and guarantees it
@@ -1054,6 +1084,7 @@ func (h *Handler) retireMoved(key journal.Key, dest int64) {
 	// race with, and retiring first means nothing can be handed the
 	// conversation in between.
 	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
+	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve, but retiring the conversation failed: %v", key.Topic, dest, err)
 		return
@@ -1206,6 +1237,13 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 	// move and disable the feature in that channel forever.
 	lobby := h.isLobby(m)
 
+	// A route moves a new topic out of its channel, so, as in a lobby,
+	// no @-mention is needed. A route wins over autotopic.
+	rt, onRoute := h.routeFor(m, key)
+	if onRoute {
+		addressed, lobby = true, false
+	}
+
 	// named is the topic an autotopic move generated for this message,
 	// and it is set only when the move actually happened. It is the one
 	// case where the relay knows the topic's name is a placeholder — so
@@ -1263,6 +1301,14 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 	// prose question about /reload instead of running it.
 	passthrough := isPassthrough(in, prompt)
 
+	if onRoute {
+		from := key.StreamID
+		key = h.routeMove(ctx, m, key, text, rt)
+		if key.StreamID != from && autotopic.IsGeneralChat(m.Topic) {
+			named = key.Topic
+		}
+		existing, engaged = h.cfg.Journal.Lookup(key)
+	}
 	if lobby {
 		// The move happens BEFORE the lookup below, so the
 		// conversation is looked up and allocated under the FINAL key
@@ -2339,10 +2385,12 @@ func (h *Handler) inflightOf(convID string) *inflightEntry {
 
 func (h *Handler) setInflight(convID string, e *inflightEntry) {
 	e.turn = h.convo.Active().Begin(convID, e.cancel, e)
+	h.viewsDirty()
 }
 
 func (h *Handler) clearInflight(_ string, e *inflightEntry) {
 	h.convo.Active().End(e.turn)
+	h.viewsDirty()
 }
 
 // WaitIdle blocks until no turn is in flight or ctx is done. Used for

@@ -351,6 +351,7 @@ func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration
 	it, err := h.cfg.Schedules.Add(token, text, at, every)
 	if err == nil {
 		h.noteArmed(it)
+		h.viewsDirty()
 		// Outside a turn (`!schedule`-style callers) this unresolves
 		// the topic now; inside one it waits for endTurn.
 		h.settleStatusKey(token, 0)
@@ -516,6 +517,7 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 		return err
 	}
 	e.turn = t
+	h.viewsDirty()
 	return nil
 }
 
@@ -532,6 +534,7 @@ func (h *Handler) claimConvIdle(ctx context.Context, convID string, e *inflightE
 // Every caller adds one to h.endWG first; endTurn marks it done.
 func (h *Handler) endTurn(conv journal.Conv, entry *inflightEntry) {
 	defer h.endWG.Done()
+	defer h.viewsDirty()
 	// The topic may have moved since the turn started — markBusy
 	// unresolves it — so act on the topic as it is now.
 	if cur, ok := h.cfg.Journal.LookupID(conv.ID); ok {

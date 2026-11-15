@@ -299,6 +299,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	routes, err := resolveRoutes(ctx, cfg, zc, streams, explicit, autotopic, me)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	follow := cfg.FollowsSubscriptions()
 	served := channels.New(channels.Config{Explicit: explicit, Ambient: ambient, Autotopic: autotopic, Follow: follow, Logf: log.Printf})
 	if follow {
@@ -434,6 +438,10 @@ func main() {
 	// taps :wastebasket: would mean a warning posted for an action the
 	// relay cannot perform.
 	archiveID, archiveName, archiveLimit := resolveArchive(ctx, cfg, zc, streams, served, me)
+	views, notifies, err := resolveViews(cfg, streams, served)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	deleter, deleteReady, err := resolveDeleter(ctx, cfg, me)
 	if err != nil {
 		log.Fatalf("zulip-acp: %v", err)
@@ -747,6 +755,9 @@ func main() {
 		RepostOnClose:      cfg.GetRepostOnClose(),
 		AckEmoji:           cfg.GetAckEmoji(),
 		Reactions:          cfg.GetReactions(),
+		Views:              views,
+		Notifies:           notifies,
+		Routes:             routes,
 		ArchiveStreamID:    archiveID,
 		ArchiveChannel:     archiveName,
 		ArchiveMoveLimit:   archiveLimit,
@@ -807,6 +818,7 @@ func main() {
 	// is dead. Say so rather than leaving a truncated answer that looks
 	// complete.
 	h.MarkInterrupted(ctx)
+	go h.RunViews(ctx)
 	// An `!update` that reloaded us left a marker: report the outcome
 	// into the conversation that asked for it.
 	if upd != nil {

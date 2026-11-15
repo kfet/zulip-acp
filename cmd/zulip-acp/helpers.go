@@ -105,6 +105,90 @@ func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe,
 	return s.StreamID, s.Name, policy.Limit
 }
 
+// resolveRoutes resolves the routes at startup. A config error is
+// returned; the caller makes it fatal. A route from a channel to
+// itself is autotopic: it is added to autotopic and to explicit, and
+// its link_back is ignored. A route to another channel is returned in cross, and its
+// from channel is added to explicit, because the relay must read it.
+// A cross route whose to channel is not served, nor the from of a
+// route, (and the relay does not
+// follow its subscriptions) is dropped: the moved topic would have no
+// conversation. When the bot may not move messages between channels,
+// or that cannot be told, every cross route is dropped.
+func resolveRoutes(ctx context.Context, cfg *config.Config, probe archiveProbe, streams []zulipproto.Stream,
+	explicit, autotopic map[int64]string, bot zulipproto.User) (map[int64]handler.Route, error) {
+	routes, err := cfg.ResolveRoutes(streams)
+	if err != nil {
+		return nil, err
+	}
+	names := map[int64]string{}
+	for _, s := range streams {
+		names[s.StreamID] = s.Name
+	}
+	name := func(id int64) string { return names[id] }
+	// The from channel of every route is served, whatever the order.
+	froms := map[int64]bool{}
+	for _, r := range routes {
+		froms[r.From] = true
+	}
+	served := func(id int64) bool {
+		_, ok := explicit[id]
+		return ok || froms[id] || cfg.FollowsSubscriptions()
+	}
+	cross := map[int64]handler.Route{}
+	for _, r := range routes {
+		if r.From == r.To {
+			autotopic[r.From] = name(r.From)
+			explicit[r.From] = name(r.From)
+			log.Printf("zulip-acp: route #%s → #%s is autotopic", name(r.From), name(r.To))
+			continue
+		}
+		if !served(r.To) {
+			log.Printf("zulip-acp: route #%s → #%s is OFF: the relay does not serve #%s. Add it to \"channels\".", name(r.From), name(r.To), name(r.To))
+			continue
+		}
+		cross[r.From] = handler.Route{To: r.To, LinkBack: r.LinkBack}
+	}
+	if len(cross) == 0 {
+		return nil, nil
+	}
+	policy, err := probe.ChannelMovePolicy(ctx, bot)
+	if err != nil || !policy.Allowed {
+		why := fmt.Sprintf("realm policy (%s) does not let this bot move messages between channels", zulipproto.RealmMoveBetweenChannels)
+		if err != nil {
+			why = fmt.Sprintf("cannot tell whether this bot may move messages between channels (%v)", err)
+		}
+		log.Printf("zulip-acp: routes between channels are OFF: %s", why)
+		return nil, nil
+	}
+	for from, r := range cross {
+		explicit[from] = name(from)
+		log.Printf("zulip-acp: route on: a new topic in #%s moves to #%s (link_back %v)", name(from), name(r.To), r.LinkBack)
+	}
+	return cross, nil
+}
+
+// resolveViews resolves the views and notify entries at startup. A
+// config error is returned; the caller makes it fatal. A view at a
+// channel the relay serves is logged: humans posting there would
+// start turns.
+func resolveViews(cfg *config.Config, streams []zulipproto.Stream, served channelLookup) ([]config.ResolvedView, []config.ResolvedNotify, error) {
+	views, notes, err := cfg.ResolveViews(streams)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, v := range views {
+		if _, ok := served.Name(v.StreamID); ok {
+			log.Printf("zulip-acp: WARN %s is in a served channel: a message posted there starts a turn.", v.Key)
+		}
+		log.Printf("zulip-acp: %s on", v.Key)
+	}
+	for _, n := range notes {
+		log.Printf("zulip-acp: %s on", n.Key)
+	}
+	return views, notes, nil
+}
+
 // typingProbe is the Zulip surface resolveTypingInterval needs: how
 // long this server keeps a typing `start` alive.
 type typingProbe interface {
