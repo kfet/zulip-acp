@@ -207,6 +207,11 @@ ExecStart=%h/.local/bin/zulip-acp --config %h/.config/zulip-acp/config.json
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
+# Memory pressure: agent sessions inherit this score, so the kernel kills a
+# big agent session before anything else on the box. OOMPolicy=continue keeps
+# the relay running when one child is OOM-killed (the default stops the unit).
+OOMScoreAdjust=500
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target

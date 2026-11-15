@@ -462,6 +462,12 @@ EOF
   # the cgroup mid-drain.
   v=$(jqs '.systemd.timeout_stop_sec // empty')
   [ -n "$v" ] && echo "TimeoutStopSec=$v"
+  # Memory pressure: agent sessions inherit the score; OOMPolicy=continue keeps
+  # the relay up when one child is OOM-killed. Optional, no default.
+  v=$(jqs '.systemd.oom_score_adjust // empty')
+  [ -n "$v" ] && echo "OOMScoreAdjust=$v"
+  v=$(jqs '.systemd.oom_policy // empty')
+  [ -n "$v" ] && echo "OOMPolicy=$v"
   cat <<'EOF'
 
 [Install]
