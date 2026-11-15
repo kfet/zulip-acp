@@ -147,7 +147,7 @@ func Resolve(extra string, disabled bool, catalog, sentinel string, reactions bo
 // tool. The tool description says when to call it; this note only
 // makes sure the agent knows the tool matters. It does not ask for a
 // state every turn: the user rejected that as too invasive.
-const TopicStateInstruction = "\n\nWhen a turn changes what the user must do with this topic (you now wait for them, you delivered a result, work goes on without them, you are blocked, or nothing is left), call the relay `topic_state` tool. Do not call it when the state stays the same."
+const TopicStateInstruction = "\n\nWhen a turn changes what the user must do with this topic (you now wait for them, you delivered a result, work goes on without them, you are blocked, or nothing is left), call the relay `topic_state` tool. Do not call it when the state stays the same. Its reason appears only in the inbox: put your answer or question in the reply itself."
 
 // topicStateInstruction returns TopicStateInstruction when on.
 func topicStateInstruction(on bool) string {

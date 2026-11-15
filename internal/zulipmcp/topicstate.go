@@ -43,7 +43,8 @@ const topicStateDescription = "Record this topic's state when it changes. The st
 	"- waiting: work goes on without them (a build, a branched agent, a schedule).\n" +
 	"- blocked: you cannot continue, and an answer alone will not fix it (for example, an expired credential only they can renew).\n" +
 	"- done: nothing is left to read or do.\n" +
-	"If the state is the same as before, do not call it. The user can override it with !state."
+	"If the state is the same as before, do not call it. The user can override it with !state.\n" +
+	"The reason is shown only in the inbox, never in the topic. Write your answer, plan or question in your reply text; this tool does not deliver it."
 
 // topicStateTool is the tool as data.
 func (t *Tools) topicStateTool() Tool {
@@ -60,7 +61,7 @@ func (t *Tools) topicStateTool() Tool {
 				"state": map[string]any{"type": "string", "enum": enum},
 				"reason": map[string]any{
 					"type":        "string",
-					"description": "One line for the inbox: what the user must do, or the outcome.",
+					"description": "One line for the inbox only; the user does not see it in the topic. Say what the user must do, or the outcome.",
 				},
 			},
 			"required": []any{"state", "reason"},

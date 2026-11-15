@@ -962,7 +962,11 @@ Decisions, and why:
   three or more turns since it was recorded.
 - **One tool.** `topic_status` is gone. Two tools for one fact would confuse
   the model. The `topic_state` description was tested on a cheap model; do
-  not reword it.
+  not reword it. The reason is inbox-only: an agent once put its whole question
+  in it and posted one empty line. The description, the `reason` parameter
+  and the system-prompt line now all say so (gemini-2.5-flash-lite, n=12:
+  question reached the topic 4/12 before, 12/12 after; any one of the three
+  lines alone scored 10-11/12).
 - **The user wins.** `!state <state> [reason]` sets `set_by=user`. Nothing
   resets a state but another recorded state.
 - **Merge-back posts, never moves.** When a branched conversation (journal
