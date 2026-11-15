@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.1] - 2026-11-15
+
 ### Fixed
 
 - The `topic_state` tool and its system-prompt line now say the reason shows only in `!inbox`, never in the topic. An agent had put its question only there and posted one empty line.
