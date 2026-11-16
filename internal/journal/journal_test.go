@@ -793,3 +793,27 @@ func TestConvSessionKey(t *testing.T) {
 		t.Fatalf("per-user = %q", got)
 	}
 }
+
+// TestRetireGone: the topic left, so the key is freed with no
+// replacement, and a failed write puts everything back.
+func TestRetireGone(t *testing.T) {
+	j, _ := openTemp(t)
+	k := Channel(4, "gone")
+	c, err := j.Ensure(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := j.SetState(c.ID, TopicState{State: StateNeedsYou, SetBy: SetByAgent}); err != nil {
+		t.Fatal(err)
+	}
+	prev, existed, err := j.RetireGone(k)
+	if err != nil || !existed || prev.ID != c.ID || !prev.Retired {
+		t.Fatalf("prev=%+v existed=%v err=%v", prev, existed, err)
+	}
+	if _, ok := j.Lookup(k); ok {
+		t.Fatal("a replacement was minted")
+	}
+	if _, existed, err := j.RetireGone(k); existed || err != nil {
+		t.Fatalf("second retire: existed=%v err=%v", existed, err)
+	}
+}

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A view no longer lists a topic that was archived, deleted or moved to a channel the relay does not serve. The key got a replacement conversation that kept the topic state; now the key is freed and no replacement is made.
+- When Zulip refuses to delete an old view or notify message (its time limit has passed), the relay edits it to a short struck-through line. When the edit fails too, it logs once and forgets the message.
+
 ## [0.79.1] - 2026-11-15
 
 ### Fixed

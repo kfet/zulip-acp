@@ -209,6 +209,8 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   - **`notify`**: when a topic (of `sources`; unset = every channel) enters an
     `on_enter` state, the relay posts one short message at `at`, and deletes it
     when the topic leaves the state. A view edit does not notify; this does.
+    When Zulip's delete time limit has passed, the relay edits the message to
+    a short struck-through line instead.
   - The relay never resolves a topic for these. Put `at` in a channel humans
     read but the relay does not serve, or in the `from` channel of a route: a
     route does not move a post in a view or notify topic.

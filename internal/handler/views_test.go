@@ -250,15 +250,20 @@ func TestViewPublishEditRepost(t *testing.T) {
 		t.Fatal("old board kept")
 	}
 
-	// Not newest: reposted, and a failed delete is only logged.
+	// Not newest: reposted. A refused delete (Zulip's time limit)
+	// edits the old board to a short struck line instead, so it no
+	// longer shows stale topics.
 	bh.z.setHistory(zulipproto.Message{ID: second + 50})
-	bh.z.deleteErr = errors.New("nope")
+	bh.z.deleteErr = errors.New("The time limit for deleting this message has passed")
 	bh.h.RefreshViews(ctx)
 	if bh.j.View(testViewKey).MsgID == second {
 		t.Fatal("not reposted")
 	}
-	if !bh.logged("deleting old view:") {
-		t.Fatal("delete failure not logged")
+	if b := bh.z.bodies[second]; b != "~~board~~ — moved to a newer message below" {
+		t.Fatalf("old board not struck: %q", b)
+	}
+	if bh.logged("dropping old view:") {
+		t.Fatal("a working edit was logged as a failure")
 	}
 
 	// A failed post keeps the old record.
@@ -325,10 +330,69 @@ func TestViewNoticeFailures(t *testing.T) {
 	if _, err := bh.h.recordState(c, journal.TopicState{State: journal.StateFYI, SetBy: journal.SetByUser}); err != nil {
 		t.Fatal(err)
 	}
-	bh.z.deleteErr = errors.New("nope")
+	id := bh.j.View(testNoteKey).Notices[c.ID]
+	bh.z.deleteErr = errors.New("The time limit for deleting this message has passed")
 	bh.h.RefreshViews(ctx)
-	if !bh.logged("deleting notify:") {
-		t.Fatal("delete failure not logged")
+	if b := bh.z.bodies[id]; b != "✔ ~~notice~~ — handled" {
+		t.Fatalf("notice not struck: %q", b)
+	}
+	if len(bh.j.View(testNoteKey).Notices) != 0 {
+		t.Fatal("a dropped notice is still tracked")
+	}
+
+	// Delete and edit both refused: logged once, then forgotten.
+	if _, err := bh.h.recordState(c, journal.TopicState{State: journal.StateNeedsYou, SetBy: journal.SetByUser}); err != nil {
+		t.Fatal(err)
+	}
+	bh.h.RefreshViews(ctx)
+	id = bh.j.View(testNoteKey).Notices[c.ID]
+	if _, err := bh.h.recordState(c, journal.TopicState{State: journal.StateFYI, SetBy: journal.SetByUser}); err != nil {
+		t.Fatal(err)
+	}
+	bh.z.editErrFor = id
+	bh.h.RefreshViews(ctx)
+	bh.h.RefreshViews(ctx)
+	if n := bh.logCount("dropping notify:"); n != 1 {
+		t.Fatalf("logged %d times, want once", n)
+	}
+	if len(bh.j.View(testNoteKey).Notices) != 0 {
+		t.Fatal("a failed notice is still tracked")
+	}
+}
+
+// TestViewDropsArchivedTopic: an archived topic, and one a human moved
+// to a channel the relay does not serve, leave the board and lose their
+// notice. Before the fix the key got a fresh conversation that kept the
+// topic state, so the board still listed the topic under needs_you.
+func TestViewDropsArchivedTopic(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	for _, gone := range []func(c journal.Conv){
+		func(c journal.Conv) { bh.h.cfg.ArchiveStreamID = 77; bh.h.archiveConversation(ctx, c, "kfet") },
+		func(c journal.Conv) { bh.h.retireMoved(c.Key, 77) },
+	} {
+		c := bh.conv(t, "q", journal.StateNeedsYou, journal.SetByAgent, "", 0)
+		bh.h.cfg.ArchiveStreamID = 0
+		bh.h.RefreshViews(ctx)
+		if !strings.Contains(bh.viewBody(t), "fleet>q") || len(bh.j.View(testNoteKey).Notices) != 1 {
+			t.Fatal("topic not listed")
+		}
+		armed := len(bh.pending)
+		gone(c)
+		if len(bh.pending) <= armed && !bh.h.viewArmed.Load() {
+			t.Fatal("no refresh armed")
+		}
+		bh.h.RefreshViews(ctx)
+		if strings.Contains(bh.viewBody(t), "fleet>q") {
+			t.Fatalf("archived topic still listed:\n%s", bh.viewBody(t))
+		}
+		if len(bh.j.View(testNoteKey).Notices) != 0 {
+			t.Fatal("notice kept")
+		}
+		if _, ok := bh.j.Lookup(c.Key); ok {
+			t.Fatal("a replacement conversation was minted")
+		}
+		bh.h.viewArmed.Store(false)
 	}
 }
 
@@ -356,4 +420,17 @@ func TestViewLoop(t *testing.T) {
 	}
 	// RunViews with a cancelled context refreshes once and returns.
 	bh.h.RunViews(ctx)
+}
+
+// logCount is how many log lines contain sub.
+func (hh *harness) logCount(sub string) int {
+	hh.logMu.Lock()
+	defer hh.logMu.Unlock()
+	n := 0
+	for _, l := range hh.logs {
+		if strings.Contains(l, sub) {
+			n++
+		}
+	}
+	return n
 }

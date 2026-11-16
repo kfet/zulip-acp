@@ -21,10 +21,12 @@
 // recovery is one move back. What accumulates there is then a retention
 // policy problem, not this relay's.
 //
-// Nothing on disk is touched: state/convs/<id>/ survives. Journal.Retire
-// keeps the old conv-id and mints a NEW one for the key, so a later
-// topic of the same name cannot resurrect the old memory — the state
-// stays on disk without being reachable.
+// Nothing on disk is touched: state/convs/<id>/ survives.
+// Journal.RetireGone keeps the old conv-id and frees the key, so a later
+// topic of the same name gets a NEW conversation and cannot resurrect
+// the old memory — the state stays on disk without being reachable. No
+// replacement is minted: it would keep the topic state and stay listed
+// in the views of a channel the topic has left.
 //
 // # Two entry points, one code path
 //
@@ -537,7 +539,7 @@ func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, wh
 	// 3: retire BEFORE the move. The move's own update_message event
 	// would otherwise migrate this conversation into the archive
 	// channel instead of ending it.
-	prev, _, existed, err := h.cfg.Journal.Retire(conv.Key)
+	prev, existed, err := h.cfg.Journal.RetireGone(conv.Key)
 	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: not archiving %s: retiring it failed (%v) — the topic stays where it is", conv.ID, err)
@@ -582,7 +584,7 @@ func (h *Handler) deleteConversation(ctx context.Context, conv journal.Conv, top
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
 	defer cancel()
 	h.endSession(ctx, conv.ID)
-	prev, _, existed, err := h.cfg.Journal.Retire(conv.Key)
+	prev, existed, err := h.cfg.Journal.RetireGone(conv.Key)
 	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: not deleting %s: retiring it failed (%v) — the topic stays", conv.ID, err)

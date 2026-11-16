@@ -786,6 +786,22 @@ func (k Key) Same(o Key) bool { return k.normalise().index() == o.normalise().in
 // there is no conversation to retire, and inventing one would create
 // state the user never asked for.
 func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
+	return j.retire(k, true)
+}
+
+// RetireGone retires the conversation at k because its topic LEFT the
+// place k names: an archive, a delete, or a move to a channel the relay
+// does not serve. Unlike Retire it mints no replacement. A replacement
+// would inherit the topic state and stay listed in every view of the
+// source channel, for a topic that is no longer there. A later message
+// at k gets a fresh conversation from Ensure, as any new topic does.
+func (j *Journal) RetireGone(k Key) (prev Conv, existed bool, err error) {
+	prev, _, existed, err = j.retire(k, false)
+	return prev, existed, err
+}
+
+// retire is Retire, and RetireGone when mint is false.
+func (j *Journal) retire(k Key, mint bool) (prev, fresh Conv, existed bool, err error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	idx := k.index()
@@ -820,16 +836,21 @@ func (j *Journal) Retire(k Key) (prev, fresh Conv, existed bool, err error) {
 	// where that session's context came from.
 	// So do the topic state and its activity facts: `!new` resets the
 	// session, not what the user must do with the topic.
+	undo := func() {
+		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
+		old.PollID, old.PollReplies = prevPoll, prevPollReplies
+		j.byKey[idx] = old
+	}
+	if !mint {
+		return *old, Conv{}, true, j.commitSync(undo, old)
+	}
 	c := &Conv{ID: j.newID(), Key: k, OptsID: prevOpts, PollID: prevPoll, PollReplies: prevPollReplies, Parent: old.Parent, Created: nowMillis(),
 		State: old.State, LastActivity: old.LastActivity, ActivitySince: old.ActivitySince}
 	j.index(c)
 	prev, fresh = *old, *c
 	return prev, fresh, true, j.commitSync(func() {
 		delete(j.byID, c.ID)
-		delete(j.byKey, idx)
-		old.Retired, old.TailID, old.OptsID, old.LastOwnID = false, prevTail, prevOpts, prevOwn
-		old.PollID, old.PollReplies = prevPoll, prevPollReplies
-		j.byKey[idx] = old
+		undo()
 	}, old, c)
 }
 

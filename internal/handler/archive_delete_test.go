@@ -84,9 +84,7 @@ func TestDeleteConfirm(t *testing.T) {
 	if _, still := hh.armed(conv.ID); still {
 		t.Fatal("the arm survived its confirmation")
 	}
-	if fresh := archiveConv(t, hh); fresh.ID == conv.ID {
-		t.Fatal("the conversation was not retired")
-	}
+	archiveGone(t, hh)
 	if !hh.logged("deleted") {
 		t.Fatalf("logs = %v", hh.logs)
 	}

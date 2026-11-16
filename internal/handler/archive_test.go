@@ -59,6 +59,15 @@ func archiveConv(t *testing.T, hh *harness) journal.Conv {
 	return c
 }
 
+// archiveGone fails unless #fleet > "t" is free: an archive, a delete
+// or a move away retires the conversation and mints no replacement.
+func archiveGone(t *testing.T, hh *harness) {
+	t.Helper()
+	if c, ok := hh.j.Lookup(journal.Channel(4, "t")); ok {
+		t.Fatalf("conversation %s still answers in #fleet > t", c.ID)
+	}
+}
+
 // tap feeds one :wastebasket: reaction and returns once Handle has
 // decided — the archive path is fully synchronous on the event loop.
 func (hh *harness) tap(user, msgID int64) {
@@ -137,12 +146,9 @@ func TestArchiveArmThenConfirm(t *testing.T) {
 			if !strings.HasPrefix(moves[0], fmt.Sprintf("%d:", anchor)) {
 				t.Fatalf("the move is not anchored on the closing message: %v", moves)
 			}
-			// The conversation is retired: the key answers to a NEW,
-			// empty conv-id, and the old state directory is untouched.
-			fresh := archiveConv(t, hh)
-			if fresh.ID == conv.ID {
-				t.Fatal("the conversation was not retired")
-			}
+			// The conversation is retired: the key is free, and the
+			// old state directory is untouched.
+			archiveGone(t, hh)
 			if _, err := os.Stat(stateDir); err != nil {
 				t.Fatalf("the retired conversation's state dir must survive: %v", err)
 			}
@@ -468,9 +474,7 @@ func TestArchiveFailures(t *testing.T) {
 		hh.z.moveErr = errors.New("not allowed")
 		hh.z.mu.Unlock()
 		hh.tap(humanID, prompt)
-		if fresh := archiveConv(t, hh); fresh.ID == conv.ID {
-			t.Fatal("the conversation should still have ended")
-		}
+		archiveGone(t, hh)
 		if got := hh.z.lastBody(); !strings.Contains(got, "moving the topic to #archive failed") {
 			t.Fatalf("the topic must be told: %q", got)
 		}
@@ -702,11 +706,16 @@ func TestTopicMovedOutOfServedSet(t *testing.T) {
 				dest = tc.ev.NewStreamID
 			}
 			c, ok := hh.j.Lookup(journal.Channel(dest, tc.topic))
-			if !ok {
-				t.Fatalf("nothing answers in channel %d > %q: %+v", dest, tc.topic, hh.j.Convs())
+			if tc.retired {
+				// The key is free: no replacement keeps the topic
+				// state, or a view would still list the topic.
+				if ok {
+					t.Fatalf("conv %s answers in a topic that left", c.ID)
+				}
+				return
 			}
-			if tc.retired == (c.ID == conv.ID) {
-				t.Fatalf("conv %s answers where it should not (retired=%v)", c.ID, tc.retired)
+			if !ok || c.ID != conv.ID {
+				t.Fatalf("the session did not follow to channel %d > %q: %+v", dest, tc.topic, hh.j.Convs())
 			}
 		})
 	}

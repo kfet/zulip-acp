@@ -13,7 +13,7 @@
 //
 // Every place that changes what a view shows calls viewsDirty:
 // recordState, turn start and end (a scheduled turn included),
-// moveConv, every Journal.Retire, and a schedule that is armed.
+// moveConv, every Journal.Retire and RetireGone, and a schedule that is armed.
 // viewsDirty arms one refresh after ViewDebounce; more calls in that
 // time join it. RunViews refreshes at start and every hour, so ages
 // and the stalled mark move on without activity.
@@ -26,7 +26,12 @@
 //
 // An edit does not notify. So a notify entry posts one short message
 // when a topic ENTERS one of its states, and deletes that message when
-// the topic leaves the state. The relay never resolves a topic: a
+// the topic leaves the state.
+//
+// Zulip limits how long after posting a message can be deleted. When
+// the delete fails, the message is edited to a short struck-through
+// line instead (dropMessage). When that fails too, it is logged once
+// and forgotten: it is never retried. The relay never resolves a topic: a
 // resolve always posts a Notification Bot notice.
 package handler
 
@@ -149,9 +154,7 @@ func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID 
 	}
 	h.viewText[v.Key] = text
 	if msgID != 0 {
-		if err := h.cfg.Client.DeleteMessage(ctx, msgID); err != nil {
-			h.cfg.Logf("handler: deleting old %s message %d: %v", v.Key, msgID, err)
-		}
+		h.dropMessage(ctx, msgID, "old "+v.Key+" message", "~~"+v.Topic+"~~ — moved to a newer message below")
 	}
 	return id
 }
@@ -194,11 +197,23 @@ func (h *Handler) syncNotices(ctx context.Context, n config.ResolvedNotify, have
 		if _, ok := out[convID]; ok {
 			continue
 		}
-		if err := h.cfg.Client.DeleteMessage(ctx, id); err != nil {
-			h.cfg.Logf("handler: deleting %s notice %d: %v", n.Key, id, err)
-		}
+		h.dropMessage(ctx, id, n.Key+" notice", "✔ ~~notice~~ — handled")
 	}
 	return out
+}
+
+// dropMessage deletes a stale view or notice message. When Zulip
+// refuses the delete (its time limit has passed), it edits the message
+// to the short line gone instead. When the edit fails too, it logs once
+// and gives up: the caller forgets the message either way.
+func (h *Handler) dropMessage(ctx context.Context, id int64, what, gone string) {
+	derr := h.cfg.Client.DeleteMessage(ctx, id)
+	if derr == nil {
+		return
+	}
+	if err := h.cfg.Client.EditMessage(ctx, id, gone); err != nil {
+		h.cfg.Logf("handler: dropping %s %d: delete failed (%v), edit failed (%v); forgetting it", what, id, derr, err)
+	}
 }
 
 // viewGroup is the index of the group of v that conv c goes in, or -1.

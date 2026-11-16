@@ -1066,24 +1066,23 @@ func (h *Handler) handleUpdate(ev zulipproto.Event) {
 // served set — which is what the archive control does deliberately, and
 // what a human moving a topic to some other channel does incidentally.
 //
-// Nothing on disk is deleted: Retire keeps the old conv-id and its
-// state/convs/<id>/ directory and mints a fresh id for the key, so a
-// later topic of that name cannot reach the old session's memory.
+// Nothing on disk is deleted: RetireGone keeps the old conv-id and its
+// state/convs/<id>/ directory and frees the key, so a later topic of
+// that name gets a fresh conversation and cannot reach the old
+// session's memory.
 //
 // The archive control retires the conversation BEFORE it issues the
-// move, so by the time its own echoed event lands here the key belongs
-// to the empty conversation Retire minted. Retiring that one costs a
-// journal write and nothing else; it is the same fail-safe answer, not
-// a special case worth a flag that could go stale.
+// move, so by the time its own echoed event lands here the key is free
+// and RetireGone reports that nothing existed.
 func (h *Handler) retireMoved(key journal.Key, dest int64) {
-	// Retire is the single source of truth about whether there WAS a
+	// RetireGone is the single source of truth about whether there WAS a
 	// conversation here: a topic nobody engaged in moving away is
 	// ordinary traffic, not an event. The session is stopped after the
 	// journal write rather than before it, because the topic has
 	// ALREADY gone — unlike the archive path, there is no move left to
 	// race with, and retiring first means nothing can be handed the
 	// conversation in between.
-	prev, fresh, existed, err := h.cfg.Journal.Retire(key)
+	prev, existed, err := h.cfg.Journal.RetireGone(key)
 	h.viewsDirty()
 	if err != nil {
 		h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve, but retiring the conversation failed: %v", key.Topic, dest, err)
@@ -1096,8 +1095,8 @@ func (h *Handler) retireMoved(key journal.Key, dest int64) {
 	// ending a conversation must not be abandoned half-way because the
 	// poll loop moved on.
 	h.endSession(context.Background(), prev.ID)
-	h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve — %s is retired (its files are untouched); %s would answer if the topic came back",
-		key.Topic, dest, prev.ID, fresh.ID)
+	h.cfg.Logf("handler: topic %q moved to channel %d, which I do not serve — %s is retired (its files are untouched); a fresh conversation answers if the topic comes back",
+		key.Topic, dest, prev.ID)
 }
 
 // handleMessage decides whether a message is ours to answer and, if
