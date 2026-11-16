@@ -18,9 +18,9 @@
 // time join it. RunViews refreshes at start and every hour, so ages
 // and the stalled mark move on without activity.
 //
-// The view is edited in place while it is the newest message in its
-// topic. When something was posted after it, a new view is posted and
-// the old one deleted, as heartbeat.go does for a schedule.
+// The view is ONE message, edited in place. A new one is posted only
+// when the edit fails; the old one is then deleted, or struck through
+// when Zulip's delete time limit has passed.
 //
 // # Notify
 //
@@ -47,6 +47,7 @@ import (
 
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 // DefaultViewDebounce is Config.ViewDebounce when unset.
@@ -95,6 +96,8 @@ func (h *Handler) RunViews(ctx context.Context) {
 
 // viewLoop is the testable core of RunViews; see watchdogLoop.
 func (h *Handler) viewLoop(ctx context.Context, tick <-chan time.Time) {
+	h.repairGone(ctx)
+	h.dropStaleViews(ctx)
 	h.RefreshViews(ctx)
 	for {
 		select {
@@ -132,11 +135,13 @@ func (h *Handler) saveView(key string, rec journal.ViewRecord) {
 	}
 }
 
-// publishView edits the view message msgID to text while it is the
-// newest message of its topic, and posts a new one (deleting msgID)
-// otherwise. It returns the view message id now.
+// publishView edits the view message msgID to text, and posts a new
+// one only when there is none or the edit fails. A view is ONE
+// long-lived message: Zulip limits how late a message can be deleted,
+// so a view that moved on each post left old views behind that the
+// relay could no longer remove. It returns the view message id now.
 func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID int64, text string) int64 {
-	if msgID != 0 && h.isNewest(ctx, journal.Channel(v.StreamID, v.Topic), msgID) {
+	if msgID != 0 {
 		if h.viewText[v.Key] == text {
 			return msgID
 		}
@@ -154,9 +159,85 @@ func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID 
 	}
 	h.viewText[v.Key] = text
 	if msgID != 0 {
-		h.dropMessage(ctx, msgID, "old "+v.Key+" message", "~~"+v.Topic+"~~ — moved to a newer message below")
+		h.dropMessage(ctx, msgID, "old "+v.Key+" message", viewGone(v))
 	}
 	return id
+}
+
+// staleViewScan is how many of its own newest messages dropStaleViews
+// reads in a view topic.
+const staleViewScan = 50
+
+// dropStaleViews drops, once at start, every view message the relay
+// left in a view topic besides the current one. Older releases posted
+// a new view when another message came after it, and could not delete
+// the old one after Zulip's time limit.
+func (h *Handler) dropStaleViews(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.ZulipCallTimeout)
+	defer cancel()
+	for _, v := range h.cfg.Views {
+		cur := h.cfg.Journal.View(v.Key).MsgID
+		narrow := append(zulipproto.TopicNarrow(v.StreamID, v.Topic), zulipproto.SenderNarrow(h.cfg.BotUserID))
+		msgs, err := h.cfg.Client.Messages(ctx, narrow, staleViewScan, 0)
+		if err != nil {
+			h.cfg.Logf("handler: reading old %s messages: %v", v.Key, err)
+			continue
+		}
+		for _, m := range msgs {
+			if m.ID != cur && strings.HasPrefix(m.Content, viewMark) {
+				h.dropMessage(ctx, m.ID, "old "+v.Key+" message", viewGone(v))
+			}
+		}
+	}
+}
+
+// viewMark starts every view message.
+const viewMark = "📋 **"
+
+// viewGone is the text an old view message is edited to.
+func viewGone(v config.ResolvedView) string {
+	return "~~" + v.Topic + "~~ — moved to a newer message below"
+}
+
+// repairGone retires, once at start, each conversation whose topic has
+// left its channel but which an older release kept live. Those
+// releases gave an archived topic a replacement conversation that kept
+// the topic state, so a view still listed it. A candidate is a live
+// channel conversation that shares its key with a retired one; it is
+// retired when its topic (resolved or not) holds no message.
+func (h *Handler) repairGone(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.ZulipCallTimeout)
+	defer cancel()
+	convs := h.cfg.Journal.Convs()
+	retired := map[string]bool{}
+	for _, c := range convs {
+		if c.Retired {
+			retired[c.Key.Token()] = true
+		}
+	}
+	for _, c := range convs {
+		if c.Retired || c.IsDM() || !retired[c.Key.Token()] || h.topicHasMessages(ctx, c.Key) {
+			continue
+		}
+		if _, existed, err := h.cfg.Journal.RetireGone(c.Key); err != nil || !existed {
+			h.cfg.Logf("handler: repairing %s: retire failed (existed=%v, %v)", c.ID, existed, err)
+			continue
+		}
+		h.cfg.Logf("handler: repaired %s: its topic %s has left the channel, so it is retired", c.ID, h.describe(c.Key))
+	}
+}
+
+// topicHasMessages reports whether topic k, or its resolved form, holds
+// a message. A failed read counts as yes: repair only on evidence.
+func (h *Handler) topicHasMessages(ctx context.Context, k journal.Key) bool {
+	base := strings.TrimPrefix(k.Topic, journal.ResolvedPrefix)
+	for _, t := range []string{base, journal.ResolvedPrefix + base} {
+		_, ok, err := h.cfg.Client.OldestMessage(ctx, zulipproto.TopicNarrow(k.StreamID, t))
+		if err != nil || ok {
+			return true
+		}
+	}
+	return false
 }
 
 // inSources reports whether channel id is in src. A nil src is all.
@@ -251,7 +332,7 @@ func (h *Handler) renderView(v config.ResolvedView, convs []journal.Conv) string
 		}
 	}
 	var sb strings.Builder
-	sb.WriteString("📋 **" + v.Topic + "** —")
+	sb.WriteString(viewMark + v.Topic + "** —")
 	for _, id := range v.Sources {
 		sb.WriteString(" #**" + h.channelName(id) + "**")
 	}

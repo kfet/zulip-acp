@@ -250,26 +250,35 @@ func TestViewPublishEditRepost(t *testing.T) {
 		t.Fatal("old board kept")
 	}
 
-	// Not newest: reposted. A refused delete (Zulip's time limit)
-	// edits the old board to a short struck line instead, so it no
-	// longer shows stale topics.
+	// Not newest: still edited in place — one long-lived message.
 	bh.z.setHistory(zulipproto.Message{ID: second + 50})
+	bh.conv(t, "c", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.h.RefreshViews(ctx)
+	if bh.j.View(testViewKey).MsgID != second || !strings.Contains(bh.viewBody(t), "fleet>c") {
+		t.Fatal("not edited in place when not newest")
+	}
+
+	// Edit refused and delete refused (Zulip's time limit): a new
+	// board is posted, and the old one, which cannot be edited either,
+	// is logged once and forgotten.
+	bh.conv(t, "d", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.z.editErrFor = second
 	bh.z.deleteErr = errors.New("The time limit for deleting this message has passed")
 	bh.h.RefreshViews(ctx)
 	if bh.j.View(testViewKey).MsgID == second {
 		t.Fatal("not reposted")
 	}
-	if b := bh.z.bodies[second]; b != "~~board~~ — moved to a newer message below" {
-		t.Fatalf("old board not struck: %q", b)
-	}
-	if bh.logged("dropping old view:") {
-		t.Fatal("a working edit was logged as a failure")
+	bh.z.editErrFor = 0
+	if !bh.logged("dropping old view:") {
+		t.Fatal("the double failure was not logged")
 	}
 
 	// A failed post keeps the old record.
 	bh.z.deleteErr = nil
 	bh.z.sendErr = errors.New("down")
 	keep := bh.j.View(testViewKey).MsgID
+	bh.z.editErrFor = keep
+	bh.conv(t, "e", journal.StateBlocked, journal.SetByUser, "", 0)
 	bh.h.RefreshViews(ctx)
 	if bh.j.View(testViewKey).MsgID != keep || !bh.logged("posting view:") {
 		t.Fatal("failed post")
@@ -420,6 +429,85 @@ func TestViewLoop(t *testing.T) {
 	}
 	// RunViews with a cancelled context refreshes once and returns.
 	bh.h.RunViews(ctx)
+}
+
+// TestViewDropStaleBoards: at start, every old board the relay left in
+// the board topic is struck; the current one and other messages stay.
+func TestViewDropStaleBoards(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	bh.h.RefreshViews(ctx)
+	cur := bh.j.View(testViewKey).MsgID
+	old, _ := bh.z.SendMessage(ctx, testBoard, "board", "📋 **board** — old")
+	other, _ := bh.z.SendMessage(ctx, testBoard, "board", "hello")
+	bh.z.deleteErr = errors.New("The time limit for deleting this message has passed")
+	bh.z.setHistory(zulipproto.Message{ID: old, Content: "📋 **board** — old"}, zulipproto.Message{ID: other, Content: "hello"}, zulipproto.Message{ID: cur, Content: "📋 **board** — now"})
+	bh.h.dropStaleViews(ctx)
+	if b := bh.z.bodies[old]; b != "~~board~~ — moved to a newer message below" {
+		t.Fatalf("old board %q", b)
+	}
+	if bh.z.bodies[other] != "hello" || !strings.HasPrefix(bh.z.bodies[cur], "📋") {
+		t.Fatal("touched a message it should not")
+	}
+	bh.z.historyErr = errors.New("down")
+	bh.h.dropStaleViews(ctx)
+	if !bh.logged("reading old view:") {
+		t.Fatal("read failure not logged")
+	}
+}
+
+// TestViewRepairGone: a live successor that an older release minted
+// for an archived topic is retired at start when its topic is empty,
+// and kept while the topic still holds messages or cannot be read.
+func TestViewRepairGone(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	c := bh.conv(t, "q", journal.StateNeedsYou, journal.SetByAgent, "", 0)
+	bh.conv(t, "lone", journal.StateNeedsYou, journal.SetByAgent, "", 0)
+	if _, _, _, err := bh.j.Retire(c.Key); err != nil { // the old release's mint
+		t.Fatal(err)
+	}
+	succ, _ := bh.j.Lookup(c.Key)
+
+	bh.z.oldestErr = errors.New("down")
+	bh.h.repairGone(ctx)
+	bh.z.oldestErr = nil
+	bh.z.oldest = zulipproto.Message{ID: 1}
+	bh.h.repairGone(ctx)
+	if _, ok := bh.j.Lookup(c.Key); !ok {
+		t.Fatal("retired on no evidence")
+	}
+
+	bh.z.oldest = zulipproto.Message{}
+	calls := bh.z.oldestCalls()
+	bh.h.repairGone(ctx)
+	if _, ok := bh.j.Lookup(c.Key); ok {
+		t.Fatal("successor not retired")
+	}
+	if got, _ := bh.j.LookupID(succ.ID); !got.Retired {
+		t.Fatal("successor not marked retired")
+	}
+	if bh.z.oldestCalls()-calls != 2 || !bh.logged("repaired "+succ.ID) {
+		t.Fatal("a topic without a retired twin was checked, or no log")
+	}
+	if _, ok := bh.j.Lookup(journal.Channel(testWork, "lone")); !ok {
+		t.Fatal("a normal conversation was retired")
+	}
+	bh.h.RefreshViews(ctx)
+	if strings.Contains(bh.viewBody(t), "fleet>q") {
+		t.Fatal("the board still lists the archived topic")
+	}
+
+	// A failed journal write is logged.
+	c = bh.conv(t, "r", journal.StateNeedsYou, journal.SetByAgent, "", 0)
+	if _, _, _, err := bh.j.Retire(c.Key); err != nil {
+		t.Fatal(err)
+	}
+	bh.breakJournal(t)
+	bh.h.repairGone(ctx)
+	if !bh.logged("repairing ") {
+		t.Fatal("retire failure not logged")
+	}
 }
 
 // logCount is how many log lines contain sub.
