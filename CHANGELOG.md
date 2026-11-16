@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.3] - 2026-11-15
+
 ### Fixed
 
 - A view is now one long-lived message, edited in place. It is posted again only when the edit fails. Old views were left behind because Zulip does not let the relay delete a message after its time limit.
