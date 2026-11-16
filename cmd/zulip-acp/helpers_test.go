@@ -39,6 +39,9 @@ func TestBuildSkillsCatalog(t *testing.T) {
 	if !strings.Contains(cat, "<available_skills>") {
 		t.Fatalf("missing block: %s", cat)
 	}
+	if !strings.Contains(cat, "<name>board</name>") {
+		t.Fatalf("builtin board skill missing: %s", cat)
+	}
 	if !strings.Contains(cat, "notes") {
 		t.Fatalf("builtin notes skill missing: %s", cat)
 	}

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The converge test no longer fails on a loaded build box: the "no wait for the drain" check is static instead of timed.
+
+### Added
+
+- Built-in `board` skill: how routes, views, notify, lifecycle and `topic_state` make a board, how to find this relay's board in its config, and why a new config key needs a restart instead of a reload.
+
 ## [0.80.0] - 2026-11-15
 
 ### Added
