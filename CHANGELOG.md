@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-11-15
+
 ### Fixed
 
 - The converge test no longer fails on a loaded build box: the "no wait for the drain" check is static instead of timed.
