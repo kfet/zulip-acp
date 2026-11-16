@@ -169,7 +169,8 @@ func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID 
 const staleViewScan = 50
 
 // dropStaleViews drops, once at start, every view message the relay
-// left in a view topic besides the current one. Older releases posted
+// left in a view topic besides the current one, and every notice it
+// no longer tracks. Older releases posted
 // a new view when another message came after it, and could not delete
 // the old one after Zulip's time limit.
 func (h *Handler) dropStaleViews(ctx context.Context) {
@@ -188,8 +189,37 @@ func (h *Handler) dropStaleViews(ctx context.Context) {
 				h.dropMessage(ctx, m.ID, "old "+v.Key+" message", viewGone(v))
 			}
 		}
+	} // A notice no notify entry tracks is stale: an older release
+	// forgot it when Zulip refused the delete. The next refresh
+	// reconciles the tracked ones against the current states.
+	tracked := map[int64]bool{}
+	for _, n := range h.cfg.Notifies {
+		for _, id := range h.cfg.Journal.View(n.Key).Notices {
+			tracked[id] = true
+		}
+	}
+	for _, n := range h.cfg.Notifies {
+		narrow := append(zulipproto.TopicNarrow(n.StreamID, n.Topic), zulipproto.SenderNarrow(h.cfg.BotUserID))
+		msgs, err := h.cfg.Client.Messages(ctx, narrow, staleViewScan, 0)
+		if err != nil {
+			h.cfg.Logf("handler: reading old %s notices: %v", n.Key, err)
+			continue
+		}
+		for _, m := range msgs {
+			if !tracked[m.ID] && strings.HasPrefix(m.Content, noticeMark) {
+				tracked[m.ID] = true // two entries may share a topic
+				h.dropMessage(ctx, m.ID, n.Key+" notice", noticeGone)
+			}
+		}
 	}
 }
+
+// noticeMark starts every notify notice.
+const noticeMark = "🔔 "
+
+// noticeGone is the text a notice is edited to when it cannot be
+// deleted.
+const noticeGone = "✔ ~~notice~~ — handled"
 
 // viewMark starts every view message.
 const viewMark = "📋 **"
@@ -263,7 +293,7 @@ func (h *Handler) syncNotices(ctx context.Context, n config.ResolvedNotify, have
 			out[c.ID] = id
 			continue
 		}
-		line := "🔔 " + topicMention(h.channelName(c.StreamID), c.Topic) + " is " + c.State.State
+		line := noticeMark + topicMention(h.channelName(c.StreamID), c.Topic) + " is " + c.State.State
 		if c.State.Reason != "" {
 			line += " — " + c.State.Reason
 		}
@@ -278,7 +308,7 @@ func (h *Handler) syncNotices(ctx context.Context, n config.ResolvedNotify, have
 		if _, ok := out[convID]; ok {
 			continue
 		}
-		h.dropMessage(ctx, id, n.Key+" notice", "✔ ~~notice~~ — handled")
+		h.dropMessage(ctx, id, n.Key+" notice", noticeGone)
 	}
 	return out
 }

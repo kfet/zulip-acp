@@ -451,8 +451,29 @@ func TestViewDropStaleBoards(t *testing.T) {
 	}
 	bh.z.historyErr = errors.New("down")
 	bh.h.dropStaleViews(ctx)
-	if !bh.logged("reading old view:") {
+	if !bh.logged("reading old view:") || !bh.logged("reading old notify:") {
 		t.Fatal("read failure not logged")
+	}
+}
+
+// TestViewDropStaleNotices: at start, a notice no notify entry tracks
+// (an older release forgot it when the delete was refused) is struck;
+// a tracked notice stays.
+func TestViewDropStaleNotices(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	c := bh.conv(t, "q", journal.StateNeedsYou, journal.SetByAgent, "", 0)
+	bh.h.RefreshViews(ctx)
+	live := bh.j.View(testNoteKey).Notices[c.ID]
+	lost, _ := bh.z.SendMessage(ctx, testBoard, noticeTopic, "🔔 #**fleet>gone** is needs_you")
+	bh.z.deleteErr = errors.New("The time limit for deleting this message has passed")
+	bh.z.setHistory(zulipproto.Message{ID: lost, Content: "🔔 #**fleet>gone** is needs_you"}, zulipproto.Message{ID: live, Content: bh.z.bodies[live]})
+	bh.h.dropStaleViews(ctx)
+	if b := bh.z.bodies[lost]; b != noticeGone {
+		t.Fatalf("lost notice %q", b)
+	}
+	if !strings.HasPrefix(bh.z.bodies[live], noticeMark) {
+		t.Fatal("a tracked notice was struck")
 	}
 }
 
@@ -468,6 +489,10 @@ func TestViewRepairGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	succ, _ := bh.j.Lookup(c.Key)
+	bh.h.RefreshViews(ctx)
+	if _, ok := bh.j.View(testNoteKey).Notices[succ.ID]; !ok {
+		t.Fatal("no notice for the successor")
+	}
 
 	bh.z.oldestErr = errors.New("down")
 	bh.h.repairGone(ctx)
@@ -496,6 +521,9 @@ func TestViewRepairGone(t *testing.T) {
 	bh.h.RefreshViews(ctx)
 	if strings.Contains(bh.viewBody(t), "fleet>q") {
 		t.Fatal("the board still lists the archived topic")
+	}
+	if _, ok := bh.j.View(testNoteKey).Notices[succ.ID]; ok {
+		t.Fatal("the repaired topic kept its notice")
 	}
 
 	// A failed journal write is logged.
