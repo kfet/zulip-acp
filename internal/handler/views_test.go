@@ -377,7 +377,7 @@ func TestViewDropsArchivedTopic(t *testing.T) {
 	bh := newViewHarness(t)
 	ctx := context.Background()
 	for _, gone := range []func(c journal.Conv){
-		func(c journal.Conv) { bh.h.cfg.ArchiveStreamID = 77; bh.h.archiveConversation(ctx, c, "kfet") },
+		func(c journal.Conv) { bh.h.cfg.ArchiveStreamID = 77; bh.h.archiveConversation(ctx, c, "kfet", "") },
 		func(c journal.Conv) { bh.h.retireMoved(c.Key, 77) },
 	} {
 		c := bh.conv(t, "q", journal.StateNeedsYou, journal.SetByAgent, "", 0)

@@ -124,6 +124,97 @@ type View struct {
 	// StaleAfter is how long a waiting topic may be idle before it
 	// shows as stalled, as a Go duration such as "72h". Unset = never.
 	StaleAfter string `json:"stale_after,omitempty"`
+	// Collapse folds the groups that list one of its states into a
+	// spoiler block at the end of the view. Unset = nothing folds.
+	Collapse *ViewCollapse `json:"collapse,omitempty"`
+}
+
+// ViewCollapse is View.Collapse.
+type ViewCollapse struct {
+	// States are the states whose groups fold.
+	States []string `json:"states"`
+	// Show is how many of the newest topics a folded group lists.
+	// Unset = DefaultCollapseShow.
+	Show int `json:"show,omitempty"`
+}
+
+// DefaultCollapseShow is ViewCollapse.Show when unset.
+const DefaultCollapseShow = 5
+
+// Lifecycle is one rule that acts on a topic by itself. See
+// Config.Lifecycle.
+type Lifecycle struct {
+	// When is the condition: the topic is in one of the states and has
+	// been idle at least that long.
+	When LifecycleWhen `json:"when"`
+	// Action is what is done. Only "archive": the topic moves to
+	// archive_channel, as `!archive` does.
+	Action string `json:"action"`
+	// PrefixSource puts the source channel name in front of the topic
+	// name when the topic moves, as "channel: topic".
+	PrefixSource bool `json:"prefix_source,omitempty"`
+	// Sources are the channels whose topics the rule acts on. Unset =
+	// every channel the relay serves.
+	Sources []string `json:"sources,omitempty"`
+}
+
+// LifecycleWhen is the condition of a Lifecycle rule. Both must hold.
+type LifecycleWhen struct {
+	// States are the topic states the rule acts on: LifecycleStates.
+	States []string `json:"states"`
+	// Idle is how long the topic must have had no message, as a Go
+	// duration such as "168h".
+	Idle string `json:"idle"`
+}
+
+// LifecycleStates are the states a lifecycle rule may act on. A topic
+// that needs the user (needs_you, blocked) or runs is never acted on.
+var LifecycleStates = []string{"done", "fyi", "waiting", "open"}
+
+// LifecycleArchive is the one Lifecycle action.
+const LifecycleArchive = "archive"
+
+// ResolvedLifecycle is a Lifecycle with channel ids. Sources nil = all.
+type ResolvedLifecycle struct {
+	States       []string
+	Idle         time.Duration
+	PrefixSource bool
+	Sources      []int64
+}
+
+// ResolveLifecycle maps the lifecycle rules onto channel ids. Validate
+// has already checked their shape.
+func (c *Config) ResolveLifecycle(available []zulipproto.Stream) ([]ResolvedLifecycle, error) {
+	var out []ResolvedLifecycle
+	for i, l := range c.Lifecycle {
+		src, err := resolveList(fmt.Sprintf("lifecycle[%d].sources", i), l.Sources, available)
+		if err != nil {
+			return nil, err
+		}
+		idle, _ := time.ParseDuration(l.When.Idle)
+		out = append(out, ResolvedLifecycle{States: l.When.States, Idle: idle, PrefixSource: l.PrefixSource, Sources: src})
+	}
+	return out, nil
+}
+
+func (c *Config) validateLifecycle() error {
+	for i, l := range c.Lifecycle {
+		if l.Action != LifecycleArchive {
+			return fmt.Errorf("lifecycle[%d]: action %q is not %q", i, l.Action, LifecycleArchive)
+		}
+		if len(l.When.States) == 0 {
+			return fmt.Errorf("lifecycle[%d]: when.states is empty", i)
+		}
+		for _, st := range l.When.States {
+			if !slices.Contains(LifecycleStates, st) {
+				return fmt.Errorf("lifecycle[%d]: %q is not one of %s", i, st, strings.Join(LifecycleStates, ", "))
+			}
+		}
+		if d, err := time.ParseDuration(l.When.Idle); err != nil || d <= 0 {
+			return fmt.Errorf("lifecycle[%d]: when.idle %q is not a positive duration such as \"168h\"", i, l.When.Idle)
+		}
+	}
+	return nil
 }
 
 // ViewGroup is one section of a view.
@@ -521,6 +612,11 @@ type Config struct {
 	// on_enter states, and deletes it when the topic leaves the state.
 	// The unread count of the `at` topic then counts those topics.
 	Notify []Notify `json:"notify,omitempty"`
+
+	// Lifecycle rules archive a topic by themselves when it is in one
+	// of the rule's states and idle long enough. A topic that runs, has
+	// a schedule, or needs the user is never archived.
+	Lifecycle []Lifecycle `json:"lifecycle,omitempty"`
 
 	// InboundAttachments downloads the files a human attaches to a
 	// message into the conversation's working directory (`inbox/`) and
@@ -1181,6 +1277,16 @@ func (c *Config) validateViews() error {
 		if _, err := v.Stale(); err != nil {
 			return fmt.Errorf("views[%d]: %w", i, err)
 		}
+		if v.Collapse != nil {
+			if len(v.Collapse.States) == 0 || v.Collapse.Show < 0 {
+				return fmt.Errorf("views[%d].collapse: states must be set and show must not be negative", i)
+			}
+			for _, st := range v.Collapse.States {
+				if !slices.Contains(ViewStates, st) {
+					return fmt.Errorf("views[%d].collapse: %q is not one of %s", i, st, strings.Join(ViewStates, ", "))
+				}
+			}
+		}
 		for g, grp := range v.Groups {
 			if strings.TrimSpace(grp.Title) == "" || len(grp.States) == 0 {
 				return fmt.Errorf("views[%d].groups[%d]: title and states must both be set", i, g)
@@ -1205,7 +1311,7 @@ func (c *Config) validateViews() error {
 			}
 		}
 	}
-	return nil
+	return c.validateLifecycle()
 }
 
 // splitAt splits "channel/topic" at the first "/".
@@ -1253,6 +1359,10 @@ type ResolvedView struct {
 	Sources    []int64
 	Groups     []ViewGroup
 	StaleAfter time.Duration
+	// Collapse are the states whose groups fold; CollapseShow is how
+	// many topics a folded group lists.
+	Collapse     []string
+	CollapseShow int
 }
 
 // ResolvedNotify is a Notify with channel ids. Sources nil = all.
@@ -1303,7 +1413,14 @@ func (c *Config) ResolveViews(available []zulipproto.Stream) ([]ResolvedView, []
 			return nil, nil, err
 		}
 		stale, _ := v.Stale()
-		views = append(views, ResolvedView{Key: "view:" + v.At, StreamID: id, Topic: topic, Sources: src, Groups: v.GetGroups(), StaleAfter: stale})
+		rv := ResolvedView{Key: "view:" + v.At, StreamID: id, Topic: topic, Sources: src, Groups: v.GetGroups(), StaleAfter: stale}
+		if v.Collapse != nil {
+			rv.Collapse, rv.CollapseShow = v.Collapse.States, v.Collapse.Show
+			if rv.CollapseShow == 0 {
+				rv.CollapseShow = DefaultCollapseShow
+			}
+		}
+		views = append(views, rv)
 	}
 	var notes []ResolvedNotify
 	for i, n := range c.Notify {

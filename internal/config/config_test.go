@@ -98,6 +98,13 @@ func TestValidate(t *testing.T) {
 		{"view negative stale_after", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, StaleAfter: "-1h"}}}},
 		{"view group without title", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Groups: []ViewGroup{{States: []string{"done"}}}}}}},
 		{"view group bad state", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Groups: []ViewGroup{{Title: "x", States: []string{"later"}}}}}}},
+		{"view collapse without states", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Collapse: &ViewCollapse{}}}}},
+		{"view collapse negative show", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Collapse: &ViewCollapse{States: []string{"done"}, Show: -1}}}}},
+		{"view collapse bad state", Config{Views: []View{{At: "a/b", Sources: []string{"a"}, Collapse: &ViewCollapse{States: []string{"later"}}}}}},
+		{"lifecycle bad action", Config{Lifecycle: []Lifecycle{{When: LifecycleWhen{States: []string{"done"}, Idle: "1h"}, Action: "delete"}}}},
+		{"lifecycle no states", Config{Lifecycle: []Lifecycle{{When: LifecycleWhen{Idle: "1h"}, Action: "archive"}}}},
+		{"lifecycle needs_you", Config{Lifecycle: []Lifecycle{{When: LifecycleWhen{States: []string{"needs_you"}, Idle: "1h"}, Action: "archive"}}}},
+		{"lifecycle bad idle", Config{Lifecycle: []Lifecycle{{When: LifecycleWhen{States: []string{"done"}, Idle: "soon"}, Action: "archive"}}}},
 		{"notify at", Config{Notify: []Notify{{At: "/b", OnEnter: []string{"done"}}}}},
 		{"notify without on_enter", Config{Notify: []Notify{{At: "a/b"}}}},
 		{"notify bad state", Config{Notify: []Notify{{At: "a/b", OnEnter: []string{"running"}}}}},
@@ -980,6 +987,35 @@ func TestViewsConfigValid(t *testing.T) {
 	}
 	if g := c.Views[0].GetGroups(); len(g) != 1 {
 		t.Fatalf("groups = %v", g)
+	}
+}
+
+func TestCollapseLifecycleResolve(t *testing.T) {
+	avail := []zulipproto.Stream{{StreamID: 4, Name: "a"}, {StreamID: 5, Name: "b"}}
+	c := Config{
+		Views: []View{
+			{At: "a/x", Sources: []string{"b"}, Collapse: &ViewCollapse{States: []string{"done", "fyi"}}},
+			{At: "a/y", Sources: []string{"b"}, Collapse: &ViewCollapse{States: []string{"done"}, Show: 2}},
+		},
+		Lifecycle: []Lifecycle{
+			{When: LifecycleWhen{States: []string{"done", "open"}, Idle: "168h"}, Action: "archive", PrefixSource: true, Sources: []string{"b"}},
+			{When: LifecycleWhen{States: []string{"fyi"}, Idle: "1h"}, Action: "archive"},
+		},
+	}
+	if err := c.validateViews(); err != nil {
+		t.Fatal(err)
+	}
+	v, _, err := c.ResolveViews(avail)
+	if err != nil || len(v[0].Collapse) != 2 || v[0].CollapseShow != DefaultCollapseShow || v[1].CollapseShow != 2 {
+		t.Fatalf("views = %+v %v", v, err)
+	}
+	l, err := c.ResolveLifecycle(avail)
+	if err != nil || len(l) != 2 || l[0].Idle != 168*time.Hour || !l[0].PrefixSource || l[0].Sources[0] != 5 || l[1].Sources != nil {
+		t.Fatalf("lifecycle = %+v %v", l, err)
+	}
+	c.Lifecycle[0].Sources = []string{"nope"}
+	if _, err := c.ResolveLifecycle(avail); err == nil {
+		t.Fatal("unknown source accepted")
 	}
 }
 

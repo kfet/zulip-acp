@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `lifecycle` config: rules that archive a topic by themselves when it is in one of the rule's states and idle long enough. They use the `!archive` path and can put the source channel in front of the topic name. A topic that runs, has a schedule, or is `needs_you` or `blocked` is never archived. At start the relay logs whether the rules can act and the realm's move time limit.
+- View option `collapse`: the groups of the given states go last, in a spoiler block with their count and their newest topics.
+
 ## [0.79.4] - 2026-11-15
 
 ### Fixed

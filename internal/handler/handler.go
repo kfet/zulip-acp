@@ -420,6 +420,9 @@ type Config struct {
 	// entries. See views.go.
 	Views    []config.ResolvedView
 	Notifies []config.ResolvedNotify
+	// Lifecycle are the rules that archive an idle topic by themselves.
+	// They run at start and every hour, with the views.
+	Lifecycle []config.ResolvedLifecycle
 	// ViewDebounce coalesces view refreshes. 0 uses
 	// DefaultViewDebounce.
 	ViewDebounce time.Duration
@@ -639,6 +642,9 @@ type Handler struct {
 	// text each view message was given, by view key.
 	viewMu   sync.Mutex
 	viewText map[string]string
+	// tooOld holds the conv-ids a lifecycle rule found too old to
+	// move. A topic only gets older, so it is not checked again.
+	tooOld sync.Map
 
 	// ownEcho and echoWG serve reactWhenVisible.
 	ownEcho *ownEcho

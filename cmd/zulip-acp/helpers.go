@@ -189,6 +189,25 @@ func resolveViews(cfg *config.Config, streams []zulipproto.Stream, served channe
 	return views, notes, nil
 }
 
+// resolveLifecycle resolves the lifecycle rules at startup and logs
+// whether they can act: they need archiving on, and the realm's move
+// time limit bounds how old a topic they can move.
+func resolveLifecycle(cfg *config.Config, streams []zulipproto.Stream, archiveID int64, limit time.Duration) ([]config.ResolvedLifecycle, error) {
+	rules, err := cfg.ResolveLifecycle(streams)
+	if err != nil || len(rules) == 0 {
+		return rules, err
+	}
+	switch {
+	case archiveID == 0:
+		log.Printf("zulip-acp: lifecycle is OFF: %d rule(s), but topic archiving is off (see above)", len(rules))
+	case limit > 0:
+		log.Printf("zulip-acp: lifecycle on: %d rule(s); the bot can only move topics whose oldest message is within %s — older topics are skipped", len(rules), limit)
+	default:
+		log.Printf("zulip-acp: lifecycle on: %d rule(s); the bot can move topics of any age", len(rules))
+	}
+	return rules, nil
+}
+
 // typingProbe is the Zulip surface resolveTypingInterval needs: how
 // long this server keeps a typing `start` alive.
 type typingProbe interface {

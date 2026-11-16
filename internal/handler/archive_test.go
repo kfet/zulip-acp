@@ -492,7 +492,7 @@ func TestArchiveFailures(t *testing.T) {
 		// The confirmation names a conversation whose topic is no
 		// longer engaged — `!new`, a rename, or a race with another
 		// archive. Retire is the single source of truth about that.
-		hh.h.archiveConversation(context.Background(), journal.Conv{ID: conv.ID, Key: journal.Channel(4, "gone")}, "Ada")
+		hh.h.archiveConversation(context.Background(), journal.Conv{ID: conv.ID, Key: journal.Channel(4, "gone")}, "Ada", "")
 		if len(hh.z.moved()) != 0 {
 			t.Fatalf("moved a topic that is no longer the conversation: %v", hh.z.moved())
 		}

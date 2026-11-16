@@ -442,6 +442,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	lifecycle, err := resolveLifecycle(cfg, streams, archiveID, archiveLimit)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	deleter, deleteReady, err := resolveDeleter(ctx, cfg, me)
 	if err != nil {
 		log.Fatalf("zulip-acp: %v", err)
@@ -757,6 +761,7 @@ func main() {
 		Reactions:          cfg.GetReactions(),
 		Views:              views,
 		Notifies:           notifies,
+		Lifecycle:          lifecycle,
 		Routes:             routes,
 		ArchiveStreamID:    archiveID,
 		ArchiveChannel:     archiveName,

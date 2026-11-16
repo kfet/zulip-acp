@@ -177,7 +177,9 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
                           {"title": "Blocked", "states": ["blocked"]},
                           {"title": "Running", "states": ["running"]},
                           {"title": "Done", "states": ["done", "fyi"]}]}],
-    "notify": [{"at": "team-board/board", "on_enter": ["needs_you"]}]
+    "notify": [{"at": "team-board/board", "on_enter": ["needs_you"]}],
+    "lifecycle": [{"when": {"states": ["done", "fyi"], "idle": "168h"}, "action": "archive",
+                   "prefix_source": true, "sources": ["team-tasks"]}]
   }
   ```
 
@@ -201,9 +203,13 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
     `running`, else to the group of its state. A topic in no listed state is
     not shown. Unset `groups`: Needs you, Blocked, Running, Waiting, Open, Done.
     A `waiting` topic idle longer than `stale_after` (a Go duration, e.g.
-    `72h`) shows as `stalled`. More than one source makes a roll-up. The relay
-    edits the message while it is the newest in its topic, and else posts a new
-    one and deletes the old one. It refreshes 5s after a change (state set,
+    `72h`) shows as `stalled`. More than one source makes a roll-up. With
+    `"collapse": {"states": ["done", "fyi"], "show": 5}`, each group that lists
+    one of those states goes last, in a spoiler block with its count and its
+    `show` newest topics (default 5). The view is one message that the relay
+    edits. It posts a new one only when the edit fails, and then deletes the
+    old one, or strikes it through when the delete time limit has passed. At
+    start it strikes the old view messages it finds in the topic. It refreshes 5s after a change (state set,
     turn start or end, topic move, retire or archive, schedule), every hour,
     and at start.
   - **`notify`**: when a topic (of `sources`; unset = every channel) enters an
@@ -215,8 +221,18 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
     read but the relay does not serve, or in the `from` channel of a route: a
     route does not move a post in a view or notify topic.
   - A notify entry keeps its notices under a key made of `at` and `on_enter`.
-    If you change either, the notices of the old entry stay; delete them by
-    hand.
+    If you change either, the relay strikes the notices of the old entry at
+    the next start: it strikes each notice in a notify topic that it does not
+    track.
+  - **`lifecycle`**: rules that archive a topic by themselves, through the
+    same path as `!archive` (so `archive_channel` must be on). A topic is
+    archived when it is in one of `when.states` (`done`, `fyi`, `waiting`,
+    `open`) and its newest message is older than `when.idle`. A new message
+    resets the idle time. A topic that runs, has a schedule, or is `needs_you`
+    or `blocked` is never archived. With `prefix_source` the topic is renamed
+    `channel: topic` in the archive channel. Rules run at start and every
+    hour. At start the relay logs whether it can act and the realm's move time
+    limit; a topic older than that limit is skipped and logged once.
 - **`autotopic_channels` names general chat.** Zulip 11's "general chat" is
   the channel's empty topic (which a server reports as the literal string
   `general chat` unless the client declares the `empty_topic_name` capability —
@@ -440,8 +456,9 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `ambient_channels` | `[]` | channels (names or ids) that engage with **no** @-mention, like a DM |
 | `autotopic_channels` | `[]` | channels (names or ids) where a **general chat** message is moved to a topic named after it. The same as a route from a channel to itself |
 | `routes` | `[]` | `{from, to, link_back}`: a new topic (or general chat) in `from` moves to `to` as a new task topic, with no @-mention. See [Routes, views and notify](#routes-views-and-notify) |
-| `views` | `[]` | `{at, sources, groups, stale_after}`: one relay-edited message at `"channel/topic"` that lists the topics of `sources` by state |
+| `views` | `[]` | `{at, sources, groups, stale_after, collapse}`: one relay-edited message at `"channel/topic"` that lists the topics of `sources` by state |
 | `notify` | `[]` | `{at, on_enter, sources}`: a short message at `"channel/topic"` while a topic is in an `on_enter` state |
+| `lifecycle` | `[]` | `{when: {states, idle}, action: "archive", prefix_source, sources}`: archive an idle topic by itself. See [Routes, views and notify](#routes-views-and-notify) |
 | `dms` | `false` | serve direct messages (1:1 and group). Not gated by `channels` |
 | `allowed_user_ids` | everyone | restrict who the relay answers, in channels and DMs alike |
 | `update_owner_ids` | none | user ids that may run `!update`, approve auto-updates and confirm a delete. With none, those controls are off |

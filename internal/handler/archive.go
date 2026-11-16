@@ -196,7 +196,7 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 	// removed.
 	who, _ := h.reactor(ctx, ev.UserID)
 	if confirm && h.takeArchiveConfirm(conv.ID, ev.MessageID) {
-		h.archiveConversation(ctx, conv, who)
+		h.archiveConversation(ctx, conv, who, "")
 		return true
 	}
 	if !last {
@@ -495,7 +495,8 @@ func humanLimit(d time.Duration) string {
 
 // archiveConversation performs the archive. The ordering here is the
 // whole feature; see the file comment.
-func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, who string) {
+// topic is the topic name in the archive channel; "" keeps it.
+func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, who, topic string) {
 	// The served set moves underfoot when it follows the bot's
 	// subscriptions, so "the destination is not served" is re-checked
 	// at the moment of the act and not only at startup. Archiving INTO
@@ -555,7 +556,7 @@ func (h *Handler) archiveConversation(ctx context.Context, conv journal.Conv, wh
 	}
 
 	// 4: and only now the move.
-	if err := h.cfg.Client.MoveMessageToChannel(ctx, anchor, h.cfg.ArchiveStreamID, "", propagateAll); err != nil {
+	if err := h.cfg.Client.MoveMessageToChannel(ctx, anchor, h.cfg.ArchiveStreamID, topic, propagateAll); err != nil {
 		h.cfg.Logf("handler: archiving %s: the move to #%s failed (%v) — the conversation is ended but the topic stayed put",
 			prev.ID, h.cfg.ArchiveChannel, err)
 		h.reply(ctx, conv.Key, fmt.Sprintf("I ended this conversation, but moving the topic to #%s failed (%v). The messages are all still here; move the topic by hand, or just leave it — the next message starts a fresh conversation.",

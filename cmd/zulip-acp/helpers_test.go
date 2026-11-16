@@ -614,3 +614,24 @@ func TestResolveViews(t *testing.T) {
 		t.Fatal("no error")
 	}
 }
+
+func TestResolveLifecycle(t *testing.T) {
+	streams := []zulipproto.Stream{{StreamID: 4, Name: "a"}}
+	rule := config.Lifecycle{When: config.LifecycleWhen{States: []string{"done"}, Idle: "1h"}, Action: "archive"}
+	cfg := &config.Config{Lifecycle: []config.Lifecycle{rule}}
+	for _, tc := range []struct {
+		archive int64
+		limit   time.Duration
+	}{{0, 0}, {9, time.Hour}, {9, 0}} {
+		if r, err := resolveLifecycle(cfg, streams, tc.archive, tc.limit); err != nil || len(r) != 1 {
+			t.Fatalf("rules %v err %v", r, err)
+		}
+	}
+	if r, err := resolveLifecycle(&config.Config{}, streams, 9, 0); err != nil || r != nil {
+		t.Fatalf("no rules: %v %v", r, err)
+	}
+	rule.Sources = []string{"x"}
+	if _, err := resolveLifecycle(&config.Config{Lifecycle: []config.Lifecycle{rule}}, streams, 9, 0); err == nil {
+		t.Fatal("no error")
+	}
+}

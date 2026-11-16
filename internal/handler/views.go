@@ -81,7 +81,7 @@ func (h *Handler) viewsDirty() {
 }
 
 func (h *Handler) hasViews() bool {
-	return len(h.cfg.Views) > 0 || len(h.cfg.Notifies) > 0
+	return len(h.cfg.Views) > 0 || len(h.cfg.Notifies) > 0 || len(h.cfg.Lifecycle) > 0
 }
 
 // RunViews refreshes now, then every hour until ctx ends.
@@ -99,12 +99,14 @@ func (h *Handler) viewLoop(ctx context.Context, tick <-chan time.Time) {
 	h.repairGone(ctx)
 	h.dropStaleViews(ctx)
 	h.RefreshViews(ctx)
+	h.runLifecycle(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick:
 			h.RefreshViews(ctx)
+			h.runLifecycle(ctx)
 		}
 	}
 }
@@ -372,26 +374,54 @@ func (h *Handler) renderView(v config.ResolvedView, convs []journal.Conv) string
 		return sb.String()
 	}
 	now := h.now()
-	for g, cs := range groups {
+	// Folded groups go last, each in a spoiler block.
+	order := make([]int, 0, len(groups))
+	var folded []int
+	for g := range groups {
+		if h.folds(v, g) {
+			folded = append(folded, g)
+		} else {
+			order = append(order, g)
+		}
+	}
+	for _, g := range append(order, folded...) {
+		cs := groups[g]
 		if len(cs) == 0 {
 			continue
 		}
 		sort.SliceStable(cs, func(a, b int) bool { return lastSeen(cs[a]) > lastSeen(cs[b]) })
-		fmt.Fprintf(&sb, "\n**%s** (%d)\n", v.Groups[g].Title, len(cs))
+		limit, fold := viewGroupMax, h.folds(v, g)
+		if fold {
+			limit = v.CollapseShow
+			fmt.Fprintf(&sb, "\n```spoiler %s (%d)\n", v.Groups[g].Title, len(cs))
+		} else {
+			fmt.Fprintf(&sb, "\n**%s** (%d)\n", v.Groups[g].Title, len(cs))
+		}
 		for i, c := range cs {
-			if i == viewGroupMax {
+			if i == limit {
 				fmt.Fprintf(&sb, "- …and %d more\n", len(cs)-i)
 				break
 			}
 			line := h.viewLine(v, c, now)
 			if utf8.RuneCountInString(sb.String())+utf8.RuneCountInString(line) > viewMaxRunes {
+				if fold {
+					sb.WriteString("```\n")
+				}
 				sb.WriteString("\n…the view is full.")
 				return sb.String()
 			}
 			sb.WriteString(line)
 		}
+		if fold {
+			sb.WriteString("```\n")
+		}
 	}
 	return sb.String()
+}
+
+// folds reports whether group g of v folds: it lists a collapse state.
+func (h *Handler) folds(v config.ResolvedView, g int) bool {
+	return slices.ContainsFunc(v.Groups[g].States, func(st string) bool { return slices.Contains(v.Collapse, st) })
 }
 
 // viewLine renders one topic of a view: link, age, state, reason.
