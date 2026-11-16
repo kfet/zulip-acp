@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.4] - 2026-11-15
+
 ### Fixed
 
 - At start, the relay strikes through each notify notice that it no longer tracks. An older release forgot a notice when Zulip refused to delete it, so the notice stayed after its topic was archived.
