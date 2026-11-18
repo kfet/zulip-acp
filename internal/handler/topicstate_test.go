@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/zulip-acp/internal/channels"
 	"github.com/kfet/zulip-acp/internal/journal"
 )
@@ -319,5 +320,66 @@ func TestActivityCountsCommandsAndPosts(t *testing.T) {
 	hh.deliver(t, "quiet", mention("go"))
 	if got := mustLookup(t, hh.j, quiet.Key); got.ActivitySince != 1 {
 		t.Fatalf("after a turn: %+v", got)
+	}
+}
+
+// TestReplyClearsNeedsYou: a human message in a needs_you topic opens
+// it again before the turn; a relay command, a passthrough command and
+// another state leave the state alone.
+func TestReplyClearsNeedsYou(t *testing.T) {
+	agent := newAgent("ok")
+	agent.agentCmds = []client.CommandInfo{{Name: "reload"}}
+	hh := cmdHarness(t, agent, func(c *Config) { c.BotSenderIDs = map[int64]struct{}{7: {}} })
+	hh.deliver(t, "work", mention("hello"))
+	key := journal.Channel(4, "work")
+	set := func(state string) {
+		t.Helper()
+		c, _ := hh.j.Lookup(key)
+		if _, _, err := hh.j.SetState(c.ID, journal.TopicState{State: state, SetBy: journal.SetByAgent}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func() string {
+		c, _ := hh.j.Lookup(key)
+		if c.State == nil {
+			return ""
+		}
+		return c.State.State
+	}
+	set(journal.StateNeedsYou)
+	hh.deliver(t, "work", "!state")
+	hh.deliver(t, "work", "!reload")
+	hh.deliverAs(t, botID, "work", "the relay's own post")
+	hh.deliverAs(t, 7, "work", "another bot")
+	if got := state(); got != journal.StateNeedsYou {
+		t.Fatalf("after commands state = %q", got)
+	}
+	hh.deliver(t, "work", "here is my answer")
+	if got := state(); got != "" {
+		t.Fatalf("after reply state = %q, want open", got)
+	}
+	set(journal.StateWaiting)
+	hh.deliver(t, "work", "and more")
+	if got := state(); got != journal.StateWaiting {
+		t.Fatalf("waiting state = %q", got)
+	}
+}
+
+// TestReplyClearsNeedsYouWriteFailure: a journal that cannot be written
+// keeps the state and only logs.
+func TestReplyClearsNeedsYouWriteFailure(t *testing.T) {
+	hh := cmdHarness(t, newAgent("ok"), nil)
+	hh.deliver(t, "work", mention("hello"))
+	c, _ := hh.j.Lookup(journal.Channel(4, "work"))
+	if _, _, err := hh.j.SetState(c.ID, journal.TopicState{State: journal.StateNeedsYou, SetBy: journal.SetByAgent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hh.jdir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hh.jdir, 0o700) })
+	hh.h.clearNeedsYou(c.ID)
+	if c, _ = hh.j.LookupID(c.ID); c.State == nil {
+		t.Fatal("state cleared despite a write failure")
 	}
 }

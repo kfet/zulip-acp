@@ -203,7 +203,8 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
     `running`, else to the group of its state. A topic in no listed state is
     not shown. Unset `groups`: Needs you, Blocked, Running, Waiting, Open, Done.
     A `waiting` topic idle longer than `stale_after` (a Go duration, e.g.
-    `72h`) shows as `stalled`. More than one source makes a roll-up. With
+    `72h`) shows as `stalled`, and a `needs_you` topic as `stale`; both go
+    below the fresh topics of their group. `!inbox` has no `stale_after`. More than one source makes a roll-up. With
     `"collapse": {"states": ["done", "fyi"], "show": 5}`, each group that lists
     one of those states goes last, in a spoiler block with its count and its
     `show` newest topics (default 5). The view is one message that the relay
@@ -987,7 +988,9 @@ Zulip's ✔ does not mean "done", and the agent writes last in almost every
 topic. So each topic can carry a STATE that lasts across turns:
 
 - `needs_you` — the agent waits for your answer or decision. The topic name
-  shows `status_question` (⁇) in emoji mode.
+  shows `status_question` (⁇) in emoji mode. Your next message in the topic
+  (not a `!` command) sets it back to no state before the turn starts; the
+  agent can set `needs_you` again.
 - `fyi` — a result is there to read; nothing is needed from you.
 - `waiting` — work goes on without you (a build, a branch, a schedule).
 - `blocked` — the agent cannot continue, and an answer alone will not fix it.

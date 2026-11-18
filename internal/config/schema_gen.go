@@ -64,7 +64,7 @@ var Schema = []SchemaField{
 	{Key: "views[].groups", Type: "list of objects", Doc: "Groups are the sections, in order. Unset = DefaultViewGroups."},
 	{Key: "views[].groups[].title", Type: "string", Doc: "Title is the section heading."},
 	{Key: "views[].groups[].states", Type: "[]string", Doc: "States are the topic states in this section: needs_you, fyi, waiting, blocked, done, plus \"running\" (a turn runs now) and \"open\" (no state yet). A topic in no listed state is not shown."},
-	{Key: "views[].stale_after", Type: "string", Doc: "StaleAfter is how long a waiting topic may be idle before it shows as stalled, as a Go duration such as \"72h\". Unset = never."},
+	{Key: "views[].stale_after", Type: "string", Doc: "StaleAfter is how long a waiting or needs_you topic may be idle before it shows as stalled (waiting) or stale (needs_you), below the fresh topics of its group, as a Go duration such as \"72h\". Unset = never."},
 	{Key: "views[].collapse", Type: "object", Doc: "Collapse folds the groups that list one of its states into a spoiler block at the end of the view. Unset = nothing folds."},
 	{Key: "views[].collapse.states", Type: "[]string", Doc: "States are the states whose groups fold."},
 	{Key: "views[].collapse.show", Type: "int", Doc: "Show is how many of the newest topics a folded group lists. Unset = DefaultCollapseShow."},

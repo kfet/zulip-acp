@@ -183,3 +183,43 @@ func TestReasonMentionsAreSilenced(t *testing.T) {
 		t.Fatalf("= %q", got)
 	}
 }
+
+func TestClearStateIf(t *testing.T) {
+	j, path := tmpJournal(t)
+	c, _ := j.Ensure(Channel(1, "t"))
+	for _, id := range []string{"nope", c.ID} { // unknown; no state
+		if ok, err := j.ClearStateIf(id, StateNeedsYou); ok || err != nil {
+			t.Fatalf("%s: ok=%v err=%v", id, ok, err)
+		}
+	}
+	if _, _, err := j.SetState(c.ID, TopicState{State: StateWaiting}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := j.ClearStateIf(c.ID, StateNeedsYou); ok {
+		t.Fatal("cleared another state")
+	}
+	if _, _, err := j.SetState(c.ID, TopicState{State: StateNeedsYou}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.ClearStateIf(c.ID, StateNeedsYou); err == nil {
+		t.Fatal("want a write error")
+	}
+	_ = os.Chmod(dir, 0o700)
+	if c1, _ := j.LookupID(c.ID); c1.State == nil {
+		t.Fatal("a failed clear lost the state")
+	}
+	if ok, err := j.ClearStateIf(c.ID, StateNeedsYou); !ok || err != nil {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	j2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2, _ := j2.LookupID(c.ID); c2.State != nil {
+		t.Fatalf("state after reload = %+v", c2.State)
+	}
+}

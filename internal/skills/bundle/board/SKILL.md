@@ -42,7 +42,8 @@ prints every key with its doc. Read it before you change one; see the
   relay edits. It lists the topics of `sources`, grouped by state (`groups`:
   title + states, in order; states are the topic states plus `running` and
   `open`). A `waiting` topic idle longer than `stale_after` (e.g. `"72h"`)
-  shows as `stalled`. `collapse: {states, show}` puts the groups of those
+  shows as `stalled`, and a `needs_you` topic as `stale`; both go below the
+  fresh topics of their group. `collapse: {states, show}` puts the groups of those
   states last, in a spoiler block with the count and the `show` newest. The
   view refreshes about 5s after a change, every hour, and at start.
 - **`notify`** `{at, on_enter, sources}`: an edit does not notify, so the
@@ -60,7 +61,8 @@ prints every key with its doc. Read it before you change one; see the
   do with a topic: `needs_you`, `fyi`, `waiting`, `blocked`, `done`, with a
   short reason. This is what the board groups by. Set it only when it
   changes, and put the question itself in the topic: the reason shows only on
-  the board and in `!inbox`.
+  the board and in `!inbox`. A human message (not a `!` command) in a
+  `needs_you` topic clears the state to `open` before the turn starts.
 
 An archived, deleted, or moved-away topic leaves the board and loses its
 notice.

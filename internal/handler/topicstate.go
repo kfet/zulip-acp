@@ -66,6 +66,27 @@ func (h *Handler) noteActivity(convID string, turn bool) {
 	}
 }
 
+// clearNeedsYou opens a needs_you topic again: a human answered in it.
+// It runs when the message arrives, before the turn starts, so the
+// agent can set needs_you again. A failure is only logged. It reports
+// whether it cleared the state.
+func (h *Handler) clearNeedsYou(convID string) bool {
+	cleared, err := h.cfg.Journal.ClearStateIf(convID, journal.StateNeedsYou)
+	if err != nil {
+		h.cfg.Logf("handler: clearing needs_you of %s: %v", convID, err)
+		return false
+	}
+	if !cleared {
+		return false
+	}
+	h.cfg.Logf("handler: state of %s: %q → open by a reply", convID, journal.StateNeedsYou)
+	// No settleStatus here: a turn follows this message, and markBusy
+	// and endTurn set the topic name. A move now would make the routed
+	// conversation's topic stale.
+	h.viewsDirty()
+	return true
+}
+
 // SetTopicState is zulipmcp.Config.TopicState: the agent records the
 // state of the conversation sessionKey names.
 func (h *Handler) SetTopicState(sessionKey, state, reason string) (string, error) {

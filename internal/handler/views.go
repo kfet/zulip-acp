@@ -6,8 +6,9 @@
 // A view is ONE relay-edited message in a configured "channel/topic".
 // It lists the topics of its source channels, grouped by state. Each
 // line has a link, the age and the state. A topic in a waiting state
-// that is idle longer than StaleAfter shows as stalled. A view with
-// more than one source is a roll-up of all of them.
+// that is idle longer than StaleAfter shows as stalled; a needs_you
+// topic shows as stale. Stale topics go after the fresh ones of their
+// group. A view with more than one source is a roll-up of all of them.
 //
 // # How a view stays current
 //
@@ -16,7 +17,7 @@
 // moveConv, every Journal.Retire and RetireGone, and a schedule that is armed.
 // viewsDirty arms one refresh after ViewDebounce; more calls in that
 // time join it. RunViews refreshes at start and every hour, so ages
-// and the stalled mark move on without activity.
+// and the stale marks move on without activity.
 //
 // The view is ONE message, edited in place. A new one is posted only
 // when the edit fails; the old one is then deleted, or struck through
@@ -389,7 +390,13 @@ func (h *Handler) renderView(v config.ResolvedView, convs []journal.Conv) string
 		if len(cs) == 0 {
 			continue
 		}
-		sort.SliceStable(cs, func(a, b int) bool { return lastSeen(cs[a]) > lastSeen(cs[b]) })
+		// Fresh topics first, then stale ones; each part newest first.
+		sort.SliceStable(cs, func(a, b int) bool {
+			if sa, sb := isStale(v, cs[a], now), isStale(v, cs[b], now); sa != sb {
+				return sb
+			}
+			return lastSeen(cs[a]) > lastSeen(cs[b])
+		})
 		limit, fold := viewGroupMax, h.folds(v, g)
 		if fold {
 			limit = v.CollapseShow
@@ -424,6 +431,19 @@ func (h *Handler) folds(v config.ResolvedView, g int) bool {
 	return slices.ContainsFunc(v.Groups[g].States, func(st string) bool { return slices.Contains(v.Collapse, st) })
 }
 
+// staleLabel is the label of each state that can go stale.
+var staleLabel = map[string]string{journal.StateWaiting: "stalled", journal.StateNeedsYou: "stale"}
+
+// isStale reports whether c is in a state that can go stale and is idle
+// longer than v.StaleAfter.
+func isStale(v config.ResolvedView, c journal.Conv, now time.Time) bool {
+	if c.State == nil || v.StaleAfter <= 0 {
+		return false
+	}
+	_, ok := staleLabel[c.State.State]
+	return ok && now.Sub(time.UnixMilli(lastSeen(c))) > v.StaleAfter
+}
+
 // viewLine renders one topic of a view: link, age, state, reason.
 func (h *Handler) viewLine(v config.ResolvedView, c journal.Conv, now time.Time) string {
 	seen := lastSeen(c)
@@ -435,8 +455,8 @@ func (h *Handler) viewLine(v config.ResolvedView, c journal.Conv, now time.Time)
 		return line + "\n"
 	}
 	state := c.State.State
-	if state == journal.StateWaiting && v.StaleAfter > 0 && now.Sub(time.UnixMilli(seen)) > v.StaleAfter {
-		state = "stalled"
+	if isStale(v, c, now) {
+		state = staleLabel[state]
 	}
 	line += " · " + state
 	if c.State.SetBy == journal.SetByImport {

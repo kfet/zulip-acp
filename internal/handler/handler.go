@@ -1378,6 +1378,9 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 		}
 	}
 
+	if !passthrough && h.clearNeedsYou(conv.ID) {
+		conv.State = nil
+	}
 	if h.cfg.PerUserSessions {
 		conv.User, conv.UserName = m.SenderID, m.SenderName
 	}

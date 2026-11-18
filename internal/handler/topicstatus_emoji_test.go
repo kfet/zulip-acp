@@ -53,9 +53,9 @@ func TestEmojiTopicIsBusyThenBare(t *testing.T) {
 	}
 }
 
-// TestEmojiNeedsYouShowsTheQuestion: the state lasts across turns. A
-// turn that records nothing keeps the question; a turn that records
-// fyi clears it.
+// TestEmojiNeedsYouShowsTheQuestion: the agent's needs_you shows the
+// question. A human reply opens the topic; the agent can ask again in
+// the same turn, and a turn that records fyi clears the question.
 func TestEmojiNeedsYouShowsTheQuestion(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
@@ -66,10 +66,11 @@ func TestEmojiNeedsYouShowsTheQuestion(t *testing.T) {
 		t.Fatalf("topic = %q, want the question glyph", got)
 	}
 	lh.clearMoves()
+	lh.askDuring(t, journal.StateNeedsYou)
 	lh.seedTrigger("⁇ work")
 	lh.deliverTurn(t, "⁇ work", "a follow-up")
 	if got := lh.convTopic(t, id); got != "⁇ work" {
-		t.Fatalf("topic = %q, a turn that records nothing must keep the state", got)
+		t.Fatalf("topic = %q, the agent asked again", got)
 	}
 	lh.clearMoves()
 	lh.askDuring(t, journal.StateFYI)
@@ -90,9 +91,9 @@ func TestEmojiNeedsYouShowsTheQuestion(t *testing.T) {
 	}
 }
 
-// TestEmojiSilentTurnKeepsTheState: a turn that posts nothing changes
-// nothing the user sees, so the question stays.
-func TestEmojiSilentTurnKeepsTheState(t *testing.T) {
+// TestEmojiSilentTurnClearsTheState: a human message opens the topic
+// even when the turn it starts posts nothing.
+func TestEmojiSilentTurnClearsTheState(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
 	lh.askDuring(t, journal.StateNeedsYou)
@@ -107,14 +108,15 @@ func TestEmojiSilentTurnKeepsTheState(t *testing.T) {
 	if !lh.logged("abstained") {
 		t.Fatalf("the turn did not abstain; logs %v", lh.logs)
 	}
-	if got := lh.convTopic(t, id); got != "⁇ work" {
-		t.Fatalf("topic = %q, a silent turn must keep the question", got)
+	if got := lh.convTopic(t, id); got != "work" {
+		t.Fatalf("topic = %q, a human message must clear the question", got)
 	}
 }
 
-// TestEmojiSentinelOnlyAnswerKeepsTheState: the addressed-turn safety
-// net retracts a sentinel-only answer; that is a silent turn too.
-func TestEmojiSentinelOnlyAnswerKeepsTheState(t *testing.T) {
+// TestEmojiSentinelOnlyAnswerClearsTheState: the addressed-turn safety
+// net retracts a sentinel-only answer; the human message still opened
+// the topic.
+func TestEmojiSentinelOnlyAnswerClearsTheState(t *testing.T) {
 	lh := emojiHarness(t)
 	lh.seedTrigger("work")
 	lh.askDuring(t, journal.StateNeedsYou)
@@ -125,7 +127,7 @@ func TestEmojiSentinelOnlyAnswerKeepsTheState(t *testing.T) {
 	lh.a.mu.Unlock()
 	lh.seedTrigger("⁇ work")
 	lh.deliverTurn(t, "⁇ work", mention("anything?"))
-	if got := lh.convTopic(t, id); got != "⁇ work" {
+	if got := lh.convTopic(t, id); got != "work" {
 		t.Fatalf("topic = %q, logs %v", got, lh.logs)
 	}
 }

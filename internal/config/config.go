@@ -122,8 +122,10 @@ type View struct {
 	Sources []string `json:"sources"`
 	// Groups are the sections, in order. Unset = DefaultViewGroups.
 	Groups []ViewGroup `json:"groups,omitempty"`
-	// StaleAfter is how long a waiting topic may be idle before it
-	// shows as stalled, as a Go duration such as "72h". Unset = never.
+	// StaleAfter is how long a waiting or needs_you topic may be idle
+	// before it shows as stalled (waiting) or stale (needs_you), below
+	// the fresh topics of its group, as a Go duration such as "72h".
+	// Unset = never.
 	StaleAfter string `json:"stale_after,omitempty"`
 	// Collapse folds the groups that list one of its states into a
 	// spoiler block at the end of the view. Unset = nothing folds.

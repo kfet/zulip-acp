@@ -113,6 +113,21 @@ func (j *Journal) SetState(convID string, s TopicState) (prev TopicState, change
 	return prev, true, j.commit(func() { c.State, c.ActivitySince = old, oldSince })
 }
 
+// ClearStateIf removes the state of conversation convID when it is
+// state, so the topic is open again. It reports whether it removed a
+// state. An unknown conversation, or one in another state, is a no-op.
+func (j *Journal) ClearStateIf(convID, state string) (bool, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.byID[convID]
+	if !ok || c.State == nil || c.State.State != state {
+		return false, nil
+	}
+	old := c.State
+	c.State = nil
+	return true, j.commit(func() { c.State = old })
+}
+
 // NoteActivity records that somebody wrote in conversation convID now.
 // turn is true when a turn starts: it also counts toward ActivitySince.
 func (j *Journal) NoteActivity(convID string, turn bool) error {

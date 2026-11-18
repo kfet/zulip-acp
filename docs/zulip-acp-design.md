@@ -954,6 +954,11 @@ none of its own. See *The topic status mark*.
 
 Decisions, and why:
 
+- **A reply clears `needs_you`.** A human message in a `needs_you` topic
+  (not a bot, a reaction or a relay command) removes the state when it is
+  routed, before the turn starts, so the agent can set `needs_you` again.
+  The topic name is left to the turn's own status moves.
+
 - **Change-only.** The agent records a state with the `topic_state` loopback
   tool only when it changes. The per-turn `topic_status` tool it replaces made
   every turn a status report, and asking the agent to restate the state every
@@ -1213,7 +1218,7 @@ humans drop tasks and see the state of all of them. Each is useful alone.
   is in the journal under the view key (`view:<at>`), so a restart edits the
   same message. `viewsDirty` is called at every place that changes what a view
   shows; it arms one refresh after `ViewDebounce`. `RunViews` refreshes at start
-  and every hour, so ages and the stalled mark move on.
+  and every hour, so ages and the stale marks move on.
 - **Notify**. Notice ids are in the journal under the notify key
   (`notify:<at>:<states>`), per conversation, so a notice is posted once when
   a topic enters a state and deleted when it leaves it.

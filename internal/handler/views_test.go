@@ -550,3 +550,24 @@ func (hh *harness) logCount(sub string) int {
 	}
 	return n
 }
+
+func TestViewStaleNeedsYouGoesLast(t *testing.T) {
+	bh := newViewHarness(t)
+	bh.conv(t, "old-ask", journal.StateNeedsYou, journal.SetByAgent, "still?", 5*24*time.Hour)
+	bh.conv(t, "new-ask", journal.StateNeedsYou, journal.SetByAgent, "", time.Hour)
+	bh.conv(t, "older-ask", journal.StateNeedsYou, journal.SetByAgent, "", 6*24*time.Hour)
+	text := bh.h.renderView(testView, bh.j.Convs())
+	want := "**Needs you** (3)\n" +
+		"- #**fleet>new-ask** · 1h · needs_you\n" +
+		"- #**fleet>old-ask** · 5d · stale — still?\n" +
+		"- #**fleet>older-ask** · 6d · stale\n"
+	if !strings.Contains(text, want) {
+		t.Errorf("view lacks %q:\n%s", want, text)
+	}
+	// Unset stale_after: never stale.
+	never := testView
+	never.StaleAfter = 0
+	if text := bh.h.renderView(never, bh.j.Convs()); strings.Contains(text, "stale") {
+		t.Errorf("stale without stale_after:\n%s", text)
+	}
+}

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A human message (not a bot message, a reaction or a relay command) in a `needs_you` topic sets the topic back to open before the turn starts. The board and `!inbox` show the change; the agent can set `needs_you` again.
+- `views[].stale_after` applies to `needs_you` too: an idle `needs_you` topic shows as `stale`. Stale and stalled topics go below the fresh topics of their group. `!inbox` has no `stale_after` and does not mark stale topics.
+
 ## [0.82.0] - 2026-11-17
 
 ### Changed
