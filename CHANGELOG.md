@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.3] - 2026-11-18
+
+### Removed
+
+- The system prompt no longer maps the `:graduate:` reaction to the fir mood extension's `lesson_add` tool. The relay must not depend on one agent's extension tools.
+
 ## [0.82.2] - 2026-11-18
 
 ### Fixed
