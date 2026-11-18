@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-11-17
+
 ### Changed
 
 - Schedules have budgets instead of a depth limit (acp-kit v0.51.0). Each schedule lives until `until` (default 24h, at most 7 days) or `max_fires` fires (default 20). A scheduled turn can re-time its own schedule but cannot extend its budget or start a new repeat.
