@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Text the agent writes after a tool call now starts a new paragraph. Before, it joined the earlier text with no break ("to now.The logs") or attached to the last row of a table.
+- The relay puts a blank line before and after a pipe table before it posts. A label line directly above a table no longer turns the table into plain text.
+- The system prompt tells the agent to put a blank line before and after a table.
+
 ## [0.82.1] - 2026-11-18
 
 ### Changed

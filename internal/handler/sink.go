@@ -216,7 +216,7 @@ func (s *streamingSink) appendMessage(chunk string) {
 		if rest, ok := strings.CutPrefix(h, p); ok && strings.HasPrefix(rest, "\n") {
 			s.held.Reset()
 			s.afterTool = false
-			s.show(rest)
+			s.showSegment(rest)
 			return
 		}
 	}
@@ -248,7 +248,32 @@ func (s *streamingSink) releaseHeld() {
 	if t := strings.TrimSpace(held); t != "" && slices.Contains(s.repeatables(), t) {
 		return
 	}
-	s.show(held)
+	s.showSegment(held)
+}
+
+// showSegment shows the first text after a tool call. It starts a new
+// paragraph: the agent wrote the text before and after the call as
+// separate pieces, and joined with no break they ran together ("to
+// now.The logs…") or glued the next sentence onto the last row of a
+// table. Caller holds msgMu.
+func (s *streamingSink) showSegment(text string) {
+	s.show(segmentPad(s.split.Transcript(), text) + text)
+}
+
+// segmentPad is the newlines to put between prev and next so that next
+// starts a new paragraph. It is "" when either side is blank or the
+// break is already there.
+func segmentPad(prev, next string) string {
+	if strings.TrimSpace(prev) == "" || strings.TrimSpace(next) == "" {
+		return ""
+	}
+	tail := strings.TrimRight(prev, " \t")
+	have := len(tail) - len(strings.TrimRight(tail, "\n"))
+	have += len(next) - len(strings.TrimLeft(next, "\n"))
+	if have >= 2 {
+		return ""
+	}
+	return strings.Repeat("\n", 2-have)
 }
 
 // show appends answer text to the splitter. Caller holds msgMu.

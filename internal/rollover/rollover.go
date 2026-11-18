@@ -328,7 +328,7 @@ func (s *Splitter) flushLocked(ctx context.Context) error {
 		body, id := m.body, m.id
 		s.mu.Unlock()
 		if id == 0 {
-			newID, err := s.cfg.Poster.Post(ctx, body)
+			newID, err := s.cfg.Poster.Post(ctx, FixTables(body))
 			if err != nil {
 				return err
 			}
@@ -337,7 +337,7 @@ func (s *Splitter) flushLocked(ctx context.Context) error {
 			s.mu.Unlock()
 			continue
 		}
-		if err := s.cfg.Poster.Edit(ctx, id, body); err != nil {
+		if err := s.cfg.Poster.Edit(ctx, id, FixTables(body)); err != nil {
 			return err
 		}
 		s.mu.Lock()
@@ -419,7 +419,7 @@ func (s *Splitter) Repost(ctx context.Context) error {
 
 	fresh := make([]int64, 0, len(bodies))
 	for _, body := range bodies {
-		id, err := s.cfg.Poster.Post(ctx, body)
+		id, err := s.cfg.Poster.Post(ctx, FixTables(body))
 		if err != nil {
 			var errs []error
 			errs = append(errs, fmt.Errorf("rollover: re-posting for notification: %w", err))

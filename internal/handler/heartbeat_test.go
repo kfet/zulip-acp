@@ -159,10 +159,12 @@ func TestSinkDropsRepeatAfterToolCall(t *testing.T) {
 		{"identical", "Para one.\n\nPara two.", []string{"\n\nPara ", "one.\n\nPara two."}, "Para one.\n\nPara two."},
 		{"one paragraph", "Para one.\n\nPara two.", []string{"Para two."}, "Para one.\n\nPara two."},
 		{"repeat then new", "Para one.", []string{"Para one.", "\n\nNew bit."}, "Para one.\n\nNew bit."},
-		{"new text", "Para one.", []string{"Para", " zwei."}, "Para one.Para zwei."},
-		{"prefix only kept", "Para one.", []string{"Para"}, "Para one.Para"},
+		{"new text", "Para one.", []string{"Para", " zwei."}, "Para one.\n\nPara zwei."},
+		{"prefix only kept", "Para one.", []string{"Para"}, "Para one.\n\nPara"},
 		{"nothing before", "", []string{"Hello"}, "Hello"},
-		{"earlier paragraph kept", "Done.\n\nPara two.", []string{"Done."}, "Done.\n\nPara two.Done."},
+		{"earlier paragraph kept", "Done.\n\nPara two.", []string{"Done."}, "Done.\n\nPara two.\n\nDone."},
+		{"one newline there", "Para one.\n", []string{"Next."}, "Para one.\n\nNext."},
+		{"table then text", "| a |\n|---|\n| 1 |", []string{"Ready."}, "| a |\n|---|\n| 1 |\n\nReady."},
 		{"blank first", "Para one.", []string{"\n", "Para one."}, "Para one."},
 	}
 	for _, tc := range cases {
@@ -240,5 +242,21 @@ func TestSentinelWithAttachmentStillPosts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("attachment lost: %q", hh.z.stored())
+	}
+}
+
+func TestSegmentPad(t *testing.T) {
+	for _, tc := range []struct{ prev, next, want string }{
+		{"", "x", ""},
+		{"a", "  ", ""},
+		{"a", "b", "\n\n"},
+		{"a\n", "b", "\n"},
+		{"a", "\nb", "\n"},
+		{"a\n\n", "b", ""},
+		{"a \t", "b", "\n\n"},
+	} {
+		if got := segmentPad(tc.prev, tc.next); got != tc.want {
+			t.Errorf("segmentPad(%q, %q) = %q, want %q", tc.prev, tc.next, got, tc.want)
+		}
 	}
 }
