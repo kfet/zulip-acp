@@ -291,19 +291,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	ambient, err := cfg.ResolveAmbient(streams)
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
-	autotopic, err := cfg.ResolveAutotopic(streams)
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
-	routes, err := resolveRoutes(ctx, cfg, zc, streams, explicit, autotopic, me)
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
+	ambient := cfg.ResolveAmbient(streams)
+	autotopic := cfg.ResolveAutotopic(streams)
+	routes := resolveRoutes(ctx, cfg, zc, streams, explicit, autotopic, me)
 	follow := cfg.FollowsSubscriptions()
+	if err := servesSomething(explicit, follow, cfg.DMs, cfg.Degraded()); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	served := channels.New(channels.Config{Explicit: explicit, Ambient: ambient, Autotopic: autotopic, Follow: follow, Logf: log.Printf})
 	if follow {
 		// The set itself is seeded by the OnRegister hook below, which
@@ -438,14 +432,10 @@ func main() {
 	// taps :wastebasket: would mean a warning posted for an action the
 	// relay cannot perform.
 	archiveID, archiveName, archiveLimit := resolveArchive(ctx, cfg, zc, streams, served, me)
-	views, notifies, err := resolveViews(cfg, streams, served)
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
-	lifecycle, err := resolveLifecycle(cfg, streams, archiveID, archiveLimit)
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
+	views, notifies := resolveViews(cfg, streams, served)
+	lifecycle := resolveLifecycle(cfg, streams, archiveID, archiveLimit)
+	degraded := cfg.Degraded()
+	logDegraded(degraded, log.Printf)
 	deleter, deleteReady, err := resolveDeleter(ctx, cfg, me)
 	if err != nil {
 		log.Fatalf("zulip-acp: %v", err)
@@ -723,6 +713,7 @@ func main() {
 		Client:             zc,
 		UpdateDecide:       updateDecide,
 		UpdateStatus:       updateStatus,
+		Degraded:           degradedLines(degraded),
 		Mark:               markOrNil(mark),
 		Updater:            upd,
 		Agent:              agent,
@@ -811,6 +802,9 @@ func main() {
 	refusedReload.Store(&notify)
 	if cfgFallback != nil {
 		reportFallback(ctx, zc.SendDirectMessage, cfg.UpdateOwnerIDs, fallbackNotice(*configPath, cfgFallback), log.Printf)
+	}
+	if len(degraded) > 0 {
+		dmOwners(ctx, zc.SendDirectMessage, cfg.UpdateOwnerIDs, degradedNotice(*configPath, degraded), log.Printf)
 	}
 	var appServer *http.Server
 	if apps != nil {

@@ -112,12 +112,56 @@ func fallbackNotice(path string, why error) string {
 // the notice and sends it as a DM to the update owners, if any.
 func reportFallback(ctx context.Context, send func(context.Context, []int64, string) (int64, error), owners []int64, notice string, logf func(string, ...any)) {
 	logf("config: ERROR %s", notice)
+	dmOwners(ctx, send, owners, notice, logf)
+}
+
+// dmOwners sends notice as a DM to the update owners, if any. A send
+// that fails is logged: the log line is the alert of last resort.
+func dmOwners(ctx context.Context, send func(context.Context, []int64, string) (int64, error), owners []int64, notice string, logf func(string, ...any)) {
 	if len(owners) == 0 {
 		return
 	}
 	if _, err := send(ctx, owners, notice); err != nil {
-		logf("config: cannot DM the owners about the config fallback: %v", err)
+		logf("config: cannot DM the owners about the config problem: %v", err)
 	}
+}
+
+// degradedLines renders each degraded entry as one line.
+func degradedLines(d []config.Degraded) []string {
+	out := make([]string, 0, len(d))
+	for _, x := range d {
+		out = append(out, x.String())
+	}
+	return out
+}
+
+// logDegraded logs one loud line per degraded entry.
+func logDegraded(d []config.Degraded, logf func(string, ...any)) {
+	for _, l := range degradedLines(d) {
+		logf("config: DEGRADED %s", l)
+	}
+}
+
+// degradedNotice is the owner DM of a start with entries turned off.
+func degradedNotice(path string, d []config.Degraded) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ zulip-acp started DEGRADED: %d entries of %s are OFF, most often because they name a channel that Zulip does not have (renamed or deleted). Everything else works.\n", len(d), path)
+	for _, l := range degradedLines(d) {
+		fmt.Fprintf(&b, "- %s\n", l)
+	}
+	fmt.Fprintf(&b, "Fix the names in %s and reload (`check-config` checks only the file, not the channel names on the server). `!status` lists this until then.", path)
+	return b.String()
+}
+
+// servesSomething is the one fatal outcome of missing channels: a
+// relay with no channel left to serve and DMs off does nothing at all,
+// and running it would only hide that.
+func servesSomething(explicit map[int64]string, follow, dms bool, d []config.Degraded) error {
+	if len(explicit) > 0 || follow || dms {
+		return nil
+	}
+	lines := degradedLines(d)
+	return fmt.Errorf("nothing to serve: no configured channel is visible to the bot, and \"dms\" is off. Fix \"channels\" or set \"dms\": true.\n  %s", strings.Join(lines, "\n  "))
 }
 
 // readyToApply is the auto-update idle gate. An invalid config file

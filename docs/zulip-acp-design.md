@@ -1112,6 +1112,18 @@ Three properties this shape buys:
 
 - An **empty** `channels` list stays fatal. "Serve the whole realm" is now
   expressible, but only as a deliberate `"*"`, never as a missing key.
+- A config entry that names a channel Zulip does not have (a renamed or deleted
+  channel) **degrades, it does not kill the relay**. Only that entry is off:
+  one `channels` / `ambient_channels` / `autotopic_channels` item, one route,
+  a second route from one channel, one view, one notify entry, one lifecycle
+  rule (a rule or view with a missing
+  source is off as a whole — dropping just the source would widen it), or a
+  named `archive_channel`. Each is logged as `config: DEGRADED …`, sent once
+  per start as a DM to the update owners, and listed under `!status`. Static
+  checks (and the last-good fallback) cannot catch this, because only the
+  server knows the channel names. The relay stays fatal only when nothing is
+  left to serve: no visible channel, no `"*"`, and `"dms"` off. A SIGHUP
+  reload re-execs through the same start path, so the same rules apply.
 - A followed queue is **never narrowed**: the set can grow at any moment, and a
   narrow decided at boot would silently under-deliver forever after.
 - Events are lost while a queue is dead, so the set is **resynced on every

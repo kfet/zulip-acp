@@ -186,18 +186,20 @@ type ResolvedLifecycle struct {
 }
 
 // ResolveLifecycle maps the lifecycle rules onto channel ids. Validate
-// has already checked their shape.
-func (c *Config) ResolveLifecycle(available []zulipproto.Stream) ([]ResolvedLifecycle, error) {
+// has already checked their shape. A rule that names a missing channel
+// is turned off and recorded (see Degraded).
+func (c *Config) ResolveLifecycle(available []zulipproto.Stream) []ResolvedLifecycle {
 	var out []ResolvedLifecycle
 	for i, l := range c.Lifecycle {
-		src, err := resolveList(fmt.Sprintf("lifecycle[%d].sources", i), l.Sources, available)
-		if err != nil {
-			return nil, err
+		src, ok := c.lookupList(fmt.Sprintf("lifecycle[%d].sources", i), l.Sources,
+			fmt.Sprintf("lifecycle[%d] is OFF: this rule archives no topic", i), available)
+		if !ok {
+			continue
 		}
 		idle, _ := time.ParseDuration(l.When.Idle)
 		out = append(out, ResolvedLifecycle{States: l.When.States, Idle: idle, PrefixSource: l.PrefixSource, Sources: src})
 	}
-	return out, nil
+	return out
 }
 
 func (c *Config) validateLifecycle() error {
@@ -268,6 +270,9 @@ var reservedQuickEmojis = []string{"wastebasket", "fork_and_knife", "gear", "www
 
 // Config is the operator-facing JSON config.
 type Config struct {
+	// degraded collects the entries the Resolve* calls turned off.
+	degraded []Degraded
+
 	// Site is the Zulip base URL, e.g. https://zulip.example.com.
 	Site string `json:"site,omitempty"`
 
@@ -1262,9 +1267,22 @@ func (c *Config) GetMaxInlineImagePixels() int {
 // Zulip channel, using the same name-or-id rules as ResolveChannels.
 //
 // It returns ok=false when archiving is disabled or the channel is not
-// visible to the bot. That is NOT an error: a missing archive channel
+// visible to the bot. A channel that is not visible is recorded (see
+// Degraded). That is NOT an error: a missing archive channel
 // disables one convenience control, and refusing to start the relay
 // over it would be wildly out of proportion. The caller logs why.
+// archiveOff is the effect of a missing archive channel.
+const archiveOff = "topic archiving is OFF: :wastebasket: and !archive move nothing, and no lifecycle rule can act"
+
+// degradeArchive records a missing archive channel. Only one the
+// operator NAMED is a problem: the built-in default is a convenience,
+// and a realm without it has simply not opted in.
+func (c *Config) degradeArchive(want string) {
+	if c.ArchiveChannel != nil {
+		c.degrade("archive_channel", want, archiveOff)
+	}
+}
+
 func (c *Config) ResolveArchiveChannel(available []zulipproto.Stream) (zulipproto.Stream, bool) {
 	want := c.GetArchiveChannel()
 	if want == "" {
@@ -1276,6 +1294,7 @@ func (c *Config) ResolveArchiveChannel(available []zulipproto.Stream) (zulipprot
 				return s, true
 			}
 		}
+		c.degradeArchive(want)
 		return zulipproto.Stream{}, false
 	}
 	for _, s := range available {
@@ -1283,6 +1302,7 @@ func (c *Config) ResolveArchiveChannel(available []zulipproto.Stream) (zulipprot
 			return s, true
 		}
 	}
+	c.degradeArchive(want)
 	return zulipproto.Stream{}, false
 }
 
@@ -1400,43 +1420,48 @@ type ResolvedNotify struct {
 	OnEnter  []string
 }
 
-// ResolveRoutes maps the routes onto channel ids. Two routes from one
-// channel are an error.
-func (c *Config) ResolveRoutes(available []zulipproto.Stream) ([]ResolvedRoute, error) {
+// ResolveRoutes maps the routes onto channel ids. A route that names a
+// missing channel, or a second route from one channel, is turned off
+// and recorded (see Degraded).
+func (c *Config) ResolveRoutes(available []zulipproto.Stream) []ResolvedRoute {
 	var out []ResolvedRoute
 	seen := map[int64]bool{}
 	for i, r := range c.Routes {
 		key := fmt.Sprintf("routes[%d]", i)
-		from, err := resolveChannel(key+".from", r.From, available)
-		if err != nil {
-			return nil, err
-		}
-		to, err := resolveChannel(key+".to", r.To, available)
-		if err != nil {
-			return nil, err
+		effect := fmt.Sprintf("%s is OFF: a new topic in #%s is NOT moved to #%s. It stays in #%s, and if the relay serves #%s (it is in \"channels\", or \"channels\" is [%q]), its turns run THERE",
+			key, r.From, r.To, r.From, r.From, ChannelSentinel)
+		from, okFrom := c.lookup(key+".from", r.From, effect, available)
+		to, okTo := c.lookup(key+".to", r.To, effect, available)
+		if !okFrom || !okTo {
+			continue
 		}
 		if seen[from] {
-			return nil, fmt.Errorf("%s: channel %d has two routes", key, from)
+			c.degraded = append(c.degraded, Degraded{
+				Field: key + ".from", Want: strings.TrimSpace(r.From),
+				Why:    fmt.Sprintf("channel %q already has a route", r.From),
+				Effect: key + " is OFF: the earlier route from this channel is used",
+				Fix:    "keep one route per channel",
+			})
+			continue
 		}
 		seen[from] = true
 		out = append(out, ResolvedRoute{From: from, To: to, LinkBack: r.LinkBack})
 	}
-	return out, nil
+	return out
 }
 
 // ResolveViews maps the views and the notify entries onto channel ids.
-// Validate has already checked their shape.
-func (c *Config) ResolveViews(available []zulipproto.Stream) ([]ResolvedView, []ResolvedNotify, error) {
+// Validate has already checked their shape. An entry that names a
+// missing channel is turned off and recorded (see Degraded).
+func (c *Config) ResolveViews(available []zulipproto.Stream) ([]ResolvedView, []ResolvedNotify) {
 	var views []ResolvedView
 	for i, v := range c.Views {
 		key := fmt.Sprintf("views[%d]", i)
-		id, topic, err := resolveAt(key, v.At, available)
-		if err != nil {
-			return nil, nil, err
-		}
-		src, err := resolveList(key+".sources", v.Sources, available)
-		if err != nil {
-			return nil, nil, err
+		effect := fmt.Sprintf("%s is OFF: the board at %s is NOT updated", key, v.At)
+		id, topic, okAt := c.lookupAt(key+".at", v.At, effect, available)
+		src, okSrc := c.lookupList(key+".sources", v.Sources, effect, available)
+		if !okAt || !okSrc {
+			continue
 		}
 		stale, _ := v.Stale()
 		rv := ResolvedView{Key: "view:" + v.At, StreamID: id, Topic: topic, Sources: src, Groups: v.GetGroups(), StaleAfter: stale}
@@ -1451,48 +1476,15 @@ func (c *Config) ResolveViews(available []zulipproto.Stream) ([]ResolvedView, []
 	var notes []ResolvedNotify
 	for i, n := range c.Notify {
 		key := fmt.Sprintf("notify[%d]", i)
-		id, topic, err := resolveAt(key, n.At, available)
-		if err != nil {
-			return nil, nil, err
-		}
-		src, err := resolveList(key+".sources", n.Sources, available)
-		if err != nil {
-			return nil, nil, err
+		effect := fmt.Sprintf("%s is OFF: no notice is posted at %s", key, n.At)
+		id, topic, okAt := c.lookupAt(key+".at", n.At, effect, available)
+		src, okSrc := c.lookupList(key+".sources", n.Sources, effect, available)
+		if !okAt || !okSrc {
+			continue
 		}
 		notes = append(notes, ResolvedNotify{Key: fmt.Sprintf("notify:%s:%s", n.At, strings.Join(n.OnEnter, ",")), StreamID: id, Topic: topic, Sources: src, OnEnter: n.OnEnter})
 	}
-	return views, notes, nil
-}
-
-// resolveAt resolves "channel/topic".
-func resolveAt(key, at string, available []zulipproto.Stream) (int64, string, error) {
-	ch, topic, _ := splitAt(at)
-	id, err := resolveChannel(key+".at", ch, available)
-	return id, topic, err
-}
-
-// resolveList resolves a list of channels; nil for an empty list.
-func resolveList(key string, wants []string, available []zulipproto.Stream) ([]int64, error) {
-	var out []int64
-	for _, w := range wants {
-		id, err := resolveChannel(key, w, available)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, nil
-}
-
-// resolveChannel finds one channel by name or id.
-func resolveChannel(key, want string, available []zulipproto.Stream) (int64, error) {
-	want = strings.TrimSpace(want)
-	for _, s := range available {
-		if s.Name == want || strconv.FormatInt(s.StreamID, 10) == want {
-			return s.StreamID, nil
-		}
-	}
-	return 0, fmt.Errorf("%s: channel %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", key, want)
+	return views, notes
 }
 
 // GetAgentCmd returns the configured agent argv or the default.
@@ -1517,6 +1509,9 @@ func (c *Config) GetAgentCmd() []string {
 // asks for explicitly, never something a missing key produces. The one
 // exception is a DM-only relay ("dms": true with no channels), which
 // serves no channel at all.
+//
+// An entry that names a missing channel is skipped and recorded (see
+// Degraded). Whether anything is left to serve is the caller's call.
 func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]string, error) {
 	if len(c.Channels) == 0 {
 		if c.DMs {
@@ -1527,82 +1522,46 @@ func (c *Config) ResolveChannels(available []zulipproto.Stream) (map[int64]strin
 		}
 		return nil, fmt.Errorf("no channels configured — set \"channels\" to the channel names or ids the relay should serve, or to [%q] to serve every channel the bot is subscribed to, or set \"dms\": true to serve direct messages only", ChannelSentinel)
 	}
-	byName := make(map[string]zulipproto.Stream, len(available))
-	byID := make(map[int64]zulipproto.Stream, len(available))
-	for _, s := range available {
-		byName[s.Name] = s
-		byID[s.StreamID] = s
+	wants := make([]string, 0, len(c.Channels))
+	for _, w := range c.Channels {
+		if strings.TrimSpace(w) != ChannelSentinel {
+			wants = append(wants, w)
+		}
 	}
-	out := make(map[int64]string, len(c.Channels))
-	for _, want := range c.Channels {
-		want = strings.TrimSpace(want)
-		if want == ChannelSentinel {
-			continue
-		}
-		if id, err := strconv.ParseInt(want, 10, 64); err == nil {
-			s, ok := byID[id]
-			if !ok {
-				return nil, fmt.Errorf("channel id %d not visible to the bot — subscribe it to the channel", id)
-			}
-			out[s.StreamID] = s.Name
-			continue
-		}
-		s, ok := byName[want]
-		if !ok {
-			return nil, fmt.Errorf("channel %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", want)
-		}
-		out[s.StreamID] = s.Name
-	}
-	return out, nil
+	return c.resolveNamed("channels", wants, "the relay does NOT serve this channel", available), nil
 }
 
 // ResolveAmbient maps the configured ambient_channels names/ids onto
 // Zulip channel ids, using the same rules as ResolveChannels. Unlike
 // ResolveChannels an empty list is fine — it simply yields an empty
 // set, meaning "no ambient channels, mention-gate everywhere".
-func (c *Config) ResolveAmbient(available []zulipproto.Stream) (map[int64]string, error) {
-	return resolveNamed("ambient_channels", c.AmbientChannels, available)
+func (c *Config) ResolveAmbient(available []zulipproto.Stream) map[int64]string {
+	return c.resolveNamed("ambient_channels", c.AmbientChannels, "this channel is NOT ambient: a message there needs an @-mention", available)
 }
 
 // ResolveAutotopic maps the configured autotopic_channels names/ids
 // onto Zulip channel ids. An empty list yields an empty set, meaning
 // "general chat is an ordinary topic everywhere".
-func (c *Config) ResolveAutotopic(available []zulipproto.Stream) (map[int64]string, error) {
-	return resolveNamed("autotopic_channels", c.AutotopicChannels, available)
+func (c *Config) ResolveAutotopic(available []zulipproto.Stream) map[int64]string {
+	return c.resolveNamed("autotopic_channels", c.AutotopicChannels, "this channel is NOT autotopic: its general chat is an ordinary topic", available)
 }
 
 // resolveNamed resolves a secondary channel list — one that modifies
 // behaviour in channels the relay already serves — onto stream ids.
 // key names the config field, so the operator is told which list is
-// wrong.
-func resolveNamed(key string, wants []string, available []zulipproto.Stream) (map[int64]string, error) {
-	if len(wants) == 0 {
-		return map[int64]string{}, nil
-	}
-	byName := make(map[string]zulipproto.Stream, len(available))
-	byID := make(map[int64]zulipproto.Stream, len(available))
-	for _, s := range available {
-		byName[s.Name] = s
-		byID[s.StreamID] = s
-	}
+// wrong. A missing channel is skipped and recorded (see Degraded).
+func (c *Config) resolveNamed(key string, wants []string, effect string, available []zulipproto.Stream) map[int64]string {
 	out := make(map[int64]string, len(wants))
-	for _, want := range wants {
-		want = strings.TrimSpace(want)
-		if id, err := strconv.ParseInt(want, 10, 64); err == nil {
-			s, ok := byID[id]
-			if !ok {
-				return nil, fmt.Errorf("%s id %d not visible to the bot — subscribe it to the channel", key, id)
-			}
-			out[s.StreamID] = s.Name
-			continue
-		}
-		s, ok := byName[want]
-		if !ok {
-			return nil, fmt.Errorf("%s %q not visible to the bot — check the name (Zulip channel names are case-sensitive) and that the bot is subscribed", key, want)
-		}
-		out[s.StreamID] = s.Name
+	names := make(map[int64]string, len(available))
+	for _, s := range available {
+		names[s.StreamID] = s.Name
 	}
-	return out, nil
+	for _, want := range wants {
+		if id, ok := c.lookup(key, want, effect, available); ok {
+			out[id] = names[id]
+		}
+	}
+	return out
 }
 
 // FollowsSubscriptions reports whether the channels list carries the

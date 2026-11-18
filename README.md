@@ -264,6 +264,13 @@ Upgrades are never a hand-placed binary: `zulip-acp update` (below).
   still has to be subscribed to *receive* events from a private channel.) An **empty**
   `channels` list stays a fatal error — "everything" must be asked for, never
   defaulted into.
+- **A channel name that Zulip does not have turns off only the entry that
+  names it.** After a channel is renamed or deleted, the relay starts anyway:
+  that route, view, notify entry, lifecycle rule, list item or
+  `archive_channel` is off, and the relay says so in its log
+  (`config: DEGRADED …`), in a DM to the update owners, and under `!status`.
+  `check-config` cannot catch this — only the server knows the channel names.
+  The relay refuses to start only when nothing is left to serve.
 
 ## Commands
 

@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 func noEnv(string) string { return "" }
@@ -127,6 +130,59 @@ func TestReportFallback(t *testing.T) {
 	reportFallback(context.Background(), fail, []int64{7}, notice, logf)
 	if len(logs) != 2 || !strings.Contains(logs[1], "down") {
 		t.Fatalf("send failure not logged: %q", logs)
+	}
+}
+
+// TestDegraded covers the start of a relay whose config names channels
+// Zulip does not have: one loud log line per entry, one owner DM that
+// says what is off, and the one case that stays fatal.
+func TestDegraded(t *testing.T) {
+	archive := "old-archive"
+	cfg := &config.Config{
+		Channels:       []string{"*"},
+		Routes:         []config.Route{{From: "hp-board", To: "a"}},
+		Views:          []config.View{{At: "gone/board"}},
+		ArchiveChannel: &archive,
+	}
+	streams := []zulipproto.Stream{{StreamID: 4, Name: "a"}}
+	cfg.ResolveRoutes(streams)
+	cfg.ResolveViews(streams)
+	cfg.ResolveArchiveChannel(streams)
+	d := cfg.Degraded()
+
+	var logs []string
+	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	logDegraded(d, logf)
+	if len(logs) != 3 || !strings.HasPrefix(logs[0], "config: DEGRADED routes[0].from: channel \"hp-board\"") {
+		t.Fatalf("logs = %q", logs)
+	}
+	notice := degradedNotice("/c.json", d)
+	for _, want := range []string{"started DEGRADED", "3 entries of /c.json are OFF", "stays in #hp-board", "its turns run THERE",
+		"board at gone/board is NOT updated", "topic archiving is OFF", "checks only the file", "`!status`"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice lacks %q: %s", want, notice)
+		}
+	}
+	var sent string
+	send := func(_ context.Context, _ []int64, s string) (int64, error) { sent = s; return 1, nil }
+	dmOwners(context.Background(), send, []int64{7}, notice, logf)
+	if sent != notice {
+		t.Fatalf("sent %q", sent)
+	}
+
+	// Nothing to serve is the one fatal case.
+	for _, tc := range []struct {
+		explicit    map[int64]string
+		follow, dms bool
+		ok          bool
+	}{{nil, false, false, false}, {map[int64]string{4: "a"}, false, false, true}, {nil, true, false, true}, {nil, false, true, true}} {
+		err := servesSomething(tc.explicit, tc.follow, tc.dms, d)
+		if (err == nil) != tc.ok {
+			t.Fatalf("%+v: err %v", tc, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "nothing to serve") || err != nil && !strings.Contains(err.Error(), "hp-board") {
+			t.Fatalf("err %v", err)
+		}
 	}
 }
 

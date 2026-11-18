@@ -122,6 +122,9 @@ func (h *Handler) dispatch(ctx context.Context, m *zulipproto.Message, key journ
 
 // replySink posts a command's answer where the command arrived.
 func (h *Handler) replySink(ctx context.Context, in *convo.In, text string) error {
+	if isStatusCommand(in.Text) {
+		text += h.degradedSection()
+	}
 	h.reply(ctx, metaOf(in).key, text)
 	return nil
 }
@@ -717,4 +720,29 @@ func (h *Handler) loginScope(_ context.Context, in *convo.In) convo.Verdict {
 // conversation with token tok.
 func loginToken(tok string, sender int64) string {
 	return tok + "~u" + strconv.FormatInt(sender, 10)
+}
+
+// isStatusCommand reports whether text is `!status` or its `!whoami`
+// alias, as the broker reads them.
+func isStatusCommand(text string) bool {
+	body, ok := command.StripSigil(text)
+	if !ok {
+		return false
+	}
+	body = strings.ToLower(strings.TrimSpace(body))
+	return body == "status" || body == "whoami"
+}
+
+// degradedSection is the `!status` section that lists the config
+// entries turned off at start; "" when there are none.
+func (h *Handler) degradedSection() string {
+	if len(h.cfg.Degraded) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n**⚠️ Config degraded** — these entries are OFF until the config is fixed and the relay reloaded:")
+	for _, l := range h.cfg.Degraded {
+		b.WriteString("\n- " + l)
+	}
+	return b.String()
 }

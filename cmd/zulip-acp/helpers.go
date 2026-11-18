@@ -105,8 +105,8 @@ func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe,
 	return s.StreamID, s.Name, policy.Limit
 }
 
-// resolveRoutes resolves the routes at startup. A config error is
-// returned; the caller makes it fatal. A route from a channel to
+// resolveRoutes resolves the routes at startup. A route that names a
+// missing channel is off (see config.Degraded). A route from a channel to
 // itself is autotopic: it is added to autotopic and to explicit, and
 // its link_back is ignored. A route to another channel is returned in cross, and its
 // from channel is added to explicit, because the relay must read it.
@@ -116,11 +116,8 @@ func resolveArchive(ctx context.Context, cfg *config.Config, probe archiveProbe,
 // conversation. When the bot may not move messages between channels,
 // or that cannot be told, every cross route is dropped.
 func resolveRoutes(ctx context.Context, cfg *config.Config, probe archiveProbe, streams []zulipproto.Stream,
-	explicit, autotopic map[int64]string, bot zulipproto.User) (map[int64]handler.Route, error) {
-	routes, err := cfg.ResolveRoutes(streams)
-	if err != nil {
-		return nil, err
-	}
+	explicit, autotopic map[int64]string, bot zulipproto.User) map[int64]handler.Route {
+	routes := cfg.ResolveRoutes(streams)
 	names := map[int64]string{}
 	for _, s := range streams {
 		names[s.StreamID] = s.Name
@@ -150,7 +147,7 @@ func resolveRoutes(ctx context.Context, cfg *config.Config, probe archiveProbe, 
 		cross[r.From] = handler.Route{To: r.To, LinkBack: r.LinkBack}
 	}
 	if len(cross) == 0 {
-		return nil, nil
+		return nil
 	}
 	policy, err := probe.ChannelMovePolicy(ctx, bot)
 	if err != nil || !policy.Allowed {
@@ -159,24 +156,21 @@ func resolveRoutes(ctx context.Context, cfg *config.Config, probe archiveProbe, 
 			why = fmt.Sprintf("cannot tell whether this bot may move messages between channels (%v)", err)
 		}
 		log.Printf("zulip-acp: routes between channels are OFF: %s", why)
-		return nil, nil
+		return nil
 	}
 	for from, r := range cross {
 		explicit[from] = name(from)
 		log.Printf("zulip-acp: route on: a new topic in #%s moves to #%s (link_back %v)", name(from), name(r.To), r.LinkBack)
 	}
-	return cross, nil
+	return cross
 }
 
-// resolveViews resolves the views and notify entries at startup. A
-// config error is returned; the caller makes it fatal. A view at a
-// channel the relay serves is logged: humans posting there would
-// start turns.
-func resolveViews(cfg *config.Config, streams []zulipproto.Stream, served channelLookup) ([]config.ResolvedView, []config.ResolvedNotify, error) {
-	views, notes, err := cfg.ResolveViews(streams)
-	if err != nil {
-		return nil, nil, err
-	}
+// resolveViews resolves the views and notify entries at startup. An
+// entry that names a missing channel is off (see config.Degraded). A
+// view at a channel the relay serves is logged: humans posting there
+// would start turns.
+func resolveViews(cfg *config.Config, streams []zulipproto.Stream, served channelLookup) ([]config.ResolvedView, []config.ResolvedNotify) {
+	views, notes := cfg.ResolveViews(streams)
 	for _, v := range views {
 		if _, ok := served.Name(v.StreamID); ok {
 			log.Printf("zulip-acp: WARN %s is in a served channel: a message posted there starts a turn.", v.Key)
@@ -186,16 +180,16 @@ func resolveViews(cfg *config.Config, streams []zulipproto.Stream, served channe
 	for _, n := range notes {
 		log.Printf("zulip-acp: %s on", n.Key)
 	}
-	return views, notes, nil
+	return views, notes
 }
 
 // resolveLifecycle resolves the lifecycle rules at startup and logs
 // whether they can act: they need archiving on, and the realm's move
 // time limit bounds how old a topic they can move.
-func resolveLifecycle(cfg *config.Config, streams []zulipproto.Stream, archiveID int64, limit time.Duration) ([]config.ResolvedLifecycle, error) {
-	rules, err := cfg.ResolveLifecycle(streams)
-	if err != nil || len(rules) == 0 {
-		return rules, err
+func resolveLifecycle(cfg *config.Config, streams []zulipproto.Stream, archiveID int64, limit time.Duration) []config.ResolvedLifecycle {
+	rules := cfg.ResolveLifecycle(streams)
+	if len(rules) == 0 {
+		return rules
 	}
 	switch {
 	case archiveID == 0:
@@ -205,7 +199,7 @@ func resolveLifecycle(cfg *config.Config, streams []zulipproto.Stream, archiveID
 	default:
 		log.Printf("zulip-acp: lifecycle on: %d rule(s); the bot can move topics of any age", len(rules))
 	}
-	return rules, nil
+	return rules
 }
 
 // typingProbe is the Zulip surface resolveTypingInterval needs: how

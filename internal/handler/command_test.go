@@ -157,6 +157,32 @@ func TestCommandsWorkUnconditionallyInADM(t *testing.T) {
 	}
 }
 
+// TestStatusListsDegradedConfig: a config entry turned off at start is
+// shown under `!status` (and its `!whoami` alias), and nowhere else.
+func TestStatusListsDegradedConfig(t *testing.T) {
+	hh := dmCmdHarness(t, newAgent("x"), func(c *Config) {
+		c.Degraded = []string{"routes[0].from: channel \"hp-board\" not visible"}
+	})
+	for _, cmd := range []string{"!status", "!WhoAmI"} {
+		hh.z.reset()
+		hh.deliverDM(t, humanID, cmd, humanID, botID)
+		if got := hh.only(t); !strings.Contains(got, "**⚠️ Config degraded**") || !strings.Contains(got, "- routes[0].from: channel \"hp-board\"") {
+			t.Fatalf("%s: reply = %q", cmd, got)
+		}
+	}
+	hh.z.reset()
+	hh.deliverDM(t, humanID, "!help", humanID, botID)
+	if strings.Contains(hh.only(t), "degraded") {
+		t.Fatalf("!help shows the degraded section: %q", hh.only(t))
+	}
+
+	whole := dmCmdHarness(t, newAgent("x"), nil)
+	whole.deliverDM(t, humanID, "!status", humanID, botID)
+	if strings.Contains(whole.only(t), "degraded") {
+		t.Fatalf("a whole config shows a degraded section: %q", whole.only(t))
+	}
+}
+
 // TestChannelCommandNeedsMentionOrEngagement pins the documented
 // channel gate: a command is honoured exactly when a prompt would be.
 func TestChannelCommandNeedsMentionOrEngagement(t *testing.T) {

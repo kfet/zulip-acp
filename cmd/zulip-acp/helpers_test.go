@@ -561,15 +561,12 @@ func TestResolveRoutes(t *testing.T) {
 	}}
 	streams = append(streams, zulipproto.Stream{StreamID: 7, Name: "d"}, zulipproto.Stream{StreamID: 8, Name: "e"})
 	cfg.Routes = append(cfg.Routes, config.Route{From: "e", To: "d"}) // d is not served: dropped
-	run := func(cfg *config.Config, probe *fakeMoveProbe) (map[int64]handler.Route, map[int64]string, map[int64]string, error) {
+	run := func(cfg *config.Config, probe *fakeMoveProbe) (map[int64]handler.Route, map[int64]string, map[int64]string) {
 		explicit, auto := map[int64]string{4: "a"}, map[int64]string{}
-		r, err := resolveRoutes(context.Background(), cfg, probe, streams, explicit, auto, zulipproto.User{UserID: 9})
-		return r, explicit, auto, err
+		r := resolveRoutes(context.Background(), cfg, probe, streams, explicit, auto, zulipproto.User{UserID: 9})
+		return r, explicit, auto
 	}
-	r, explicit, auto, err := run(cfg, &fakeMoveProbe{allowed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, explicit, auto := run(cfg, &fakeMoveProbe{allowed: true})
 	if len(r) != 2 || r[5] != (handler.Route{To: 4, LinkBack: true}) || r[6] != (handler.Route{To: 5}) {
 		t.Fatalf("routes = %v", r)
 	}
@@ -579,26 +576,28 @@ func TestResolveRoutes(t *testing.T) {
 
 	// Follow mode serves every channel, so the route to b stays.
 	follow := &config.Config{Channels: []string{config.ChannelSentinel}, Routes: []config.Route{{From: "c", To: "d"}}}
-	if r, _, _, _ := run(follow, &fakeMoveProbe{allowed: true}); len(r) != 1 {
+	if r, _, _ := run(follow, &fakeMoveProbe{allowed: true}); len(r) != 1 {
 		t.Fatalf("follow routes = %v", r)
 	}
 
 	// No permission, or no answer: the cross routes are off.
 	for _, p := range []*fakeMoveProbe{{}, {err: errors.New("old")}} {
-		if r, explicit, _, err := run(cfg, p); err != nil || r != nil || len(explicit) != 1 {
-			t.Fatalf("routes = %v explicit %v err %v", r, explicit, err)
+		if r, explicit, _ := run(cfg, p); r != nil || len(explicit) != 1 {
+			t.Fatalf("routes = %v explicit %v", r, explicit)
 		}
 	}
 
 	// Only autotopic routes: no probe.
 	only := &config.Config{Routes: []config.Route{{From: "a", To: "a"}}}
 	p := &fakeMoveProbe{}
-	if r, _, _, err := run(only, p); err != nil || r != nil || p.asked != 0 {
+	if r, _, _ := run(only, p); r != nil || p.asked != 0 {
 		t.Fatalf("routes = %v asked %d", r, p.asked)
 	}
 
-	if _, _, _, err := run(&config.Config{Routes: []config.Route{{From: "x", To: "a"}}}, p); err == nil {
-		t.Fatal("no error for an unknown channel")
+	// A missing channel turns off that route only, and is recorded.
+	gone := &config.Config{Routes: []config.Route{{From: "x", To: "a"}, {From: "b", To: "b"}}}
+	if r, explicit, auto := run(gone, p); r != nil || auto[5] != "b" || len(explicit) != 2 || len(gone.Degraded()) != 1 {
+		t.Fatalf("routes = %v explicit %v auto %v degraded %v", r, explicit, auto, gone.Degraded())
 	}
 }
 
@@ -608,13 +607,13 @@ func TestResolveViews(t *testing.T) {
 		Views:  []config.View{{At: "a/board", Sources: []string{"b"}}, {At: "b/board", Sources: []string{"a"}}},
 		Notify: []config.Notify{{At: "a/n", OnEnter: []string{"needs_you"}}},
 	}
-	v, n, err := resolveViews(cfg, streams, fakeServed{5: "b"})
-	if err != nil || len(v) != 2 || len(n) != 1 {
-		t.Fatalf("views %v notify %v err %v", v, n, err)
+	v, n := resolveViews(cfg, streams, fakeServed{5: "b"})
+	if len(v) != 2 || len(n) != 1 {
+		t.Fatalf("views %v notify %v", v, n)
 	}
-	bad := &config.Config{Views: []config.View{{At: "x/board", Sources: []string{"b"}}}}
-	if _, _, err := resolveViews(bad, streams, fakeServed{}); err == nil {
-		t.Fatal("no error")
+	bad := &config.Config{Views: []config.View{{At: "x/board", Sources: []string{"b"}}, {At: "a/board"}}}
+	if v, _ := resolveViews(bad, streams, fakeServed{}); len(v) != 1 || len(bad.Degraded()) != 1 {
+		t.Fatalf("views %v degraded %v", v, bad.Degraded())
 	}
 }
 
@@ -626,15 +625,16 @@ func TestResolveLifecycle(t *testing.T) {
 		archive int64
 		limit   time.Duration
 	}{{0, 0}, {9, time.Hour}, {9, 0}} {
-		if r, err := resolveLifecycle(cfg, streams, tc.archive, tc.limit); err != nil || len(r) != 1 {
-			t.Fatalf("rules %v err %v", r, err)
+		if r := resolveLifecycle(cfg, streams, tc.archive, tc.limit); len(r) != 1 {
+			t.Fatalf("rules %v", r)
 		}
 	}
-	if r, err := resolveLifecycle(&config.Config{}, streams, 9, 0); err != nil || r != nil {
-		t.Fatalf("no rules: %v %v", r, err)
+	if r := resolveLifecycle(&config.Config{}, streams, 9, 0); r != nil {
+		t.Fatalf("no rules: %v", r)
 	}
 	rule.Sources = []string{"x"}
-	if _, err := resolveLifecycle(&config.Config{Lifecycle: []config.Lifecycle{rule}}, streams, 9, 0); err == nil {
-		t.Fatal("no error")
+	bad := &config.Config{Lifecycle: []config.Lifecycle{rule}}
+	if r := resolveLifecycle(bad, streams, 9, 0); r != nil || len(bad.Degraded()) != 1 {
+		t.Fatalf("rules %v degraded %v", r, bad.Degraded())
 	}
 }

@@ -533,6 +533,10 @@ type Config struct {
 	// (acp-kit/autoupdate: the owners' answer to an update offer). It
 	// returns true when the reaction was an update decision. Nil = none.
 	UpdateDecide func(ctx context.Context, msgID, userID int64, emoji string) bool
+	// Degraded are the config entries turned off at start because they
+	// name a channel Zulip does not have, one line each. `!status`
+	// lists them. Empty = the config is whole.
+	Degraded []string
 	// UpdateStatus is appended to `!update --check`. Nil = nothing.
 	UpdateStatus func() string
 

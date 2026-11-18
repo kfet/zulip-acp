@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A config entry that names a channel Zulip does not have (for example a renamed channel) no longer stops the relay in a crash loop. Only that entry is off; each one is logged as `config: DEGRADED`, sent as a DM to the update owners once per start, and listed under `!status`. The relay stays fatal only when it has nothing left to serve.
+
 ## [0.82.3] - 2026-11-18
 
 ### Removed

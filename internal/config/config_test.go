@@ -285,11 +285,27 @@ func TestResolveChannels(t *testing.T) {
 	if _, err := (&Config{}).ResolveChannels(available); err == nil {
 		t.Fatal("want error for no channels")
 	}
-	if _, err := (&Config{Channels: []string{"nope"}}).ResolveChannels(available); err == nil {
-		t.Fatal("want error for unknown name")
+	// A missing channel turns off that one entry, never the relay.
+	bad := &Config{Channels: []string{"nope", "fleet", "404"}}
+	got, err = bad.ResolveChannels(available)
+	if err != nil || len(got) != 1 || got[4] != "fleet" {
+		t.Fatalf("resolved = %v %v", got, err)
 	}
-	if _, err := (&Config{Channels: []string{"404"}}).ResolveChannels(available); err == nil {
-		t.Fatal("want error for unknown id")
+	wantDegraded(t, bad, "channels:nope", "channels:404")
+}
+
+// wantDegraded checks the recorded entries as "field:want", in order.
+func wantDegraded(t *testing.T, c *Config, want ...string) {
+	t.Helper()
+	var got []string
+	for _, d := range c.Degraded() {
+		got = append(got, d.Field+":"+d.Want)
+		if !strings.Contains(d.String(), "OFF") && !strings.Contains(d.String(), "NOT") {
+			t.Fatalf("effect not plain: %s", d)
+		}
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("degraded = %v, want %v", got, want)
 	}
 }
 
@@ -305,29 +321,22 @@ func TestResolveAmbient(t *testing.T) {
 	}
 
 	// Empty list is fine and yields an empty, non-nil set.
-	got, err := (&Config{}).ResolveAmbient(available)
-	if err != nil {
-		t.Fatalf("ResolveAmbient(empty): %v", err)
-	}
+	got := (&Config{}).ResolveAmbient(available)
 	if got == nil || len(got) != 0 {
 		t.Fatalf("empty ambient list resolved = %v, want empty set", got)
 	}
 
 	c := &Config{AmbientChannels: []string{"fleet", " 7 ", "Fleet"}}
-	got, err = c.ResolveAmbient(available)
-	if err != nil {
-		t.Fatalf("ResolveAmbient: %v", err)
-	}
+	got = c.ResolveAmbient(available)
 	if len(got) != 3 || got[4] != "fleet" || got[7] != "general" || got[9] != "Fleet" {
 		t.Fatalf("resolved = %v", got)
 	}
 
-	if _, err := (&Config{AmbientChannels: []string{"nope"}}).ResolveAmbient(available); err == nil {
-		t.Fatal("want error for unknown name")
+	bad := &Config{AmbientChannels: []string{"nope", "fleet", "404"}}
+	if got := bad.ResolveAmbient(available); len(got) != 1 || got[4] != "fleet" {
+		t.Fatalf("resolved = %v", got)
 	}
-	if _, err := (&Config{AmbientChannels: []string{"404"}}).ResolveAmbient(available); err == nil {
-		t.Fatal("want error for unknown id")
-	}
+	wantDegraded(t, bad, "ambient_channels:nope", "ambient_channels:404")
 }
 
 // TestResolveAutotopic covers autotopic_channels resolution: same
@@ -339,31 +348,22 @@ func TestResolveAutotopic(t *testing.T) {
 		{StreamID: 7, Name: "general"},
 	}
 
-	got, err := (&Config{}).ResolveAutotopic(available)
-	if err != nil {
-		t.Fatalf("ResolveAutotopic(empty): %v", err)
-	}
+	got := (&Config{}).ResolveAutotopic(available)
 	if got == nil || len(got) != 0 {
 		t.Fatalf("empty autotopic list resolved = %v, want empty set", got)
 	}
 
-	got, err = (&Config{AutotopicChannels: []string{"fleet", " 7 "}}).ResolveAutotopic(available)
-	if err != nil {
-		t.Fatalf("ResolveAutotopic: %v", err)
-	}
+	got = (&Config{AutotopicChannels: []string{"fleet", " 7 "}}).ResolveAutotopic(available)
 	if len(got) != 2 || got[4] != "fleet" || got[7] != "general" {
 		t.Fatalf("resolved = %v", got)
 	}
 
 	// The operator must be told WHICH list is wrong.
-	_, err = (&Config{AutotopicChannels: []string{"nope"}}).ResolveAutotopic(available)
-	if err == nil || !strings.Contains(err.Error(), "autotopic_channels") {
-		t.Fatalf("err = %v, want an autotopic_channels error for an unknown name", err)
+	bad := &Config{AutotopicChannels: []string{"nope", "404", "general"}}
+	if got := bad.ResolveAutotopic(available); len(got) != 1 || got[7] != "general" {
+		t.Fatalf("resolved = %v", got)
 	}
-	_, err = (&Config{AutotopicChannels: []string{"404"}}).ResolveAutotopic(available)
-	if err == nil || !strings.Contains(err.Error(), "autotopic_channels id 404") {
-		t.Fatalf("err = %v, want an autotopic_channels error for an unknown id", err)
-	}
+	wantDegraded(t, bad, "autotopic_channels:nope", "autotopic_channels:404")
 }
 
 // TestChannelSentinel covers the "*" sentinel: alone, mixed with
@@ -782,9 +782,17 @@ func TestArchiveChannel(t *testing.T) {
 	if _, ok := (&Config{ArchiveChannel: &missingID}).ResolveArchiveChannel(available); ok {
 		t.Fatal("an id nobody has must not resolve")
 	}
-	if _, ok := (&Config{ArchiveChannel: &missingName}).ResolveArchiveChannel(available); ok {
+	mc, mn := &Config{ArchiveChannel: &missingID}, &Config{ArchiveChannel: &missingName}
+	mc.ResolveArchiveChannel(available)
+	wantDegraded(t, mc, "archive_channel:77")
+	if _, ok := mn.ResolveArchiveChannel(available); ok {
 		t.Fatal("a name nobody has must not resolve")
 	}
+	wantDegraded(t, mn, "archive_channel:nope")
+	// The built-in default is not a problem when the realm lacks it.
+	def := &Config{}
+	def.ResolveArchiveChannel(nil)
+	wantDegraded(t, def)
 }
 
 func TestUpdateOwnersAndFleet(t *testing.T) {
@@ -1015,18 +1023,22 @@ func TestCollapseLifecycleResolve(t *testing.T) {
 	if err := c.validateViews(); err != nil {
 		t.Fatal(err)
 	}
-	v, _, err := c.ResolveViews(avail)
-	if err != nil || len(v[0].Collapse) != 2 || v[0].CollapseShow != DefaultCollapseShow || v[1].CollapseShow != 2 {
-		t.Fatalf("views = %+v %v", v, err)
+	v, _ := c.ResolveViews(avail)
+	if len(v[0].Collapse) != 2 || v[0].CollapseShow != DefaultCollapseShow || v[1].CollapseShow != 2 {
+		t.Fatalf("views = %+v", v)
 	}
-	l, err := c.ResolveLifecycle(avail)
-	if err != nil || len(l) != 2 || l[0].Idle != 168*time.Hour || !l[0].PrefixSource || l[0].Sources[0] != 5 || l[1].Sources != nil {
-		t.Fatalf("lifecycle = %+v %v", l, err)
+	l := c.ResolveLifecycle(avail)
+	if len(l) != 2 || l[0].Idle != 168*time.Hour || !l[0].PrefixSource || l[0].Sources[0] != 5 || l[1].Sources != nil {
+		t.Fatalf("lifecycle = %+v", l)
 	}
-	c.Lifecycle[0].Sources = []string{"nope"}
-	if _, err := c.ResolveLifecycle(avail); err == nil {
-		t.Fatal("unknown source accepted")
+	// A rule with a missing source is OFF — dropping only the source
+	// would widen it, and an empty list would mean every channel.
+	c.Lifecycle[0].Sources = []string{"nope", "b", "gone"}
+	l = c.ResolveLifecycle(avail)
+	if len(l) != 1 || l[0].Sources != nil {
+		t.Fatalf("lifecycle = %+v", l)
 	}
+	wantDegraded(t, &c, "lifecycle[0].sources:nope", "lifecycle[0].sources:gone")
 }
 
 func TestResolveRoutesViews(t *testing.T) {
@@ -1036,14 +1048,11 @@ func TestResolveRoutesViews(t *testing.T) {
 		Views:  []View{{At: "a/board/x", Sources: []string{"b", "a"}, StaleAfter: "1h"}},
 		Notify: []Notify{{At: "a/n", OnEnter: []string{"needs_you", "blocked"}}, {At: "b/m", Sources: []string{"a"}, OnEnter: []string{"done"}}},
 	}
-	r, err := c.ResolveRoutes(avail)
-	if err != nil || len(r) != 1 || r[0] != (ResolvedRoute{From: 4, To: 5, LinkBack: true}) {
-		t.Fatalf("routes = %v %v", r, err)
+	r := c.ResolveRoutes(avail)
+	if len(r) != 1 || r[0] != (ResolvedRoute{From: 4, To: 5, LinkBack: true}) {
+		t.Fatalf("routes = %v", r)
 	}
-	v, n, err := c.ResolveViews(avail)
-	if err != nil {
-		t.Fatal(err)
-	}
+	v, n := c.ResolveViews(avail)
 	if len(v) != 1 || v[0].Key != "view:a/board/x" || v[0].StreamID != 4 || v[0].Topic != "board/x" ||
 		len(v[0].Sources) != 2 || v[0].Sources[0] != 5 || v[0].StaleAfter != time.Hour || len(v[0].Groups) != len(DefaultViewGroups) {
 		t.Fatalf("views = %+v", v)
@@ -1052,23 +1061,36 @@ func TestResolveRoutesViews(t *testing.T) {
 		t.Fatalf("notify = %+v", n)
 	}
 
-	for _, bad := range []Config{
-		{Routes: []Route{{From: "x", To: "a"}}},
-		{Routes: []Route{{From: "a", To: "x"}}},
-		{Routes: []Route{{From: "a", To: "b"}, {From: "4", To: "b"}}},
-	} {
-		if _, err := bad.ResolveRoutes(avail); err == nil {
-			t.Fatalf("no error for %+v", bad.Routes)
-		}
+	// A second route from one channel is off; the first one wins.
+	dup := Config{Routes: []Route{{From: "a", To: "b"}, {From: "4", To: "a"}}}
+	if r := dup.ResolveRoutes(avail); len(r) != 1 || r[0].To != 5 {
+		t.Fatalf("routes = %v", r)
 	}
-	for _, bad := range []Config{
-		{Views: []View{{At: "x/t", Sources: []string{"a"}}}},
-		{Views: []View{{At: "a/t", Sources: []string{"x"}}}},
-		{Notify: []Notify{{At: "x/t", OnEnter: []string{"done"}}}},
-		{Notify: []Notify{{At: "a/t", Sources: []string{"x"}, OnEnter: []string{"done"}}}},
-	} {
-		if _, _, err := bad.ResolveViews(avail); err == nil || !strings.Contains(err.Error(), "not visible") {
-			t.Fatalf("err = %v for %+v", err, bad)
-		}
+	wantDegraded(t, &dup, "routes[1].from:4")
+	if d := dup.Degraded()[0].String(); !strings.Contains(d, "already has a route") || !strings.Contains(d, "keep one route per channel") {
+		t.Fatalf("dup: %s", d)
+	}
+	// A missing channel turns off only the route that names it; both
+	// sides are checked, so the operator sees every problem at once.
+	rc := Config{Routes: []Route{{From: "x", To: "y"}, {From: "a", To: "x"}, {From: "b", To: "a"}}}
+	r = rc.ResolveRoutes(avail)
+	if len(r) != 1 || r[0].From != 5 {
+		t.Fatalf("routes = %v", r)
+	}
+	wantDegraded(t, &rc, "routes[0].from:x", "routes[0].to:y", "routes[1].to:x")
+	if d := rc.Degraded()[0].String(); !strings.Contains(d, "stays in #x") || !strings.Contains(d, "its turns run THERE") {
+		t.Fatalf("route effect: %s", d)
+	}
+	vc := Config{
+		Views:  []View{{At: "x/t", Sources: []string{"a"}}, {At: "a/t", Sources: []string{"x"}}, {At: "a/ok"}},
+		Notify: []Notify{{At: "x/t", OnEnter: []string{"done"}}, {At: "a/t", Sources: []string{"x"}, OnEnter: []string{"done"}}, {At: "b/ok", OnEnter: []string{"done"}}},
+	}
+	v, n = vc.ResolveViews(avail)
+	if len(v) != 1 || v[0].Topic != "ok" || len(n) != 1 || n[0].StreamID != 5 {
+		t.Fatalf("views %+v notify %+v", v, n)
+	}
+	wantDegraded(t, &vc, "views[0].at:x", "views[1].sources:x", "notify[0].at:x", "notify[1].sources:x")
+	if d := vc.Degraded()[0].String(); !strings.Contains(d, "board at x/t is NOT updated") {
+		t.Fatalf("view effect: %s", d)
 	}
 }
