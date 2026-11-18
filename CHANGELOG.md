@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.2] - 2026-11-18
+
 ### Fixed
 
 - Text the agent writes after a tool call now starts a new paragraph. Before, it joined the earlier text with no break ("to now.The logs") or attached to the last row of a table.
