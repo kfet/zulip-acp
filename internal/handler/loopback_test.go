@@ -40,11 +40,12 @@ func newLoopHarness(t *testing.T, agent *fakeAgent, tune func(*Config)) *loopHar
 	lh := &loopHarness{ticks: make(chan time.Time), now: func() time.Time { return fireEpoch }}
 	var h *Handler
 	store, err := schedule.Open(schedule.Config{
-		Path:  filepath.Join(t.TempDir(), "schedules.json"),
-		Ticks: lh.ticks,
-		Now:   func() time.Time { return lh.now() },
-		Fire:  func(ctx context.Context, it schedule.Item) error { return h.FireSchedule(ctx, it) },
-		Logf:  func(string, ...any) {},
+		Path:    filepath.Join(t.TempDir(), "schedules.json"),
+		Ticks:   lh.ticks,
+		Now:     func() time.Time { return lh.now() },
+		Fire:    func(ctx context.Context, it schedule.Item) (schedule.Result, error) { return h.FireSchedule(ctx, it) },
+		Stopped: func(it schedule.Item, why schedule.Stop) { h.ScheduleStopped(it, why) },
+		Logf:    func(string, ...any) {},
 	})
 	if err != nil {
 		t.Fatalf("schedule.Open: %v", err)
@@ -371,7 +372,7 @@ func TestLoopbackPostInAConversationTheJournalHasForgottenRemembersNothing(t *te
 
 func TestScheduleRequiresTheStore(t *testing.T) {
 	hh := cmdHarness(t, newAgent("ok"), nil) // no Schedules wired
-	if _, err := hh.h.Schedule(chanToken("t"), "x", fireEpoch, 0); err == nil {
+	if _, err := hh.h.Schedule(chanToken("t"), "x", fireEpoch, 0, schedule.Budget{}); err == nil {
 		t.Fatal("want refusal without a store")
 	}
 	if got := hh.h.Schedules(chanToken("t")); got != nil {
@@ -384,7 +385,7 @@ func TestScheduleRequiresTheStore(t *testing.T) {
 
 func TestScheduleRejectsAMalformedToken(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
-	if _, err := lh.h.Schedule("not-a-token", "x", fireEpoch.Add(time.Hour), 0); err == nil {
+	if _, err := lh.h.Schedule("not-a-token", "x", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err == nil {
 		t.Fatal("want a token parse error")
 	}
 }
@@ -392,7 +393,7 @@ func TestScheduleRejectsAMalformedToken(t *testing.T) {
 func TestScheduleAddListRemove(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	tok := chanToken("loopback")
-	it, err := lh.h.Schedule(tok, "check the deploy", fireEpoch.Add(time.Hour), 0)
+	it, err := lh.h.Schedule(tok, "check the deploy", fireEpoch.Add(time.Hour), 0, schedule.Budget{})
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -415,7 +416,7 @@ func TestFireSchedulePromptsTheConversation(t *testing.T) {
 	conv := lh.engage(t, "loopback")
 	lh.run(t)
 
-	if _, err := lh.h.Schedule(chanToken("loopback"), "did it land?", fireEpoch.Add(time.Minute), 0); err != nil {
+	if _, err := lh.h.Schedule(chanToken("loopback"), "did it land?", fireEpoch.Add(time.Minute), 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	lh.now = func() time.Time { return fireEpoch.Add(2 * time.Minute) }
@@ -471,7 +472,7 @@ func TestFireScheduleReAppliesTheGates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			lh := newLoopHarness(t, newAgent("ok"), tc.tune)
-			err := lh.h.FireSchedule(context.Background(), schedule.Item{ID: "s1", Conv: tc.conv, Text: "x", Depth: 1})
+			err := lh.h.fireForTest(context.Background(), schedule.Item{ID: "s1", Conv: tc.conv, Text: "x"})
 			if !errors.Is(err, schedule.ErrGone) {
 				t.Fatalf("err = %v, want ErrGone", err)
 			}
@@ -511,8 +512,8 @@ func TestFireScheduleWaitsForAHumanTurn(t *testing.T) {
 	}
 	fired := make(chan error, 1)
 	go func() {
-		fired <- lh.h.FireSchedule(context.Background(),
-			schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later", Depth: 1})
+		fired <- lh.h.fireForTest(context.Background(),
+			schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later"})
 	}()
 
 	// The scheduled turn has parked behind the human one. Only now is
@@ -647,7 +648,7 @@ func callTool(t *testing.T, tools *relaytool.Tools, name, sessionKey, args strin
 func TestSchedulesAreVisibleAndKillableFromChat(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	lh.engage(t, "loopback")
-	it, err := lh.h.Schedule(chanToken("loopback"), "check the deploy", fireEpoch.Add(time.Hour), 0)
+	it, err := lh.h.Schedule(chanToken("loopback"), "check the deploy", fireEpoch.Add(time.Hour), 0, schedule.Budget{})
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -673,7 +674,7 @@ func TestSchedulesAreVisibleAndKillableFromChat(t *testing.T) {
 func TestStatusReportsArmedSchedules(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	lh.engage(t, "loopback")
-	if _, err := lh.h.Schedule(chanToken("loopback"), "later", fireEpoch.Add(time.Hour), 0); err != nil {
+	if _, err := lh.h.Schedule(chanToken("loopback"), "later", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	lh.deliver(t, "loopback", "!status")
@@ -719,7 +720,7 @@ func TestFireScheduleGivesUpWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
-		errc <- lh.h.FireSchedule(ctx, schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later", Depth: 1})
+		errc <- lh.h.fireForTest(ctx, schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later"})
 	}()
 	// Cancel only once the wait has actually parked, so the wake-up
 	// path is exercised rather than the fast "already cancelled" exit.
@@ -754,8 +755,8 @@ func TestFireScheduleClaimsAtomically(t *testing.T) {
 	conv := lh.engage(t, "loopback")
 	done := make(chan error, 1)
 	go func() {
-		done <- lh.h.FireSchedule(context.Background(),
-			schedule.Item{ID: "s1", Conv: chanToken("loopback"), Text: "later", Depth: 1})
+		done <- lh.h.fireForTest(context.Background(),
+			schedule.Item{ID: "s1", Conv: chanToken("loopback"), Text: "later"})
 	}()
 	if err := <-done; err != nil {
 		t.Fatalf("FireSchedule: %v", err)

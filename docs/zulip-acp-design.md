@@ -2152,21 +2152,33 @@ command at a time, but it cannot deliver into a conversation *with context*.
 The converse also holds — host chores stay in host cron. Nothing here is a
 general-purpose scheduler.
 
-**Runaway control** is first-class, because a scheduled prompt whose turn
-schedules another is unbounded recursion that costs real money.
-`acp-kit/schedule` applies four bounds, all on by default:
+**Runaway control** is first-class, because every fire costs real money.
+`acp-kit/schedule` gives each item a **budget** and applies these bounds, all
+on by default:
 
 | bound | default | config |
 |---|---|---|
-| chain depth (`schedule→turn→schedule`) | 3 | `max_schedule_depth` |
+| fires per budget | 20 | `schedule_max_fires` |
+| budget lifetime (`until`) | 24h (max 7d) | `schedule_default_until` |
+| silent fires in a row before stop | 3 | — |
 | armed per conversation | 10 | `max_schedules_per_conv` |
 | armed in total | 100 | `max_schedules_total` |
 | repeat floor | 60s | `min_schedule_interval_seconds` |
 
-Depth is *derived*, never supplied: an item armed inside a firing scheduled
-turn takes its parent's depth plus one. That works only because `Fire` blocks
-for the whole turn, which is why `Handler.FireSchedule` is synchronous. A
-missed window is skipped rather than replayed, so a relay that was down for a
+A human turn arms a fresh budget. A scheduled turn cannot: it may re-time its
+own item, or add a one-shot that inherits the parent's remaining budget (and
+spends one of its fires); it cannot start a new repeat. That attribution works
+only because `Fire` blocks for the whole turn, which is why
+`Handler.FireSchedule` is synchronous.
+
+`FireSchedule` reports whether the turn was **silent** — a heartbeat (the
+agent abstained) or a collapsed identical repeat. Each silent fire doubles the
+next interval (cap 6h); a turn with news resets it. After 3 silent fires in a
+row the store removes the item and `Handler.ScheduleStopped` posts one line:
+*stopped: no news after 3 checks — reply here to resume*. Old
+`schedules.json` files (version 1, with `depth`) are migrated on start.
+
+A missed window is skipped rather than replayed, so a relay that was down for a
 day does not fire a minutely schedule 1440 times on startup.
 
 None of that removes the need for a human to be able to **look and kill**:

@@ -641,16 +641,25 @@ func TestScheduleLimitsValidation(t *testing.T) {
 	for name, c := range map[string]Config{
 		"per conv": {MaxSchedulesPerConv: -1},
 		"total":    {MaxSchedulesTotal: -1},
-		"depth":    {MaxScheduleDepth: -1},
+		"fires":    {ScheduleMaxFires: -1},
+		"until":    {ScheduleDefaultUntil: "soon"},
+		"until<0":  {ScheduleDefaultUntil: "-1h"},
+		"until>7d": {ScheduleDefaultUntil: "200h"},
 		"interval": {MinScheduleIntervalSeconds: -1},
 	} {
 		if err := c.Validate(); err == nil {
 			t.Fatalf("%s: want a validation error", name)
 		}
 	}
-	ok := Config{MaxSchedulesPerConv: 5, MaxSchedulesTotal: 50, MaxScheduleDepth: 2, MinScheduleIntervalSeconds: 120}
+	ok := Config{MaxSchedulesPerConv: 5, MaxSchedulesTotal: 50, ScheduleMaxFires: 4, ScheduleDefaultUntil: "6h", MinScheduleIntervalSeconds: 120}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid limits rejected: %v", err)
+	}
+	if got := ok.ScheduleUntil(); got != 6*time.Hour {
+		t.Fatalf("ScheduleUntil = %v", got)
+	}
+	if got := (&Config{}).ScheduleUntil(); got != 0 {
+		t.Fatalf("unset ScheduleUntil = %v", got)
 	}
 	if got := ok.MinScheduleInterval(); got != 2*time.Minute {
 		t.Fatalf("MinScheduleInterval = %v", got)
@@ -671,6 +680,7 @@ func TestRelayMCPIsOffByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	// The obsolete key still loads (main logs that it is ignored).
 	if !c.RelayMCP || c.MaxScheduleDepth != 2 {
 		t.Fatalf("config = %+v", c)
 	}

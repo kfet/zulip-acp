@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/kfet/acp-kit/autoupdate"
 	"github.com/kfet/acp-kit/interject"
+	"github.com/kfet/acp-kit/schedule"
 	"io"
 	"net"
 	"os"
@@ -681,14 +682,23 @@ type Config struct {
 	// supersedes the turn.
 	Interject interject.Config `json:"interject,omitempty"`
 
-	// MaxSchedulesPerConv, MaxSchedulesTotal and MaxScheduleDepth
-	// bound scheduled prompts. 0 uses acp-kit/schedule's defaults
-	// (10 / 100 / 3). MaxScheduleDepth is the important one: it caps
-	// how long a schedule→turn→schedule chain can get, so recursion
-	// always terminates.
+	// MaxSchedulesPerConv and MaxSchedulesTotal bound how many
+	// scheduled prompts are armed at once. 0 uses acp-kit/schedule's
+	// defaults (10 / 100).
 	MaxSchedulesPerConv int `json:"max_schedules_per_conv,omitempty"`
 	MaxSchedulesTotal   int `json:"max_schedules_total,omitempty"`
-	MaxScheduleDepth    int `json:"max_schedule_depth,omitempty"`
+	// MaxScheduleDepth is obsolete and ignored: schedules are bounded
+	// by their budgets now. It is still accepted so an old config
+	// loads; the relay logs a warning when it is set.
+	MaxScheduleDepth int `json:"max_schedule_depth,omitempty"`
+
+	// ScheduleMaxFires and ScheduleDefaultUntil are the default budget
+	// of a schedule armed by a human turn: how many times it may fire
+	// and how long it lives (a Go duration, at most 168h). A schedule
+	// is removed when either is spent. 0 / "" use acp-kit/schedule's
+	// defaults (20 / 24h).
+	ScheduleMaxFires     int    `json:"schedule_max_fires,omitempty"`
+	ScheduleDefaultUntil string `json:"schedule_default_until,omitempty"`
 
 	// MinScheduleIntervalSeconds floors a repeating schedule. 0 uses
 	// acp-kit/schedule's default of 60s.
@@ -895,8 +905,14 @@ func (c *Config) Validate() error {
 	if c.MaxMessageChars < 0 {
 		return fmt.Errorf("max_message_chars must be >= 0")
 	}
-	if c.MaxSchedulesPerConv < 0 || c.MaxSchedulesTotal < 0 || c.MaxScheduleDepth < 0 {
+	if c.MaxSchedulesPerConv < 0 || c.MaxSchedulesTotal < 0 || c.ScheduleMaxFires < 0 {
 		return fmt.Errorf("schedule limits must be >= 0")
+	}
+	if c.ScheduleDefaultUntil != "" {
+		d, err := time.ParseDuration(c.ScheduleDefaultUntil)
+		if err != nil || d <= 0 || d > schedule.MaxUntil {
+			return fmt.Errorf("schedule_default_until must be a positive Go duration up to %s, got %q", schedule.MaxUntil, c.ScheduleDefaultUntil)
+		}
 	}
 	if c.MinScheduleIntervalSeconds < 0 {
 		return fmt.Errorf("min_schedule_interval_seconds must be >= 0")
@@ -1092,6 +1108,14 @@ func (c *Config) ReactSettle() time.Duration {
 // acp-kit/schedule apply its own default.
 func (c *Config) MinScheduleInterval() time.Duration {
 	return time.Duration(c.MinScheduleIntervalSeconds) * time.Second
+}
+
+// ScheduleUntil returns the configured default budget lifetime, or 0
+// to let acp-kit/schedule apply its own default. Validate has checked
+// the value.
+func (c *Config) ScheduleUntil() time.Duration {
+	d, _ := time.ParseDuration(c.ScheduleDefaultUntil)
+	return d
 }
 
 // GetSilentSentinel returns the configured sentinel or the default.

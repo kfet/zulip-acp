@@ -20,8 +20,8 @@ import (
 // fire runs one scheduled turn for item id in topic and waits for it.
 func (lh *loopHarness) fire(t *testing.T, topic, id, text string) {
 	t.Helper()
-	err := lh.h.FireSchedule(context.Background(),
-		schedule.Item{ID: id, Conv: chanToken(topic), Text: text, Depth: 1, Every: time.Minute})
+	err := lh.h.fireForTest(context.Background(),
+		schedule.Item{ID: id, Conv: chanToken(topic), Text: text, Every: time.Minute})
 	if err != nil {
 		t.Fatalf("FireSchedule: %v", err)
 	}

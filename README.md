@@ -507,7 +507,9 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `max_attachment_bytes` | `20971520` (20 MB) | cap on ONE inbound attachment; anything larger is skipped and named in the prompt |
 | `max_attachment_total_bytes` | `62914560` (60 MB) | cap on one message's worth of inbound attachments; must be ≥ `max_attachment_bytes` |
 | `max_inline_image_pixels` | `1568` | long-edge ceiling, in pixels, for an image inlined into the prompt; `0` disables downscaling. The file in `inbox/` is always the original |
-| `max_schedule_depth` | `3` | how long a schedule→turn→schedule chain may get |
+| `max_schedule_depth` | — | obsolete, ignored (logged); budgets bound schedules now |
+| `schedule_max_fires` | `20` | default fire budget of a schedule armed by a human turn |
+| `schedule_default_until` | `24h` | default lifetime of that budget (Go duration, max `168h`) |
 | `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
 | `max_schedules_total` | `100` | schedules armed at once across the relay |
 | `min_schedule_interval_seconds` | `60` | floor on a repeating schedule |

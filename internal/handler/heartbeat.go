@@ -39,6 +39,7 @@ func (h *Handler) heartbeat(ctx context.Context, conv journal.Conv, sched *sched
 	if sched == nil {
 		return
 	}
+	h.silentFires.Store(sched, struct{}{})
 	if hb, ok := h.cfg.Journal.Heartbeat(sched.ID); ok && hb.Hash == "" && h.isNewest(ctx, conv.Key, hb.MsgID) {
 		// A record with a hash is an answer (collapseRepeat): it is
 		// never edited into a heartbeat line.
@@ -168,6 +169,8 @@ func (h *Handler) collapseRepeat(ctx context.Context, conv journal.Conv, split *
 		return 0
 	}
 	h.retract(ctx, conv.ID, split)
+	// The same answer again is no news.
+	h.silentFires.Store(sched, struct{}{})
 	h.rememberOwn(conv.ID, prev.MsgID)
 	h.saveHeartbeat(sched.ID, journal.Heartbeat{MsgID: prev.MsgID, Count: n, Hash: hash})
 	return prev.MsgID

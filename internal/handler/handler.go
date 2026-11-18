@@ -743,6 +743,10 @@ type Handler struct {
 	// running turn did to the schedule set (see schedmark.go).
 	schedMu    sync.Mutex
 	schedTurns map[string]*schedTurn
+	// silentFires holds the *schedule.Item of each running scheduled
+	// turn that had no news (a heartbeat or a collapsed repeat), so
+	// FireSchedule can report it to the store.
+	silentFires sync.Map
 
 	// lastOwn is the NEWEST message the relay has posted in each
 	// conversation. The archive control needs more than "this message

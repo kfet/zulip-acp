@@ -28,8 +28,8 @@ func repeatLoop(t *testing.T, chunk string, err error) *loopHarness {
 
 // fireAny is fire for a turn that may fail.
 func (lh *loopHarness) fireAny(id string) {
-	_ = lh.h.FireSchedule(context.Background(),
-		schedule.Item{ID: id, Conv: chanToken("hb"), Text: "check", Depth: 1, Every: time.Minute})
+	_ = lh.h.fireForTest(context.Background(),
+		schedule.Item{ID: id, Conv: chanToken("hb"), Text: "check", Every: time.Minute})
 }
 
 func TestRepeatHashNormalises(t *testing.T) {

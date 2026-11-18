@@ -41,12 +41,12 @@ func TestLifecycleArchives(t *testing.T) {
 	sched := bh.conv(t, "sched", journal.StateDone, journal.SetByUser, "", week)
 	bh.h.setInflight(busy.ID, &inflightEntry{cancel: func() {}})
 	store, err := schedule.Open(schedule.Config{Path: filepath.Join(t.TempDir(), "s.json"), Ticks: make(chan time.Time), Now: func() time.Time { return viewNow },
-		Fire: func(context.Context, schedule.Item) error { return nil }, Logf: func(string, ...any) {}})
+		Fire: func(context.Context, schedule.Item) (schedule.Result, error) { return schedule.Result{}, nil }, Logf: func(string, ...any) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	bh.h.cfg.Schedules = store
-	if _, err := bh.h.Schedule(sched.Key.Token(), "x", viewNow.Add(time.Hour), 0); err != nil {
+	if _, err := bh.h.Schedule(sched.Key.Token(), "x", viewNow.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatal(err)
 	}
 

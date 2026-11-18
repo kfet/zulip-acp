@@ -31,7 +31,7 @@ func TestScheduleArmedInTheRenamingTurnSurvivesTheRename(t *testing.T) {
 			t.Errorf("convs = %+v", convs)
 			return
 		}
-		_, serr = lh.h.Schedule(convs[0].Key.Token(), "check the deploy", fireEpoch.Add(time.Minute), 0)
+		_, serr = lh.h.Schedule(convs[0].Key.Token(), "check the deploy", fireEpoch.Add(time.Minute), 0, schedule.Budget{})
 		reply, rerr = lh.h.RenameTopic(convs[0].Key, "Deploy watch")
 	}
 	deliverLobby(t, lh, mention("watch the deploy for me"))
@@ -97,7 +97,7 @@ func TestNewSessionArmedInTheRenamingTurnIsApplied(t *testing.T) {
 func TestHumanTopicMoveCarriesSchedules(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	lh.engage(t, "loopback")
-	if _, err := lh.h.Schedule(chanToken("loopback"), "ping", fireEpoch.Add(time.Hour), 0); err != nil {
+	if _, err := lh.h.Schedule(chanToken("loopback"), "ping", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	lh.h.Handle(context.Background(), zulipproto.Event{
@@ -122,7 +122,7 @@ func TestTopicMergeCarriesSchedulesToTheSurvivor(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	lh.engage(t, "a")
 	lh.engage(t, "b")
-	if _, err := lh.h.Schedule(chanToken("a"), "ping", fireEpoch.Add(time.Hour), 0); err != nil {
+	if _, err := lh.h.Schedule(chanToken("a"), "ping", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	lh.h.Handle(context.Background(), zulipproto.Event{
@@ -137,7 +137,7 @@ func TestTopicMergeCarriesSchedulesToTheSurvivor(t *testing.T) {
 func TestMoveOfAnUnknownTopicTouchesNothing(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("ok"), nil)
 	// Armed for a topic the journal does not know.
-	if _, err := lh.h.Schedule(chanToken("ghost"), "ping", fireEpoch.Add(time.Hour), 0); err != nil {
+	if _, err := lh.h.Schedule(chanToken("ghost"), "ping", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if _, moved, err := lh.h.renameConv(4, "ghost", "elsewhere"); moved || err != nil {
@@ -155,13 +155,13 @@ func TestRekeyScheduleFailureIsLogged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.json")
 	store, err := schedule.Open(schedule.Config{
 		Path: path,
-		Fire: func(context.Context, schedule.Item) error { return nil },
+		Fire: func(context.Context, schedule.Item) (schedule.Result, error) { return schedule.Result{}, nil },
 		Now:  func() time.Time { return fireEpoch },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Add("from", "x", fireEpoch.Add(time.Hour), 0); err != nil {
+	if _, err := store.Add("from", "x", fireEpoch.Add(time.Hour), 0, schedule.Budget{}); err != nil {
 		t.Fatal(err)
 	}
 	// The destination path is a NON-EMPTY directory, so the save fails.
@@ -239,8 +239,8 @@ func parkedFire(t *testing.T, change func(lh *loopHarness, conv journal.Conv)) (
 	}
 	fired := make(chan error, 1)
 	go func() {
-		fired <- lh.h.FireSchedule(context.Background(),
-			schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later", Depth: 1})
+		fired <- lh.h.fireForTest(context.Background(),
+			schedule.Item{ID: "s1", Conv: chanToken("busy"), Text: "later"})
 	}()
 	<-waiting
 	change(lh, conv)

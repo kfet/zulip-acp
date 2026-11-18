@@ -341,14 +341,14 @@ func (h *Handler) rememberPosted(key journal.Key, split *rollover.Splitter) {
 func (h *Handler) CanSchedule() bool { return h.cfg.Schedules != nil }
 
 // Schedule satisfies command.Scheduler.
-func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration) (schedule.Item, error) {
+func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
 	if h.cfg.Schedules == nil {
 		return schedule.Item{}, errors.New("scheduling is not enabled on this relay")
 	}
 	if _, err := journal.ParseToken(token); err != nil {
 		return schedule.Item{}, err
 	}
-	it, err := h.cfg.Schedules.Add(token, text, at, every)
+	it, err := h.cfg.Schedules.Add(token, text, at, every, b)
 	if err == nil {
 		h.noteArmed(it)
 		h.viewsDirty()
@@ -357,6 +357,34 @@ func (h *Handler) Schedule(token, text string, at time.Time, every time.Duration
 		h.settleStatusKey(token, 0)
 	}
 	return it, err
+}
+
+// Retime satisfies command.Scheduler.
+func (h *Handler) Retime(token, id string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
+	if h.cfg.Schedules == nil {
+		return schedule.Item{}, errors.New("scheduling is not enabled on this relay")
+	}
+	it, err := h.cfg.Schedules.Retime(token, id, at, every, b)
+	if err == nil {
+		h.viewsDirty()
+	}
+	return it, err
+}
+
+// ScheduleStopped is schedule.Config.Stopped: the store removed an item
+// on its own. Its reaction goes, and a schedule stopped for a silent
+// streak says so once, so a human knows why the checks ended.
+func (h *Handler) ScheduleStopped(it schedule.Item, why schedule.Stop) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
+	defer cancel()
+	h.unmarkAlarm(ctx, it.ID)
+	if why == schedule.StopSilent {
+		if err := h.PostTo(it.Conv, "*"+schedule.SilentNotice+"*"); err != nil {
+			h.cfg.Logf("handler: posting the stop notice of %s: %v", it.ID, err)
+		}
+	}
+	h.settleStatusKey(it.Conv, 0)
+	h.viewsDirty()
 }
 
 // Schedules satisfies command.Scheduler.
@@ -389,10 +417,11 @@ func (h *Handler) Unschedule(token, id string) error {
 // an ordinary turn in the conversation it was armed in.
 //
 // It BLOCKS for the whole turn. That is not incidental — acp-kit's
-// store derives a schedule's recursion depth from whatever is firing in
-// the conversation right now, so returning early would make every
-// schedule the turn arms look like a fresh depth-1 one and the depth cap
-// would stop bounding anything.
+// store treats a schedule the turn arms as the child of whatever is
+// firing in the conversation right now, so returning early would let
+// every such schedule arm a fresh budget. The result says whether the
+// turn was silent (see heartbeat.go), which drives the store's backoff
+// and silent-streak stop.
 //
 // # No human in the loop
 //
@@ -410,7 +439,16 @@ func (h *Handler) Unschedule(token, id string) error {
 // it can only exist because an allowed user drove a turn that armed it,
 // and it re-enters that same conversation, so it can never reach
 // anywhere its author could not.
-func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error) {
+func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (res schedule.Result, err error) {
+	defer func() { _, res.Silent = h.silentFires.LoadAndDelete(&it) }()
+	err = h.fireSchedule(ctx, &it)
+	return res, err
+}
+
+// fireSchedule is FireSchedule's body; heartbeat and collapseRepeat
+// mark it silent through the it pointer.
+func (h *Handler) fireSchedule(ctx context.Context, itp *schedule.Item) (err error) {
+	it := *itp
 	// A one-shot schedule has left the store by now, and one whose
 	// conversation is gone is about to: either way its reaction must
 	// go. A repeating one stays armed, and so does its reaction.
@@ -466,12 +504,12 @@ func (h *Handler) FireSchedule(ctx context.Context, it schedule.Item) (err error
 	defer h.endTurn(conv, entry)
 	defer h.clearInflight(conv.ID, entry)
 
-	h.cfg.Logf("handler: firing schedule %s in %s (depth %d)", it.ID, h.describe(conv.Key), it.Depth)
+	h.cfg.Logf("handler: firing schedule %s in %s (%d fires left)", it.ID, h.describe(conv.Key), it.FiresLeft())
 	// Addressed, but run lets a scheduled turn abstain all the same:
 	// a check that found nothing new updates the schedule's heartbeat
 	// (heartbeat.go) instead of posting the sentinel. msgID 0 skips the
 	// :eyes: acknowledgement: there is no triggering message.
-	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, &it)
+	return h.run(turnCtx, conv, "["+scheduledSender+"] "+it.Text, true, 0, itp)
 }
 
 // claimFired claims conv for a scheduled turn and returns it as the

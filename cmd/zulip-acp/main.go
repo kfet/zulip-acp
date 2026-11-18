@@ -616,14 +616,21 @@ func main() {
 	var uploadVia string
 	var maxFileBytes int64
 	if cfg.RelayMCP {
+		if cfg.MaxScheduleDepth != 0 {
+			log.Printf("zulip-acp: WARN max_schedule_depth is obsolete and ignored; schedules are bounded by schedule_max_fires and schedule_default_until")
+		}
 		schedules, err = schedule.Open(schedule.Config{
-			Path:        filepath.Join(cfg.StateDir, "schedules.json"),
-			Fire:        func(ctx context.Context, it schedule.Item) error { return h.FireSchedule(ctx, it) },
-			MaxDepth:    cfg.MaxScheduleDepth,
-			MaxPerConv:  cfg.MaxSchedulesPerConv,
-			MaxTotal:    cfg.MaxSchedulesTotal,
-			MinInterval: cfg.MinScheduleInterval(),
-			Logf:        log.Printf,
+			Path: filepath.Join(cfg.StateDir, "schedules.json"),
+			Fire: func(ctx context.Context, it schedule.Item) (schedule.Result, error) { return h.FireSchedule(ctx, it) },
+			// Off the tick loop: it calls Zulip, and a slow server
+			// must not hold up every other schedule.
+			Stopped:         func(it schedule.Item, why schedule.Stop) { go h.ScheduleStopped(it, why) },
+			MaxPerConv:      cfg.MaxSchedulesPerConv,
+			MaxTotal:        cfg.MaxSchedulesTotal,
+			MinInterval:     cfg.MinScheduleInterval(),
+			DefaultUntil:    cfg.ScheduleUntil(),
+			DefaultMaxFires: cfg.ScheduleMaxFires,
+			Logf:            log.Printf,
 		})
 		if err != nil {
 			log.Fatalf("schedules: %v", err)

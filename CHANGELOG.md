@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Schedules have budgets instead of a depth limit (acp-kit v0.51.0). Each schedule lives until `until` (default 24h, at most 7 days) or `max_fires` fires (default 20). A scheduled turn can re-time its own schedule but cannot extend its budget or start a new repeat.
+- A silent scheduled turn (heartbeat or collapsed repeat) doubles the next interval, up to 6h. After 3 silent fires in a row the schedule stops and the relay posts one line: "stopped: no news after 3 checks — reply here to resume".
+- The `schedule` tool takes `until`, `max_fires` and `id` (re-time). `list_schedules` and `!schedules` show the fires left and the deadline.
+- New config keys `schedule_max_fires` and `schedule_default_until`. `max_schedule_depth` is obsolete: it still loads, and the relay logs that it is ignored.
+- `schedules.json` from an older relay is migrated on start, with no item lost.
+- The built-in `promise` skill now says: use one repeating schedule with an exit condition, stay silent on "not yet", and never chain one-shots.
+
 ## [0.81.0] - 2026-11-15
 
 ### Fixed

@@ -43,7 +43,7 @@ func (lh *loopHarness) armDuring(fn func()) {
 
 func mustSchedule(t *testing.T, h *Handler, tok, text string, at time.Time) schedule.Item {
 	t.Helper()
-	it, err := h.Schedule(tok, text, at, 0)
+	it, err := h.Schedule(tok, text, at, 0, schedule.Budget{})
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestGoneScheduleDropsItsAlarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A repeating item in a conversation the journal never had.
-	err := lh.h.FireSchedule(context.Background(), schedule.Item{ID: "s1", Conv: chanToken("nowhere"), Every: time.Hour})
+	err := lh.h.fireForTest(context.Background(), schedule.Item{ID: "s1", Conv: chanToken("nowhere"), Every: time.Hour})
 	if err == nil {
 		t.Fatal("fired into a conversation that does not exist")
 	}
@@ -220,7 +220,7 @@ func TestRepeatingFireKeepsItsAlarm(t *testing.T) {
 	if err := lh.j.SetAlarm("r1", 55); err != nil {
 		t.Fatal(err)
 	}
-	if err := lh.h.FireSchedule(context.Background(), schedule.Item{ID: "r1", Conv: tok, Text: "tick", Every: time.Hour}); err != nil {
+	if err := lh.h.fireForTest(context.Background(), schedule.Item{ID: "r1", Conv: tok, Text: "tick", Every: time.Hour}); err != nil {
 		t.Fatalf("FireSchedule: %v", err)
 	}
 	lh.awaitTurnEnd(t)
@@ -241,7 +241,7 @@ func TestSchedCommandListsPending(t *testing.T) {
 	lh.z.reset()
 
 	a := mustSchedule(t, lh.h, tok, "check the deploy\nthen report", fireEpoch.Add(time.Hour))
-	b, err := lh.h.Schedule(tok, strings.Repeat("y", schedPreviewRunes+5), fireEpoch.Add(2*time.Hour), time.Hour)
+	b, err := lh.h.Schedule(tok, strings.Repeat("y", schedPreviewRunes+5), fireEpoch.Add(2*time.Hour), time.Hour, schedule.Budget{})
 	if err != nil {
 		t.Fatal(err)
 	}
