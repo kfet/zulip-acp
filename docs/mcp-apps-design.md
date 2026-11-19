@@ -213,8 +213,8 @@ proxy with TLS in front of the loopback listener for `public_url` (and for
 `content_url`, if used, pointing at the same listener). Follow the fleet's
 public-exposure rules for which host and proxy may do this. The proxy must
 pass WebSocket upgrades on `/ws/` and keep the `Host` header, so the
-bridge's `Origin` check matches. The fleet's `dist.lock` must pin fir 1.42.0
-or later: an older fir sends no `dev.fir.mcp/v1` data, and then no link is
+bridge's `Origin` check matches. The fleet's `dist.lock` fir floor must be
+`>=1.42.0` or higher: an older fir sends no `dev.fir.mcp/v1` data, and then no link is
 ever posted.
 
 ## Tests

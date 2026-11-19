@@ -106,8 +106,9 @@ what differs from `distro.json`): a spec plus `dist.lock` is what
 makes `scripts/converge.sh <bot> --apply` able to hold it at a known state.
 The spec declares **requirements** (an optional `"require": {"zulip_acp":
 ">=X.Y.Z", "fir": ">=X.Y.Z"}`); `dist.lock` records the **resolution** of
-those requirements across the whole fleet. `--tot` is the only resolver;
-`--apply` hard-fails offline when the lock violates this host's `require`.
+those requirements as `>=X.Y.Z` floors. `--tot` is the only writer (see the
+update skill, **dist.lock**); `--apply` hard-fails offline when the lock
+violates this host's `require`.
 
 ### 2. Confirm the ACP agent is on the host PATH
 

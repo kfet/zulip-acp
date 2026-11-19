@@ -12,8 +12,8 @@ upgrade/recycle mechanics.
 
 > **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
 > bot with a spec in the fleet registry (`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots/<name>.json`), version moves go through the lock:
-> `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
-> `scripts/converge.sh <bot> --apply` per host. Everywhere else the verb is
+> `scripts/converge.sh --tot` (rewrites `dist.lock`; commit + push), then
+> `scripts/converge.sh <bot> --apply` per host (see **dist.lock** below). Everywhere else the verb is
 > `zulip-acp update`. **Never place a binary by hand** — no `cp`, no staged
 > `.new` file, no `mv` into `~/.local/bin`.
 
@@ -28,7 +28,7 @@ upgrade/recycle mechanics.
 > and push `dist.lock` if a version moved, `bot-a --apply`. The topic gets
 > the old → new versions and the `dist.lock` change, or "already up to date"
 > with the version table. A fleet host with no converge command refuses, and
-> `--rollback` is refused there (pin the version in `dist.lock` instead).
+> `--rollback` is refused there (write an exact `=X.Y.Z` in `dist.lock` instead).
 
 > **Auto-update (`auto_update`, acp-kit/autoupdate).** With `update_owner_ids`
 > set, the relay checks for a release every ~6h. Modes: `off`, `notify`,
@@ -46,6 +46,22 @@ upgrade/recycle mechanics.
 > the same reload. On a fleet host the offer is `dist.lock` drift ("lock wants vX,
 > running vY") and :check: runs `update_converge_cmd`. `!update --check` shows the
 > pending offer. State: `<state_dir>/autoupdate.json`.
+
+## dist.lock — who writes it, when, what
+
+- **Who:** only `scripts/converge.sh --tot`. You run it by hand, or `!update`
+  runs it (`scripts/chat-update.sh`). Do not hand-edit a version.
+- **When:** before a fleet `--apply` that must pick up a new release. Run it
+  again just before `--apply` if a release landed after the last `--tot`.
+- **What:** a floor. `"zulip_acp": ">=X.Y.Z"`, `"fir": ">=X.Y.Z"`;
+  `fir-exts` is a git rev.
+- **Converge:** a host that satisfies the entry stays (never downgraded). A
+  host below it updates to the newest release that satisfies it.
+- **Exact pin:** `X.Y.Z` or `=X.Y.Z` — the one hand edit, only to hold the
+  fleet on a version. Say why in the commit.
+- **Spec `require`** (e.g. `"fir": ">=1.59.0 <2.0.0"`) limits what `--tot` may
+  write. Edit it to hold back or to force a minimum, then `--tot`.
+- **Steps:** `--tot` → commit + push `dist.lock` → `converge.sh <bot> --apply`.
 
 ## reload vs restart — pick the right verb
 
@@ -102,8 +118,9 @@ Use **restart** — a hard, destructive restart — only for:
    exactly one of `enable --now` (not active), `restart` (unit file changed —
    a SIGHUP re-exec keeps the old argv and environment), `reload` (binary,
    config or fir moved, or the running image is old), or nothing. Then it
-   waits up to 30s for `/proc/<MainPID>/exe --version` to be the locked
-   version, and fails with the last journal lines if it is not. Bots that
+   checks once that `/proc/<MainPID>/exe --version` is the installed version:
+   a draining reload is pending (exit 3); any other mismatch fails with the
+   last journal lines. Bots that
    share a host share ONE binary / fir / extension update. See
    `docs/converge-design.md`.
 
@@ -128,17 +145,17 @@ Use **restart** — a hard, destructive restart — only for:
    0. When the UNIT file changed it writes the files and refuses the restart —
    run `systemctl --user restart <unit>` from outside the relay.
 
-   **Spec = constraint, lock = resolution.** A bot spec may declare what its
-   host needs:
+   **Spec = constraint, lock = resolution** (see **dist.lock** above). A bot
+   spec may declare what its host needs:
 
    ```json
    "require": { "zulip_acp": ">=0.31.3", "fir": ">=1.11.0" }
    ```
 
    `--tot` then resolves the newest release that satisfies **every** spec's
-   constraints — not the newest full stop — and writes that into `dist.lock`.
-   `--apply` resolves nothing: it hard-fails, offline and before it copies
-   anything to the host, if the locked version violates that host's `require`.
+   constraints — not the newest full stop — and writes `>=` that version into
+   `dist.lock`. `--apply` hard-fails, before it copies anything to the host, if
+   the lock's floor violates that host's `require`.
    That is what stops a hand-edited or stale lock silently downgrading a host.
    A spec without a `require` block behaves exactly as before.
 
@@ -257,7 +274,8 @@ once, and reload from then on.
 ```bash
 scripts/converge.sh --tot                    # resolve the newest releases that
                                              # satisfy every spec's `require`,
-                                             # rewrite dist.lock; review + commit
+                                             # write ">=X.Y.Z" floors to dist.lock;
+                                             # commit + push
 git diff dist.lock
 scripts/converge.sh --all                    # dry run: the full plan, every host
 scripts/converge.sh --all --apply            # plan, then update + ONE recycle

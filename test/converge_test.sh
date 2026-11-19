@@ -358,6 +358,28 @@ for badcat in '"x"' '[{"provider":"a","emoji":"","model":"m"}]' \
 done
 rm "$W/bots/bot-q.json"
 
+echo "== lock floor: >= in dist.lock accepts newer, updates older"
+cp "$W/repo/dist.lock" "$W/lock.exact"
+jq --arg za ">=$WANT" --arg fir ">=$FIRV" '.zulip_acp = $za | .fir = $fir' "$W/lock.exact" >"$W/repo/dist.lock"
+mkdir -p "$W/ghstub"; printf '#!/bin/sh\nprintf "v%s\\nv0.62.3\\nv0.70.0-rc1\\n"\n' "$WANT" >"$W/ghstub/gh"; chmod +x "$W/ghstub/gh"
+mkhost host-f 0.63.0; echo 1.43.0 >"$W/hosts/host-f/st/fir"
+jq '.name = "bot-f" | .host = "host-f"' "$base" >"$W/bots/bot-f.json"
+converged host-f bot-f; running host-f zulip-acp 0.63.0
+run bot-f --apply
+has "converged: nothing to do" "newer than the floor: no update, no downgrade"
+[ -z "$(calls)" ] && ok "newer host untouched" || bad "newer host touched: $(calls)"
+echo 1.41.0 >"$W/hosts/host-f/st/fir"; echo 0.61.0 >"$W/hosts/host-f/st/za"; running host-f zulip-acp 0.61.0
+PATH="$W/ghstub:$PATH" run bot-f --apply
+[ "$rc" = 0 ] && ok "below floor applies" || { bad "below floor rc=$rc"; echo "$out"; }
+seq_is "below floor: update to newest satisfying release" "host-f zulip-acp update --binary $W/hosts/host-f/.local/bin/zulip-acp --version v0.62.3 --no-reload -y
+host-f fir update
+host-f systemctl reload zulip-acp.service"
+jq '.fir = "nope"' "$W/repo/dist.lock" >"$W/l" && mv "$W/l" "$W/repo/dist.lock"
+run bot-f
+[ "$rc" != 0 ] && ok "invalid lock constraint fails" || bad "invalid lock accepted"
+has "invalid fir constraint" "names the bad entry"
+cp "$W/lock.exact" "$W/repo/dist.lock"; rm "$W/bots/bot-f.json"
+
 echo "== unreachable host"
 jq '.name = "bot-z" | .host = "host-z"' "$base" >"$W/bots/bot-z.json"
 run bot-z

@@ -5,6 +5,9 @@
 # plus dist.lock, and makes each target host match. Version moves go through
 # the lock, never through a hand-typed command on a host.
 #
+# dist.lock: only --tot writes it, as ">=X.Y.Z" floors. A host at or above a
+# floor is converged; below it, it updates. A bare X.Y.Z is an exact pin.
+#
 # OWNERSHIP — the one rule this script is built on:
 #   the Go binary owns the FILE SWAP (`zulip-acp update --binary B --no-reload`:
 #   checksum-verified, atomic, ETXTBSY-safe); converge owns RENDERING, ONE
@@ -14,7 +17,7 @@
 # Usage:
 #   converge.sh <bot>... [--apply] [--local]   plan (default; also --check) or apply
 #   converge.sh --all [--apply]                every managed bot of this relay
-#   converge.sh --tot                          resolve dist.lock; NEVER converges
+#   converge.sh --tot                          write ">=newest" floors to dist.lock; NEVER converges
 #   converge.sh render <bot> <artefact>        config | execstart | unit
 #   converge.sh recycle-action <unit_changed> <active_state> <running> <want> <files_changed>
 #   converge.sh semver-cmp <a> <b> | semver-sat <ver> <constraint>
@@ -393,8 +396,18 @@ enforce_require() {
   local bot=$1 host=$2 comp=$3 locked=$4 c
   c=$(spec_require "$SPEC" "$comp")
   [ -n "$c" ] || return 0
-  ver_satisfies "$locked" "$c" && return 0
+  ver_satisfies "$(lock_floor "$locked")" "$c" && return 0
   die "$host ($bot): dist.lock has $comp $locked, which does not satisfy $SPEC_SRC require.$comp \"$c\". The lock is a RESOLUTION of the specs, not an override: re-resolve with \`scripts/converge.sh --tot\` (or fix the lock by hand and commit it). Nothing was changed on $host."
+}
+
+# lock_floor <constraint> — the lowest version a lock constraint names: the
+# version of its first >=, >, ~> or exact term. --tot writes ">=X" (or a bare
+# X in an old lock), so this is X. Empty when no term has a lower bound.
+lock_floor() {
+  local op want
+  while read -r op want; do
+    case "$op" in ge|gt|tw|eq) echo "$want"; return 0 ;; esac
+  done < <(constraint_terms "$1" || true)
 }
 
 # service key helpers: "absent or false or null" => not emitted
@@ -676,18 +689,39 @@ check_unit() {
 # Phase 1 probes every host and records what must change; nothing is
 # written. Phase 2 (--apply) performs exactly that plan.
 # ---------------------------------------------------------------------------
-declare -A B_SPEC B_HOST B_UNIT B_CFG B_ACT B_SELF B_FILES
-declare -A K_ZA K_NEW K_Y K_NR H_FIR H_EXT H_DR
+declare -A B_WANT B_SPEC B_HOST B_UNIT B_CFG B_ACT B_SELF B_FILES
+declare -A K_ZA K_RUN K_NEW K_Y K_NR H_FIR H_EXT H_DR
 HOSTS=() BOTS=() KEYS=()
 CHANGES=0
 
-want_za="" want_fir="" want_ext=""
+# dist.lock holds a CONSTRAINT per component, not a pin: ">=1.59.1" means
+# any installed version at or above 1.59.1 is converged; a bare "1.59.1" (or
+# "=1.59.1") is an exact pin. lock_za / lock_fir are those constraints.
+# want_za is the release a host BELOW the constraint updates to: the newest
+# published release that satisfies it, resolved once, only when needed.
+lock_za="" lock_fir="" want_za="" want_fir="" want_ext=""
 
 load_lock() {
   [ -f "$LOCK" ] || die "missing $LOCK"
-  want_za=$(jq -r '.zulip_acp' "$LOCK")
-  want_fir=$(jq -r '.fir' "$LOCK")
+  lock_za=$(jq -r '.zulip_acp' "$LOCK")
+  lock_fir=$(jq -r '.fir' "$LOCK")
   want_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
+  valid_constraint "$lock_za"  || die "$LOCK: invalid zulip_acp constraint \"$lock_za\" (want e.g. \">=0.84.0\" or an exact \"0.84.0\")"
+  valid_constraint "$lock_fir" || die "$LOCK: invalid fir constraint \"$lock_fir\" (want e.g. \">=1.59.1\" or an exact \"1.59.1\")"
+  want_fir=$(lock_floor "$lock_fir")
+}
+
+# resolve_want_za — set want_za: the newest zulip-acp release that satisfies
+# the lock and every spec's require. An exact pin needs no network.
+resolve_want_za() {
+  local v ok=()
+  [ -n "$want_za" ] && return 0
+  if is_release_version "${lock_za#=}"; then want_za=${lock_za#=}; return 0; fi
+  for v in $(list_tags_zulip_acp); do
+    ver_satisfies "$v" "$lock_za" && ok+=("$v")
+  done
+  want_za=$(resolve_satisfying zulip_acp ${ok[@]+"${ok[@]}"})
+  [ -n "$want_za" ] || die "no published zulip-acp release satisfies dist.lock \"$lock_za\" and every spec's require (rate-limited? is gh logged in?)"
 }
 
 fir_version() { rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true"; }
@@ -701,9 +735,10 @@ plan_binary() {
   KEYS+=("$key")
   b=$(p_home "$2")
   cur=$(rsh "\"$b\" --version 2>/dev/null | head -1 || true")
-  if [ "$cur" = "$want_za" ]; then
-    K_ZA[$key]=""; note "zulip-acp $2 $cur ✓"; return 0
+  if ver_satisfies "$cur" "$lock_za"; then
+    K_ZA[$key]=""; K_RUN[$key]=$cur; note "zulip-acp $2 $cur ✓ ($lock_za)"; return 0
   fi
+  resolve_want_za; K_RUN[$key]=$want_za
   if [ -z "$cur" ] || ! is_release_version "$cur" || [ "$(ver_cmp "$cur" "$SELFUPDATE_MIN")" -lt 0 ]; then
     die "$1: $2 is ${cur:-missing}, which cannot update itself (needs >= $SELFUPDATE_MIN). Bootstrap once: curl -fsSL https://raw.githubusercontent.com/$ZULIP_ACP_REPO/main/install.sh | BIN_DIR=\$HOME/.local/bin VERSION=v$want_za sh"
   fi
@@ -726,8 +761,8 @@ plan_fir() {
   local h=$1 cur ext p rev
   if [ -z "${H_FIR[$h]+x}" ]; then
     cur=$(fir_version)
-    if [ "$cur" = "$want_fir" ]; then H_FIR[$h]=""; note "fir $cur ✓"
-    else H_FIR[$h]=${cur:-missing}; CHANGES=$((CHANGES + 1)); note "PLAN fir: ${cur:-missing} → $want_fir"; fi
+    if ver_satisfies "$cur" "$lock_fir"; then H_FIR[$h]=""; note "fir $cur ✓ ($lock_fir)"
+    else H_FIR[$h]=${cur:-missing}; CHANGES=$((CHANGES + 1)); note "PLAN fir: ${cur:-missing} → $lock_fir"; fi
   fi
   for ext in $(jq -r '.fir.exts[]? // empty' "$2"); do
     [ -n "${H_EXT[$h|$ext]+x}" ] && continue
@@ -789,13 +824,15 @@ plan_bot() { # <bot>
   pr=$(probe_unit "$unit")
   IFS='|' read -r st run self <<<"$pr"
   B_SELF[$bot]=$self
-  act=$(recycle_action "$us" "$st" "$run" "$want_za" "$fc")
+  local want=${K_RUN[$h|$binary]}
+  B_WANT[$bot]=$want
+  act=$(recycle_action "$us" "$st" "$run" "$want" "$fc")
   [ "$act" = start ] && H_DR[$h]=1
   B_ACT[$bot]=$act
   case "$act" in
     none)    note "$unit: running ${run:-?} ✓" ;;
     pending) PENDING=$((PENDING + 1))
-             note "$unit: reload pending (already draining; running ${run:-?}, wanted $want_za); nothing to signal — re-run converge to confirm" ;;
+             note "$unit: reload pending (already draining; running ${run:-?}, wanted $want); nothing to signal — re-run converge to confirm" ;;
     restart) CHANGES=$((CHANGES + 1))
              note "PLAN restart $unit (unit changed) — WARNING: drops in-flight turns and messages posted before the fresh event queue registers"
              if [ "$self" = 1 ]; then note "WARNING: converge runs inside $unit; --apply writes the files, then refuses this restart"; fi ;;
@@ -828,7 +865,7 @@ apply_host() { # <host>
   if [ -n "${H_FIR[$h]:-}" ]; then
     rsh "fir update" || true
     cur=$(fir_version)
-    [ "$cur" = "$want_fir" ] || die "$h: fir is ${cur:-missing} after 'fir update', lock wants $want_fir — re-run --tot, or fetch v$want_fir from $FIR_DIST_REPO/releases"
+    ver_satisfies "$cur" "$lock_fir" || die "$h: fir is ${cur:-missing} after 'fir update', dist.lock wants $lock_fir — fix the lock (scripts/converge.sh --tot), or fetch v$want_fir from $FIR_DIST_REPO/releases"
     note "fir now $cur ✓"
   fi
   for k in "${!H_EXT[@]}"; do
@@ -870,7 +907,7 @@ apply_host() { # <host>
       note "reload pending: this relay reloads when the current turn ends"; continue
     fi
     local c=0
-    check_unit "$u" "$want_za" "${B_ACT[$bot]}" || c=$?
+    check_unit "$u" "${B_WANT[$bot]}" "${B_ACT[$bot]}" || c=$?
     case "$c" in 0) : ;; "$EXIT_PENDING") PENDING=$((PENDING + 1)) ;; *) rc=1 ;; esac
   done
   [ "$rc" = 0 ] || exit "$rc"
@@ -887,8 +924,8 @@ converge() { # <bot>...
     [ "$(jqs '.supervisor')" = systemd-user ] || die "$bot: unsupported supervisor $(jqs '.supervisor') (only systemd-user)"
     h=$(jqs '.host')
     # The lock must be acceptable to the spec before any host is touched.
-    enforce_require "$bot" "$h" zulip_acp "$want_za"
-    [ "$(jqs '.agent.kind')" = fir ] && enforce_require "$bot" "$h" fir "$want_fir"
+    enforce_require "$bot" "$h" zulip_acp "$lock_za"
+    [ "$(jqs '.agent.kind')" = fir ] && enforce_require "$bot" "$h" fir "$lock_fir"
     B_SPEC[$bot]=$spec; B_HOST[$bot]=$h; BOTS+=("$bot")
     case " ${HOSTS[*]} " in *" $h "*) : ;; *) HOSTS+=("$h") ;; esac
   done
@@ -1020,6 +1057,9 @@ tot() {
   [ -n "$new_fir" ] || die "could not resolve latest fir-dist tag"
   [ -n "$new_ext" ] || die "could not resolve fir-exts HEAD"
 
+  # The lock records a FLOOR: hosts at or above it are converged, hosts
+  # below it update. A hand-written exact pin is replaced too.
+  new_za=">=$new_za"; new_fir=">=$new_fir"
   [ "$old_za" != "$new_za" ]   && { note "zulip-acp: $old_za → $new_za"; moved=1; }
   [ "$old_fir" != "$new_fir" ] && { note "fir:       $old_fir → $new_fir"; moved=1; }
   [ "$old_ext" != "$new_ext" ] && { note "fir-exts:  ${old_ext:0:12} → ${new_ext:0:12}"; moved=1; }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `dist.lock` holds `>=X.Y.Z` floors, written only by `converge.sh --tot`. Converge keeps a host that satisfies the floor and updates a host below it to the newest release that satisfies it. A bare `X.Y.Z` stays an exact pin.
+- acp-kit v0.52.1: auto-update offers no converge to a host at or above a `>=` lock floor.
+
 ## [0.84.0] - 2026-11-19
 
 ### Changed

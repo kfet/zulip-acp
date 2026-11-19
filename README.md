@@ -1416,7 +1416,7 @@ unsets, bot key order first; `"managed": false` entries are not merged).
 the tracked tree (skipped when the registry is absent).
 
 ```bash
-scripts/converge.sh --tot            # resolve latest-of-everything into dist.lock
+scripts/converge.sh --tot            # write ">=newest" floors into dist.lock; commit it
 scripts/converge.sh <bot>            # dry run
 scripts/converge.sh <bot> --apply    # binary + fir + exts + config + unit + recycle
 ```

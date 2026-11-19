@@ -71,7 +71,7 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 test/fixtures/bots/     synthetic bot specs for tests (live registry: ~/sync/shared/fleet/bots)
 distro.json             defaults shared by every bot; a registry bot file holds only overrides
 cmd/zulip-acp/          entry point: flags + wiring
-dist.lock               the fleet's pinned zulip-acp / fir / fir-exts versions
+dist.lock               fleet version floors (">=X.Y.Z"); written ONLY by converge.sh --tot
 docs/                   design doc + Zulip protocol reference
 internal/config/        JSON config loader (DisallowUnknownFields)
 internal/handler/       event → ACP prompt; streaming sink; topic poster; commands;
@@ -130,7 +130,9 @@ test/                   live-server integration tests (ZULIP_LIVE=1);
 **Never hand-place a binary** — no `cp`/`scp`/`mv` into `~/.local/bin`, the
 first install included. `zulip-acp update` performs the checksum-verified,
 atomic, `ETXTBSY`-safe swap; `scripts/converge.sh <bot> --apply` is the only
-sanctioned way to touch a host that has a spec in the fleet registry; the root
+sanctioned way to touch a host that has a spec in the fleet registry
+(`dist.lock` holds `>=X.Y.Z` floors written by `--tot`: see the update skill,
+**dist.lock**); the root
 `install.sh` (generated — see below) is the first install. There is
 deliberately **no `make deploy`**: it skipped the checksum, was not an atomic
 swap, and left a version `dist.lock` could not see. See
