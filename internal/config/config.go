@@ -412,6 +412,14 @@ type Config struct {
 	// SystemPrompt is appended to the built-in Zulip-formatting
 	// instructions and injected into every ACP session.
 	SystemPrompt string `json:"system_prompt,omitempty"`
+	// SystemPromptFile, if set, names a file that replaces the
+	// built-in Zulip block. It is a Go text/template with the fields
+	// of internal/sysprompt/sysprompt.md; a relative path is resolved
+	// against the config file's directory. The relay reads it at start
+	// and on each SIGHUP reload. check-config and the reload gate
+	// refuse a bad file; at start it is logged and the built-in block
+	// is used.
+	SystemPromptFile string `json:"system_prompt_file,omitempty"`
 	// DisableSystemPrompt skips system-prompt injection entirely,
 	// including the built-in formatting block.
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`

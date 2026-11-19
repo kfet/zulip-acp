@@ -113,7 +113,7 @@ func TestBaseLinkRule(t *testing.T) {
 		"`**PR A**: https://x`",
 		"Rewrite it to these rules before you post it.",
 	} {
-		if !strings.Contains(Base, want) {
+		if !strings.Contains(Resolve("", false, "", "", false, "", "", false), want) {
 			t.Errorf("Base lacks %q", want)
 		}
 	}
@@ -147,7 +147,7 @@ func TestResolveTopicState(t *testing.T) {
 	if strings.Contains(Resolve("", false, "", "", false, "", "", false), "topic_state") {
 		t.Fatal("topic_state note without the tool")
 	}
-	if !strings.Contains(Resolve("", false, "", "", false, "", "", true), TopicStateInstruction) {
+	if !strings.Contains(Resolve("", false, "", "", false, "", "", true), "call the relay `topic_state` tool") {
 		t.Fatal("topic_state note missing")
 	}
 }

@@ -297,7 +297,7 @@ func TestSystemPromptProvider_CarriesLivenessNote(t *testing.T) {
 	if !strings.HasSuffix(got, "\n\n"+want) {
 		t.Fatalf("liveness note missing or misjoined:\n%s", got)
 	}
-	if strings.Contains(sysprompt.Base, "Turn watchdog") {
+	if strings.Contains(sysprompt.Resolve("", false, "", "", false, "", "", false), "Turn watchdog") {
 		t.Fatal("the Zulip block must not carry the watchdog text itself")
 	}
 }
@@ -636,5 +636,36 @@ func TestResolveLifecycle(t *testing.T) {
 	bad := &config.Config{Lifecycle: []config.Lifecycle{rule}}
 	if r := resolveLifecycle(bad, streams, 9, 0); r != nil || len(bad.Degraded()) != 1 {
 		t.Fatalf("rules %v degraded %v", r, bad.Degraded())
+	}
+}
+
+// TestSystemPromptProvider_File pins system_prompt_file: a readable
+// file replaces the built-in block, and a bad one falls back to it.
+func TestSystemPromptProvider_File(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(p, []byte("OPERATOR BLOCK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := systemPromptProvider("", &config.Config{SystemPromptFile: p, StateDir: t.TempDir()})()
+	if !strings.HasPrefix(got, "OPERATOR BLOCK") || strings.Contains(got, "Zulip channel topic") {
+		t.Fatalf("override not used:\n%s", got)
+	}
+	got = systemPromptProvider("", &config.Config{SystemPromptFile: filepath.Join(dir, "missing.md"), StateDir: t.TempDir()})()
+	if !strings.Contains(got, "Zulip channel topic") {
+		t.Fatalf("no fallback to the built-in block:\n%s", got)
+	}
+}
+
+func TestPromptFile(t *testing.T) {
+	for _, tc := range []struct{ cfg, p, want string }{
+		{"/etc/z/config.json", "", ""},
+		{"/etc/z/config.json", "/abs/p.md", "/abs/p.md"},
+		{"/etc/z/config.json", "p.md", "/etc/z/p.md"},
+		{"", "p.md", filepath.Join(config.DefaultConfigDir(), "p.md")},
+	} {
+		if got := promptFile(tc.cfg, tc.p); got != tc.want {
+			t.Errorf("promptFile(%q, %q) = %q, want %q", tc.cfg, tc.p, got, tc.want)
+		}
 	}
 }

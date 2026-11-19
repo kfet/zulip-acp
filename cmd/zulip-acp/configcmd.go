@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kfet/zulip-acp/internal/config"
+	"github.com/kfet/zulip-acp/internal/sysprompt"
 )
 
 // Config subcommands. They exist because an agent that edits the relay
@@ -51,7 +52,7 @@ func runCheckConfig(args []string, getenv func(string) string, stdout, stderr io
 		fmt.Fprintf(stderr, "usage: zulip-acp %s [-config F]\n", checkConfigCmd)
 		return 2
 	}
-	if _, err := config.CheckFile(*path, getenv); err != nil {
+	if err := checkFile(*path, getenv); err != nil {
 		fmt.Fprintf(stderr, "INVALID %s: %v\nDo not reload: fix the file and check again.\n", *path, err)
 		return 1
 	}
@@ -76,6 +77,20 @@ func runConfigSchema(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// checkFile is config.CheckFile plus the system_prompt_file template.
+// It is not part of the start check: at start a bad prompt file is
+// logged and the built-in prompt is used, so it never stops a relay.
+func checkFile(path string, getenv func(string) string) error {
+	c, err := config.CheckFile(path, getenv)
+	if err != nil {
+		return err
+	}
+	if _, err := sysprompt.Load(promptFile(path, c.SystemPromptFile)); err != nil {
+		return fmt.Errorf("system_prompt_file: %w", err)
+	}
+	return nil
+}
+
 // gatedReload returns a reload that first checks the config file at
 // path and refuses an invalid one, so the relay keeps running on the
 // config it has instead of re-execing into a crash. With no config
@@ -95,7 +110,7 @@ func checkForReload(path string, getenv func(string) string) error {
 	if path == "" {
 		return nil
 	}
-	if _, err := config.CheckFile(path, getenv); err != nil {
+	if err := checkFile(path, getenv); err != nil {
 		return fmt.Errorf("reload refused: config %s is invalid: %v. The relay keeps running on its current config. Fix the file, run `zulip-acp check-config -config %s`, then reload again", path, err, path)
 	}
 	return nil

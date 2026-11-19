@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Config key `system_prompt_file`: a file that replaces the built-in Zulip system prompt, read at start and on SIGHUP reload, so a wording change needs no release.
+
+### Changed
+
+- The built-in system prompt text moved from Go code to the embedded template `internal/sysprompt/sysprompt.md`. The rendered text is byte-identical (golden test).
+
 ## [0.82.4] - 2026-11-18
 
 ### Fixed

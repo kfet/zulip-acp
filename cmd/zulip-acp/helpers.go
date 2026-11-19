@@ -260,16 +260,34 @@ func systemPromptProvider(cfgPath string, cfg *config.Config) func() string {
 	}
 	hostDir := filepath.Join(dir, "skills")
 	notesDir := config.NotesDir()
+	tmpl, err := sysprompt.Load(promptFile(cfgPath, cfg.SystemPromptFile))
+	if err != nil {
+		log.Printf("system_prompt_file: %v (using the built-in prompt)", err)
+		tmpl = sysprompt.Default
+	}
 	return func() string {
 		// The watchdog note is acp-kit's, rendered from the window
 		// this relay actually arms, so the agent knows the window
 		// before it picks a poll interval.
-		return kit.Compose(sysprompt.Resolve(cfg.SystemPrompt, false,
+		return kit.Compose(tmpl.Resolve(cfg.SystemPrompt, false,
 			buildSkillsCatalog(builtin, hostDir), cfg.GetSilentSentinel(), cfg.GetReactions(), cfg.DeleteEmoji(), widgetsSite, cfg.RelayMCP),
 			kit.LivenessNote(cfg.NoProgressTimeout()),
 			// Rebuilt per session: notes change while the relay runs.
 			sysprompt.NotesIndex(os.DirFS(notesDir), notesDir))
 	}
+}
+
+// promptFile resolves a relative system_prompt_file against the
+// directory of the config file, like the host skills dir.
+func promptFile(cfgPath, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	dir := config.DefaultConfigDir()
+	if cfgPath != "" {
+		dir = filepath.Dir(cfgPath)
+	}
+	return filepath.Join(dir, p)
 }
 
 // widgetsSkill is the bundled skill that only a widgets realm lists.

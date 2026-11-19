@@ -53,6 +53,7 @@ func TestRunCheckConfig(t *testing.T) {
 	}{
 		{"ok", []string{"-config", cfgFile(t, goodCfgJSON)}, 0, "OK "},
 		{"incident", []string{"-config", cfgFile(t, incidentCfgJSON)}, 1, "update_owner_ids"},
+		{"bad prompt file", []string{"-config", cfgFile(t, `{"site":"https://z.example.com","bot_email":"b@example.com","bot_api_key":"k","system_prompt_file":"/nonexistent/prompt.md"}`)}, 1, "system_prompt_file"},
 		{"bad flag", []string{"--check"}, 2, "not defined"},
 		{"extra arg", []string{"x"}, 2, "usage"},
 	}

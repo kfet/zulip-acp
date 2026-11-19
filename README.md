@@ -484,6 +484,7 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `prompt_timeout_seconds` | 7200 | absolute ceiling on one turn, regardless of progress. `0`/unset = 2 hours; a negative value disables the ceiling |
 | `reload_drain_seconds` | 300 | how long a graceful reload waits for turns before it cancels them and re-execs. The `-reload-drain-deadline` flag wins |
 | `system_prompt` | — | appended to the built-in Zulip formatting block |
+| `system_prompt_file` | — | file that REPLACES the built-in Zulip block; a Go text/template with the fields of `internal/sysprompt/sysprompt.md` (write `:{{.DeleteEmoji}}:` for the delete emoji; it defaults to `fire`). A relative path is resolved against the config file's directory. Read at start and on SIGHUP reload. `check-config` and the reload gate refuse an unreadable or invalid file; at start it is logged and the built-in block is used |
 | `disable_system_prompt` | `false` | skip injection entirely |
 | `hide_thinking` | `false` | suppress the agent's thought lines |
 | `silent_sentinel` | `<<SILENT>>` | agent output meaning "don't reply"; `""` disables abstain |

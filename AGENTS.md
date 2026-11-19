@@ -102,7 +102,8 @@ internal/reload/        graceful reload: drain + re-exec in place, cursor handof
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status-line renderer (live spinner +
                         italic footer under the finished answer)
-internal/sysprompt/     built-in Zulip-formatting system prompt
+internal/sysprompt/     built-in Zulip system prompt: sysprompt.md (embedded
+                        text/template; edit the prompt THERE, not in Go)
 internal/updater/       the four strings that name THIS binary for
                         `zulip-acp update`; the mechanism (GitHub API fetch,
                         sha256 verify, ETXTBSY-safe atomic swap, brew keg
