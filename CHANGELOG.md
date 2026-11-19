@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.1] - 2026-11-19
+
 ### Changed
 
 - `dist.lock` holds `>=X.Y.Z` floors, written only by `converge.sh --tot`. Converge keeps a host that satisfies the floor and updates a host below it to the newest release that satisfies it. A bare `X.Y.Z` stays an exact pin.
