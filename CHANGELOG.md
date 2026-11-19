@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-11-19
+
 ### Added
 
 - Config key `system_prompt_file`: a file that replaces the built-in Zulip system prompt, read at start and on SIGHUP reload, so a wording change needs no release.
