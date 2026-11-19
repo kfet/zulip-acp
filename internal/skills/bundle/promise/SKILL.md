@@ -52,20 +52,15 @@ be a **complete instruction to a stranger** — it arrives with conversation
 history, but write it as if it does not. Name the paths, the commands and the
 success check.
 
-To wait for something, arm **one** schedule with `every:` (for example
-`in: "10m", every: "10m"`) and put the **exit condition** and the schedule's own
-id in its text. Each time it fires:
+To wait, arm **one** repeat (`every:`) with the **exit condition** and its id in
+the text. You judge when it is done. Each fire:
 
-- condition met → report, then `unschedule` the id;
-- not yet → answer with the silent marker only and **leave it running**. Do not
-  arm anything new.
+- done → report, then `unschedule` it;
+- not yet → answer with the silent marker only (fires back off);
+- ETA moved → `schedule` with `id` to change timing or budget (`until`, `max_fires`).
 
-**Never chain one-shots** (a one-shot whose turn arms the next one-shot). The
-relay refuses a new repeat from a scheduled turn, and every schedule has a
-budget (default 24h / 20 fires; set `until` / `max_fires` to fit the job). Silent
-fires back off (interval doubles, cap 6h); after 3 silent fires in a row the
-relay stops the schedule and posts one line saying so. A scheduled turn cannot
-extend its budget — it can only re-time its own schedule (`schedule` with `id`).
+Never chain one-shots. If a schedule stops (budget spent, or a configured
+silent limit), you get a turn saying so: re-arm it or do nothing.
 
 **3. A durable reminder.** If available, `watcher_add` (kind `time`, from the
 fir-exts watchers package — not every host has it) fires on the next turn

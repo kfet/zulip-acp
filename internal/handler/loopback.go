@@ -372,17 +372,12 @@ func (h *Handler) Retime(token, id string, at time.Time, every time.Duration, b 
 }
 
 // ScheduleStopped is schedule.Config.Stopped: the store removed an item
-// on its own. Its reaction goes, and a schedule stopped for a silent
-// streak says so once, so a human knows why the checks ended.
-func (h *Handler) ScheduleStopped(it schedule.Item, why schedule.Stop) {
+// on its own, so its reaction goes. The agent is told in a turn the
+// store fires next, and decides there whether to re-arm.
+func (h *Handler) ScheduleStopped(it schedule.Item, _ schedule.Stop) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
 	defer cancel()
 	h.unmarkAlarm(ctx, it.ID)
-	if why == schedule.StopSilent {
-		if err := h.PostTo(it.Conv, "*"+schedule.SilentNotice+"*"); err != nil {
-			h.cfg.Logf("handler: posting the stop notice of %s: %v", it.ID, err)
-		}
-	}
 	h.settleStatusKey(it.Conv, 0)
 	h.viewsDirty()
 }

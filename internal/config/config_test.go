@@ -646,14 +646,25 @@ func TestScheduleLimitsValidation(t *testing.T) {
 		"until<0":  {ScheduleDefaultUntil: "-1h"},
 		"until>7d": {ScheduleDefaultUntil: "200h"},
 		"interval": {MinScheduleIntervalSeconds: -1},
+		"silent":   {ScheduleSilentLimit: -1},
+		"rearms":   {ScheduleMaxRearms: -2},
+		"backoff":  {ScheduleMaxBackoff: "soon"},
+		"backoff0": {ScheduleMaxBackoff: "-1h"},
 	} {
 		if err := c.Validate(); err == nil {
 			t.Fatalf("%s: want a validation error", name)
 		}
 	}
-	ok := Config{MaxSchedulesPerConv: 5, MaxSchedulesTotal: 50, ScheduleMaxFires: 4, ScheduleDefaultUntil: "6h", MinScheduleIntervalSeconds: 120}
+	ok := Config{MaxSchedulesPerConv: 5, MaxSchedulesTotal: 50, ScheduleMaxFires: 4, ScheduleDefaultUntil: "6h", MinScheduleIntervalSeconds: 120,
+		ScheduleSilentLimit: 3, ScheduleMaxRearms: -1, ScheduleMaxBackoff: "2h"}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid limits rejected: %v", err)
+	}
+	if got := ok.MaxScheduleBackoff(); got != 2*time.Hour {
+		t.Fatalf("MaxScheduleBackoff = %v", got)
+	}
+	if got := (&Config{ScheduleMaxBackoff: "off"}).MaxScheduleBackoff(); got >= 0 {
+		t.Fatalf("off = %v", got)
 	}
 	if got := ok.ScheduleUntil(); got != 6*time.Hour {
 		t.Fatalf("ScheduleUntil = %v", got)

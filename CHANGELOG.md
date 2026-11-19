@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Schedules: the agent judges when a wait is done. The 3-silent-fires stop is gone (now `schedule_silent_limit`, default 0 = off), and the relay no longer posts a stop notice: when a schedule stops, the agent gets a turn saying so and may re-arm it. A scheduled turn may change its own schedule's timing and budget. Bumps acp-kit to v0.52.0.
+
+### Added
+
+- Config keys `schedule_silent_limit`, `schedule_max_backoff` (`off` disables backoff) and `schedule_max_rearms` (0 = no cap, -1 never informs).
+
 ## [0.83.0] - 2026-11-19
 
 ### Added

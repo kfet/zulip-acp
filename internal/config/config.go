@@ -719,6 +719,19 @@ type Config struct {
 	// acp-kit/schedule's default of 60s.
 	MinScheduleIntervalSeconds int `json:"min_schedule_interval_seconds,omitempty"`
 
+	// ScheduleSilentLimit stops a schedule after that many silent fires
+	// in a row. 0 (default) is off: the agent decides when a wait is
+	// done and unschedules it.
+	ScheduleSilentLimit int `json:"schedule_silent_limit,omitempty"`
+	// ScheduleMaxBackoff caps how far silent fires stretch a repeat
+	// (a Go duration). "" uses acp-kit/schedule's default (6h); "off"
+	// disables backoff.
+	ScheduleMaxBackoff string `json:"schedule_max_backoff,omitempty"`
+	// ScheduleMaxRearms caps how often a chain may be re-armed from the
+	// turn that tells the agent its schedule stopped. 0 (default) is no
+	// cap; -1 never runs that turn.
+	ScheduleMaxRearms int `json:"schedule_max_rearms,omitempty"`
+
 	// MCPApps hosts MCP Apps (internal/mcpapps): a tool call that
 	// declares a `ui://` resource gets a link in the topic to a page
 	// the relay serves. Off unless mcp_apps.public_url is set. See
@@ -932,6 +945,17 @@ func (c *Config) Validate() error {
 	if c.MinScheduleIntervalSeconds < 0 {
 		return fmt.Errorf("min_schedule_interval_seconds must be >= 0")
 	}
+	if c.ScheduleSilentLimit < 0 {
+		return fmt.Errorf("schedule_silent_limit must be >= 0")
+	}
+	if c.ScheduleMaxRearms < -1 {
+		return fmt.Errorf("schedule_max_rearms must be >= -1")
+	}
+	if c.ScheduleMaxBackoff != "" && c.ScheduleMaxBackoff != "off" {
+		if d, err := time.ParseDuration(c.ScheduleMaxBackoff); err != nil || d <= 0 {
+			return fmt.Errorf("schedule_max_backoff must be \"off\" or a positive Go duration, got %q", c.ScheduleMaxBackoff)
+		}
+	}
 	if c.MaxAttachmentBytes < 0 || c.MaxAttachmentTotalBytes < 0 {
 		return fmt.Errorf("attachment size caps must be >= 0")
 	}
@@ -1130,6 +1154,16 @@ func (c *Config) MinScheduleInterval() time.Duration {
 // the value.
 func (c *Config) ScheduleUntil() time.Duration {
 	d, _ := time.ParseDuration(c.ScheduleDefaultUntil)
+	return d
+}
+
+// MaxScheduleBackoff maps schedule_max_backoff onto
+// schedule.Config.MaxBackoff: 0 for the default, negative for "off".
+func (c *Config) MaxScheduleBackoff() time.Duration {
+	if c.ScheduleMaxBackoff == "off" {
+		return -1
+	}
+	d, _ := time.ParseDuration(c.ScheduleMaxBackoff)
 	return d
 }
 

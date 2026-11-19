@@ -518,6 +518,9 @@ omitted only when `"dms": true` makes it a DM-only relay).
 | `max_inline_image_pixels` | `1568` | long-edge ceiling, in pixels, for an image inlined into the prompt; `0` disables downscaling. The file in `inbox/` is always the original |
 | `max_schedule_depth` | — | obsolete, ignored (logged); budgets bound schedules now |
 | `schedule_max_fires` | `20` | default fire budget of a schedule armed by a human turn |
+| `schedule_silent_limit` | `0` (off) | stop a schedule after N silent fires in a row |
+| `schedule_max_backoff` | `6h` | cap on silent-fire backoff; `off` disables |
+| `schedule_max_rearms` | `0` (no cap) | re-arms per chain from the stop-inform turn; `-1` never informs |
 | `schedule_default_until` | `24h` | default lifetime of that budget (Go duration, max `168h`) |
 | `max_schedules_per_conv` | `10` | schedules armed at once in one conversation |
 | `max_schedules_total` | `100` | schedules armed at once across the relay |

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -38,22 +37,15 @@ func TestCollapsedRepeatIsSilent(t *testing.T) {
 	}
 }
 
-func TestScheduleStoppedPostsOnlyForSilence(t *testing.T) {
+func TestScheduleStoppedNeverPosts(t *testing.T) {
 	lh := newLoopHarness(t, newAgent("hi"), nil)
 	lh.engage(t, "loopback")
 	n := len(lh.z.stored())
-	lh.h.ScheduleStopped(schedule.Item{ID: "s1", Conv: chanToken("loopback")}, schedule.StopFires)
+	for _, why := range []schedule.Stop{schedule.StopFires, schedule.StopSilent} {
+		lh.h.ScheduleStopped(schedule.Item{ID: "s1", Conv: chanToken("loopback")}, why)
+	}
 	if len(lh.z.stored()) != n {
-		t.Fatal("a spent budget must not post")
-	}
-	lh.h.ScheduleStopped(schedule.Item{ID: "s1", Conv: chanToken("loopback")}, schedule.StopSilent)
-	got := lh.z.stored()
-	if len(got) != n+1 || !strings.Contains(got[len(got)-1], schedule.SilentNotice) {
-		t.Fatalf("stored = %q", got)
-	}
-	lh.h.ScheduleStopped(schedule.Item{ID: "s2", Conv: "not-a-token"}, schedule.StopSilent)
-	if !lh.logged("posting the stop notice of s2") {
-		t.Fatal("a failed notice must be logged")
+		t.Fatal("the agent is told in a turn; the relay posts nothing")
 	}
 }
 

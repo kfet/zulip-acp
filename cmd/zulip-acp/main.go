@@ -620,6 +620,9 @@ func main() {
 			MinInterval:     cfg.MinScheduleInterval(),
 			DefaultUntil:    cfg.ScheduleUntil(),
 			DefaultMaxFires: cfg.ScheduleMaxFires,
+			SilentLimit:     cfg.ScheduleSilentLimit,
+			MaxBackoff:      cfg.MaxScheduleBackoff(),
+			MaxRearms:       cfg.ScheduleMaxRearms,
 			Logf:            log.Printf,
 		})
 		if err != nil {

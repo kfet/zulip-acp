@@ -2171,28 +2171,33 @@ general-purpose scheduler.
 
 **Runaway control** is first-class, because every fire costs real money.
 `acp-kit/schedule` gives each item a **budget** and applies these bounds, all
-on by default:
+on by default unless noted:
 
 | bound | default | config |
 |---|---|---|
 | fires per budget | 20 | `schedule_max_fires` |
 | budget lifetime (`until`) | 24h (max 7d) | `schedule_default_until` |
-| silent fires in a row before stop | 3 | — |
+| silent fires in a row before stop | off | `schedule_silent_limit` |
+| silent backoff cap | 6h | `schedule_max_backoff` (`off` disables) |
+| re-arms after a stop, per chain | no cap | `schedule_max_rearms` (-1 never informs) |
 | armed per conversation | 10 | `max_schedules_per_conv` |
 | armed in total | 100 | `max_schedules_total` |
 | repeat floor | 60s | `min_schedule_interval_seconds` |
 
-A human turn arms a fresh budget. A scheduled turn cannot: it may re-time its
-own item, or add a one-shot that inherits the parent's remaining budget (and
+The agent judges when a wait is done and unschedules it. A human turn arms a
+fresh budget. A scheduled turn may re-time and re-budget its own item (an ETA
+moved out), or add a one-shot that inherits the parent's remaining budget (and
 spends one of its fires); it cannot start a new repeat. That attribution works
 only because `Fire` blocks for the whole turn, which is why
 `Handler.FireSchedule` is synchronous.
 
 `FireSchedule` reports whether the turn was **silent** — a heartbeat (the
 agent abstained) or a collapsed identical repeat. Each silent fire doubles the
-next interval (cap 6h); a turn with news resets it. After 3 silent fires in a
-row the store removes the item and `Handler.ScheduleStopped` posts one line:
-*stopped: no news after 3 checks — reply here to resume*. Old
+next interval (cap `schedule_max_backoff`); a turn with news or a re-time
+resets it. When the store stops an item (budget spent, or
+`schedule_silent_limit` silent fires in a row) it fires one more turn in that
+conversation saying so (`schedule.InformText`); that turn may arm a repeat
+with a fresh budget, up to `schedule_max_rearms` times per chain. Old
 `schedules.json` files (version 1, with `depth`) are migrated on start.
 
 A missed window is skipped rather than replayed, so a relay that was down for a
