@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.2] - 2026-11-20
+
 ### Fixed
 
 - A human reply now opens a `done` or `fyi` topic again, as it already did
