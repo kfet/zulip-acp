@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.3] - 2026-11-20
+
 ### Fixed
 
 - The system prompt now tells the agent to write its answer once, after its last tool call. An agent wrote the answer, called a tool, then wrote it again, and both copies went into one message.
