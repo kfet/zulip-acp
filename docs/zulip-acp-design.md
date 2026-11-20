@@ -954,9 +954,15 @@ none of its own. See *The topic status mark*.
 
 Decisions, and why:
 
-- **A reply clears `needs_you`.** A human message in a `needs_you` topic
-  (not a bot, a reaction or a relay command) removes the state when it is
-  routed, before the turn starts, so the agent can set `needs_you` again.
+- **A reply clears `needs_you`, `done` and `fyi`.** A human message in a
+  topic in one of these states (not a bot, a reaction or a relay command)
+  removes the state when it is routed, before the turn starts, so the agent
+  can set a state again. `done` and `fyi` are included because a human who
+  writes again makes the conversation live: before 0.84.2 a `done` topic
+  stayed `done` through hours of new work and a lifecycle rule archived it.
+  `waiting` and `blocked` stay: a reply alone does not change them. An agent
+  turn without a human message does not open the topic; the agent records a
+  new state itself.
   The topic name is left to the turn's own status moves.
 
 - **Change-only.** The agent records a state with the `topic_state` loopback

@@ -1382,7 +1382,7 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 		}
 	}
 
-	if !passthrough && h.clearNeedsYou(conv.ID) {
+	if !passthrough && h.reopenOnReply(conv.ID) {
 		conv.State = nil
 	}
 	if h.cfg.PerUserSessions {

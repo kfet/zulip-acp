@@ -323,9 +323,9 @@ func TestActivityCountsCommandsAndPosts(t *testing.T) {
 	}
 }
 
-// TestReplyClearsNeedsYou: a human message in a needs_you topic opens
-// it again before the turn; a relay command, a passthrough command and
-// another state leave the state alone.
+// TestReplyClearsNeedsYou: a human message in a needs_you, done or fyi
+// topic opens it again before the turn; a relay command, a passthrough
+// command, a bot, and the waiting and blocked states leave it alone.
 func TestReplyClearsNeedsYou(t *testing.T) {
 	agent := newAgent("ok")
 	agent.agentCmds = []client.CommandInfo{{Name: "reload"}}
@@ -358,10 +358,22 @@ func TestReplyClearsNeedsYou(t *testing.T) {
 	if got := state(); got != "" {
 		t.Fatalf("after reply state = %q, want open", got)
 	}
-	set(journal.StateWaiting)
-	hh.deliver(t, "work", "and more")
-	if got := state(); got != journal.StateWaiting {
-		t.Fatalf("waiting state = %q", got)
+	// done and fyi: the human came back, so the conversation is live
+	// again and a lifecycle rule must not archive it.
+	for _, s := range []string{journal.StateDone, journal.StateFYI} {
+		set(s)
+		hh.deliver(t, "work", "one more thing")
+		if got := state(); got != "" {
+			t.Fatalf("after reply to %s state = %q, want open", s, got)
+		}
+	}
+	// waiting and blocked: a reply alone does not change them.
+	for _, s := range []string{journal.StateWaiting, journal.StateBlocked} {
+		set(s)
+		hh.deliver(t, "work", "and more")
+		if got := state(); got != s {
+			t.Fatalf("%s state = %q", s, got)
+		}
 	}
 }
 
@@ -378,7 +390,7 @@ func TestReplyClearsNeedsYouWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(hh.jdir, 0o700) })
-	hh.h.clearNeedsYou(c.ID)
+	hh.h.reopenOnReply(c.ID)
 	if c, _ = hh.j.LookupID(c.ID); c.State == nil {
 		t.Fatal("state cleared despite a write failure")
 	}

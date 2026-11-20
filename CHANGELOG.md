@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A human reply now opens a `done` or `fyi` topic again, as it already did
+  for `needs_you`. Before, a `done` topic stayed `done` while the
+  conversation went on, and a lifecycle rule on `done` archived it in the
+  middle of work. `waiting` and `blocked` are not changed by a reply.
+
 ## [0.84.1] - 2026-11-19
 
 ### Changed

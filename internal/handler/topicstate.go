@@ -66,25 +66,34 @@ func (h *Handler) noteActivity(convID string, turn bool) {
 	}
 }
 
-// clearNeedsYou opens a needs_you topic again: a human answered in it.
-// It runs when the message arrives, before the turn starts, so the
-// agent can set needs_you again. A failure is only logged. It reports
-// whether it cleared the state.
-func (h *Handler) clearNeedsYou(convID string) bool {
-	cleared, err := h.cfg.Journal.ClearStateIf(convID, journal.StateNeedsYou)
-	if err != nil {
-		h.cfg.Logf("handler: clearing needs_you of %s: %v", convID, err)
-		return false
+// reopenStates are the states a human reply clears. needs_you: the
+// human answered. done and fyi: the human came back, so the
+// conversation is live again and a lifecycle rule must not archive it.
+// waiting and blocked stay: a reply alone does not change them.
+var reopenStates = []string{journal.StateNeedsYou, journal.StateDone, journal.StateFYI}
+
+// reopenOnReply opens a topic again when a human writes in it. It runs
+// when the message arrives, before the turn starts, so the agent can
+// set a state again. A failure is only logged. It reports whether it
+// cleared a state.
+func (h *Handler) reopenOnReply(convID string) bool {
+	for _, st := range reopenStates {
+		cleared, err := h.cfg.Journal.ClearStateIf(convID, st)
+		if err != nil {
+			h.cfg.Logf("handler: clearing %s of %s: %v", st, convID, err)
+			return false
+		}
+		if !cleared {
+			continue
+		}
+		h.cfg.Logf("handler: state of %s: %q → open by a reply", convID, st)
+		// No settleStatus here: a turn follows this message, and markBusy
+		// and endTurn set the topic name. A move now would make the routed
+		// conversation's topic stale.
+		h.viewsDirty()
+		return true
 	}
-	if !cleared {
-		return false
-	}
-	h.cfg.Logf("handler: state of %s: %q → open by a reply", convID, journal.StateNeedsYou)
-	// No settleStatus here: a turn follows this message, and markBusy
-	// and endTurn set the topic name. A move now would make the routed
-	// conversation's topic stale.
-	h.viewsDirty()
-	return true
+	return false
 }
 
 // SetTopicState is zulipmcp.Config.TopicState: the agent records the
