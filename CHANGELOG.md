@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.4] - 2026-11-20
+
+### Changed
+
+- interject: the quick-reply fork may now do quick, safe actions itself (open a branch topic, post, react, a short read-only command), as asked for. Before, its prompt said "do not call tools", so it promised that the main task would act "now", while the main task saw the request only at its next tool boundary (acp-kit v0.52.2).
+
 ## [0.84.3] - 2026-11-20
 
 ### Fixed

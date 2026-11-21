@@ -200,7 +200,11 @@ By default, a message that arrives while its conversation's turn runs
 supersedes that turn: the relay cancels it and prompts again.
 
 With `interject.enabled`, the relay first asks a fork of the session
-(acp-kit `interject`, ACP `session/fork`). The fork answers briefly, and
+(acp-kit `interject`, ACP `session/fork`). The fork answers briefly. It
+may do quick, safe actions itself (open a branch topic, post, react); it
+leaves edits and long work to the main task, which sees a steer only at
+its next tool boundary. The fork has the session's full tool set: fir
+does not limit it. The fork answers, and
 the relay posts that answer with a `*(quick reply · …)*` tag. The fork
 also gives a verdict on the main turn: answer only, inform it, or stop
 it. A verdict below `min_conf` means answer only. With fir's
