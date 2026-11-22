@@ -774,6 +774,9 @@ type Handler struct {
 	// lastWarning is each conversation's newest archive warning,
 	// armed or lapsed. Guarded by archiveMu.
 	lastWarning map[string]int64
+	// archiveHinted is when each conversation last got the "react on
+	// the last message" hint. Guarded by archiveMu.
+	archiveHinted map[string]time.Time
 
 	// quickConfirms maps a switch confirmation the relay posted to the
 	// model it names, so a sweep emoji on it knows what to sweep.
@@ -860,6 +863,7 @@ func New(cfg Config) (*Handler, error) {
 		lastOwn:        map[string]int64{},
 		archivePending: map[string]*pendingArchive{},
 		lastWarning:    map[string]int64{},
+		archiveHinted:  map[string]time.Time{},
 		ownEcho:        newOwnEcho(),
 		quickConfirms:  newMsgIndex(reactionIndexSize),
 		reactPending:   map[string]*reactionBatch{},

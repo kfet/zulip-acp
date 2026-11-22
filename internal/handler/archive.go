@@ -30,7 +30,9 @@
 //
 // # Two entry points, one code path
 //
-//   - REACTION: :wastebasket: on the relay's own LAST message, by an
+//   - REACTION: :wastebasket: on the relay's own LAST message — or on
+//     any relay message with no human message after it, because relay
+//     lines often land below the reply (Handler.inOwnTail) — by an
 //     allowlisted human. It arrives through Config.ReactionTrigger,
 //     which runs before the agent is involved at all — a destructive
 //     control must never depend on the model choosing to call a tool.
@@ -107,6 +109,17 @@ const (
 	// a move, and at most one failure notice. It runs on the event
 	// loop, so it must not be able to wedge intake.
 	archiveTimeout = 60 * time.Second
+
+	// archiveTailScan is how many of the newest topic messages one
+	// tap may read to decide whether no human has spoken since the
+	// tapped message. A tap further back than this is an old message.
+	archiveTailScan = 50
+
+	// archiveHintEvery limits the "react on the last message" hint to
+	// one per conversation in this period.
+	archiveHintEvery = 10 * time.Minute
+
+	archiveHintText = "React on the last message to archive."
 )
 
 // pendingArchive is one conversation's armed confirmation.
@@ -182,6 +195,18 @@ func (h *Handler) ArchiveReaction(ctx context.Context, conv journal.Conv, ev zul
 	// armArchive), so it counts as last while nothing has come after it.
 	lastOwn := h.lastOwnMessage(ctx, conv)
 	last := ev.MessageID == lastOwn || (ev.MessageID > lastOwn && h.isLastWarning(conv.ID, ev.MessageID))
+	if !confirm && !last && ev.MessageID < lastOwn {
+		// Relay lines (a branch result, a "branched →" notice) often
+		// land BELOW the agent's reply, so the reply is no longer the
+		// relay's newest message. Any relay message with no human
+		// message after it still counts as the end of the topic.
+		var own bool
+		last, own = h.inOwnTail(ctx, conv, ev.MessageID, m)
+		if !last && own {
+			h.archiveHint(ctx, conv)
+			return true
+		}
+	}
 	if !confirm && !last {
 		// Not the arming target and not the confirmation: an ordinary
 		// reaction that happens to be a wastebasket.
@@ -421,6 +446,7 @@ func (h *Handler) dropArchiveArm(convID string) {
 	h.archiveMu.Lock()
 	delete(h.archivePending, convID)
 	delete(h.lastWarning, convID)
+	delete(h.archiveHinted, convID)
 	h.archiveMu.Unlock()
 }
 
@@ -680,4 +706,66 @@ func archiveNotice(who, channel string) string {
 	return fmt.Sprintf("🗑️ **Archived by %s.** This conversation has ended and the topic is moving to **#%s**; I do not answer there.\n\n"+
 		"Nothing was deleted. Move the topic back to bring the messages home — a fresh conversation starts on the next message either way.",
 		who, channel)
+}
+
+// inOwnTail reports whether msgID is a relay message with no human
+// message after it in the topic (tail), and whether msgID is a relay
+// message at all (own).
+//
+// It costs ONE bounded API read of the newest archiveTailScan
+// messages, so it needs no cache and works the same after a restart.
+// Zulip system bots and other bots are not humans: a resolve notice
+// must not end the tail. A read that fails is "not the tail", the same
+// as an unknown message always was.
+func (h *Handler) inOwnTail(ctx context.Context, conv journal.Conv, msgID int64, m *zulipproto.Message) (tail, own bool) {
+	_, own = h.ownMsgs.get(msgID)
+	own = own || (m != nil && m.SenderID == h.cfg.BotUserID)
+	// The reacted-to message carries the live topic name; the journal
+	// name can lack a resolve prefix, and a stale narrow finds nothing.
+	topic := conv.Topic
+	if m != nil && m.Topic != "" {
+		topic = m.Topic
+	}
+	msgs, err := h.cfg.Client.Messages(ctx, zulipproto.TopicNarrow(conv.StreamID, topic), archiveTailScan, 0)
+	if err != nil {
+		h.cfg.Logf("handler: reading the end of %s: %v", h.describe(conv.Key), err)
+		return false, own
+	}
+	found := false
+	for _, x := range msgs {
+		if x.ID == msgID && x.SenderID == h.cfg.BotUserID {
+			found, own = true, true
+			continue
+		}
+		if x.ID > msgID && h.isHuman(ctx, x) {
+			return false, own
+		}
+	}
+	return found, own
+}
+
+// isHuman reports whether a message is from a person: not the relay
+// bot, not a Zulip system bot, not any other bot.
+func (h *Handler) isHuman(ctx context.Context, x zulipproto.Message) bool {
+	if x.SenderID == h.cfg.BotUserID || x.SenderRealm == zulipproto.SystemBotRealm {
+		return false
+	}
+	_, bot := h.reactor(ctx, x.SenderID)
+	return !bot
+}
+
+// archiveHint tells the user, at most once per archiveHintEvery per
+// conversation, that a :wastebasket: on an older message does nothing.
+// Silence there made the gesture look broken.
+func (h *Handler) archiveHint(ctx context.Context, conv journal.Conv) {
+	h.archiveMu.Lock()
+	at, ok := h.archiveHinted[conv.ID]
+	send := !ok || !h.now().Before(at.Add(archiveHintEvery))
+	if send {
+		h.archiveHinted[conv.ID] = h.now()
+	}
+	h.archiveMu.Unlock()
+	if send {
+		h.reply(ctx, conv.Key, archiveHintText)
+	}
 }
