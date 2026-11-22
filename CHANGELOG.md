@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.5] - 2026-11-22
+
 ### Fixed
 
 - A :wastebasket: on the agent's reply now arms the archive when relay lines (a branch result, a "branched →" notice) come after it: any relay message with no human message after it counts as the end of the topic. A :wastebasket: on an older relay message now replies "React on the last message to archive." once per 10 minutes, instead of nothing.
