@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.6] - 2026-11-22
+
 ### Fixed
 
 - Views: a view message is now replaced by a new one after 50 edits. Zulip keeps every old version in the edit history, so a board edited for days grew to megabytes and each edit rewrote the whole row (gigabytes of database writes a day).
