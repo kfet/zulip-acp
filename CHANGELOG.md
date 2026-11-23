@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An answer that the agent writes, then writes again in new words after a tool call, shows only once. At turn end the relay removes the earlier copy and keeps the final wording. Before, only an exact repeat was removed, so a reworded copy reached the user twice.
+
 ## [0.84.9] - 2026-11-25
 
 ### Fixed

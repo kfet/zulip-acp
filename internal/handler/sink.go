@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -72,7 +73,14 @@ type streamingSink struct {
 	// held is the start of a segment after a tool call, held back
 	// while it still repeats text already shown.
 	held strings.Builder
+	// segs are the transcript spans of answer text, one per run of
+	// text between tool calls. newSeg starts the next one.
+	segs   []span
+	newSeg bool
 }
+
+// span is a byte range of the splitter transcript.
+type span struct{ start, end int }
 
 // maxThoughtRunes is the size cap for one coalesced thought line. A
 // model that reasons for a page without a newline still gets cut into
@@ -168,6 +176,7 @@ func (s *streamingSink) OnUpdate(_ context.Context, n acp.SessionNotification) e
 		s.msgMu.Lock()
 		s.releaseHeld()
 		s.afterTool = true
+		s.newSeg = true
 		s.msgMu.Unlock()
 		return nil
 	}
@@ -282,7 +291,77 @@ func (s *streamingSink) show(text string) {
 		return
 	}
 	s.shown.WriteString(text)
+	start := len(s.split.Transcript())
 	s.split.Append(text)
+	end := start + len(text)
+	if s.newSeg || len(s.segs) == 0 {
+		s.segs = append(s.segs, span{start, end})
+		s.newSeg = false
+		return
+	}
+	s.segs[len(s.segs)-1].end = end
+}
+
+// dropRestatement takes back an earlier answer the agent wrote out
+// again, reworded, after a tool call. Models often write the answer,
+// call a tool (topic_state, a bookmark), then write the whole answer
+// a second time. The exact-repeat filter in appendMessage misses a
+// reworded copy, so the user got the answer twice. At turn end, if
+// the last text segment restates an earlier one, the earlier one is
+// removed and the final wording stays. Call it before the handler
+// appends its own suffix.
+func (s *streamingSink) dropRestatement(ctx context.Context) {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	if len(s.segs) < 2 {
+		return
+	}
+	raw := s.split.Transcript()
+	last := s.segs[len(s.segs)-1]
+	b := raw[last.start:last.end]
+	for i := len(s.segs) - 2; i >= 0; i-- {
+		a := s.segs[i]
+		if !restates(raw[a.start:a.end], b) {
+			continue
+		}
+		cut := raw[:a.start] + strings.TrimLeft(raw[a.end:], "\n")
+		if err := s.split.Rewrite(ctx, cut); err == nil {
+			s.segs = append(s.segs[:i:i], s.segs[i+1:]...)
+		}
+		return
+	}
+}
+
+// restates reports whether b says again what a said: both are long
+// enough to be an answer, of similar length, and share most of their
+// word trigrams. Short texts ("Done.") never count.
+func restates(a, b string) bool {
+	ta, tb := trigrams(a), trigrams(b)
+	if len(ta) < 40 || len(tb) < 40 {
+		return false
+	}
+	if r := float64(len(ta)) / float64(len(tb)); r < 0.5 || r > 2 {
+		return false
+	}
+	common := 0
+	for g := range ta {
+		if tb[g] {
+			common++
+		}
+	}
+	small := min(len(ta), len(tb))
+	return float64(common)/float64(small) >= 0.4
+}
+
+func trigrams(t string) map[string]bool {
+	w := strings.FieldsFunc(strings.ToLower(t), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	out := map[string]bool{}
+	for i := 0; i+3 <= len(w); i++ {
+		out[w[i]+" "+w[i+1]+" "+w[i+2]] = true
+	}
+	return out
 }
 
 // appendThought accumulates a thought delta and emits the complete

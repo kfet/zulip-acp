@@ -365,6 +365,47 @@ func (s *Splitter) Close(ctx context.Context, suffix string) error {
 	return s.flushLocked(ctx)
 }
 
+// Rewrite replaces the transcript with raw and re-plans the chain.
+// It is the one exception to the append-only rule, for a caller that
+// must take back text it already streamed (a restated answer). The
+// existing messages keep their ids and are edited on the next Flush;
+// messages the new plan no longer needs are deleted when the Poster
+// can delete, else blanked to EmptyBody. Call it before Close.
+func (s *Splitter) Rewrite(ctx context.Context, raw string) error {
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
+	s.mu.Lock()
+	old := s.msgs
+	s.raw, s.sealedEnd, s.sealedFence = raw, 0, fence{}
+	s.msgs = []*message{{}}
+	s.replan()
+	for i, m := range s.msgs {
+		if i < len(old) {
+			m.id, m.written = old[i].id, old[i].written
+		}
+	}
+	var surplus []*message
+	if len(old) > len(s.msgs) {
+		surplus = old[len(s.msgs):]
+	}
+	s.mu.Unlock()
+	var errs []error
+	for _, m := range surplus {
+		if m.id == 0 {
+			continue
+		}
+		if del, ok := s.cfg.Poster.(Deleter); ok {
+			if err := del.Delete(ctx, m.id); err == nil {
+				continue
+			}
+		}
+		if err := s.cfg.Poster.Edit(ctx, m.id, s.cfg.EmptyBody); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Repost recreates the whole chain as brand-new messages and retracts
 // the originals, so a surface that only notifies on message CREATION
 // (Zulip: a push notification is generated when a message is posted,

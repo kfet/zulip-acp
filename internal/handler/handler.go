@@ -1692,6 +1692,7 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	}
 
 	fctx := context.WithoutCancel(ctx)
+	sink.dropRestatement(fctx)
 	suffix := h.uploadOutbox(fctx, h.localDir(conv, sess.Cwd))
 	// The safety net: an agent that answers with nothing but the
 	// sentinel on a path that could not abstain (an addressed turn)
