@@ -454,6 +454,9 @@ type file struct {
 type ViewRecord struct {
 	// MsgID is the view message. A notify entry has none.
 	MsgID int64 `json:"msg_id,omitempty"`
+	// Edits counts the edits of MsgID. publishView posts a new view
+	// message once it reaches viewMaxEdits.
+	Edits int `json:"edits,omitempty"`
 	// Notices maps a conv-id to its notice message.
 	Notices map[string]int64 `json:"notices,omitempty"`
 }

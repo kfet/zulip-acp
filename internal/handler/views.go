@@ -19,9 +19,9 @@
 // time join it. RunViews refreshes at start and every hour, so ages
 // and the stale marks move on without activity.
 //
-// The view is ONE message, edited in place. A new one is posted only
-// when the edit fails; the old one is then deleted, or struck through
-// when Zulip's delete time limit has passed.
+// The view is ONE message, edited in place. A new one is posted when
+// the edit fails or after viewMaxEdits edits; the old one is then
+// deleted, or struck through when Zulip's delete time limit has passed.
 //
 // # Notify
 //
@@ -59,6 +59,13 @@ const viewRefreshPeriod = time.Hour
 
 // viewGroupMax is how many topics one group of a view lists.
 const viewGroupMax = 15
+
+// viewMaxEdits is how many times a view message is edited before
+// publishView posts a new one. Zulip keeps the full old content of
+// every edit in the message's edit history, so an often-edited view
+// grew to megabytes and each edit rewrote the whole row: on a
+// SQLite-backed server that was gigabytes of disk writes a day.
+const viewMaxEdits = 50
 
 // viewMaxRunes bounds a view message under Zulip's limit.
 const viewMaxRunes = 9000
@@ -122,7 +129,7 @@ func (h *Handler) RefreshViews(ctx context.Context) {
 	convs := h.cfg.Journal.Convs()
 	for _, v := range h.cfg.Views {
 		rec := h.cfg.Journal.View(v.Key)
-		rec.MsgID = h.publishView(ctx, v, rec.MsgID, h.renderView(v, convs))
+		rec.MsgID, rec.Edits = h.publishView(ctx, v, rec.MsgID, rec.Edits, h.renderView(v, convs))
 		h.saveView(v.Key, rec)
 	}
 	for _, n := range h.cfg.Notifies {
@@ -139,32 +146,33 @@ func (h *Handler) saveView(key string, rec journal.ViewRecord) {
 }
 
 // publishView edits the view message msgID to text, and posts a new
-// one only when there is none or the edit fails. A view is ONE
-// long-lived message: Zulip limits how late a message can be deleted,
-// so a view that moved on each post left old views behind that the
-// relay could no longer remove. It returns the view message id now.
-func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID int64, text string) int64 {
-	if msgID != 0 {
-		if h.viewText[v.Key] == text {
-			return msgID
-		}
+// one when there is none, the edit fails, or msgID has had
+// viewMaxEdits edits. A view is ONE long-lived message: Zulip limits
+// how late a message can be deleted, so a view that moved on each post
+// left old views behind that the relay could no longer remove. It
+// returns the view message id now and its edit count.
+func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID int64, edits int, text string) (int64, int) {
+	if h.viewText[v.Key] == text && msgID != 0 {
+		return msgID, edits
+	}
+	if msgID != 0 && edits < viewMaxEdits {
 		err := h.cfg.Client.EditMessage(ctx, msgID, text)
 		if err == nil {
 			h.viewText[v.Key] = text
-			return msgID
+			return msgID, edits + 1
 		}
 		h.cfg.Logf("handler: editing %s message %d: %v; posting a new one", v.Key, msgID, err)
 	}
 	id, err := h.cfg.Client.SendMessage(ctx, v.StreamID, v.Topic, text)
 	if err != nil {
 		h.cfg.Logf("handler: posting %s: %v", v.Key, err)
-		return msgID
+		return msgID, edits
 	}
 	h.viewText[v.Key] = text
 	if msgID != 0 {
 		h.dropMessage(ctx, msgID, "old "+v.Key+" message", viewGone(v))
 	}
-	return id
+	return id, 0
 }
 
 // staleViewScan is how many of its own newest messages dropStaleViews

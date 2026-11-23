@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -569,5 +570,28 @@ func TestViewStaleNeedsYouGoesLast(t *testing.T) {
 	never.StaleAfter = 0
 	if text := bh.h.renderView(never, bh.j.Convs()); strings.Contains(text, "stale") {
 		t.Errorf("stale without stale_after:\n%s", text)
+	}
+}
+
+func TestViewRotatesAfterMaxEdits(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	bh.h.RefreshViews(ctx)
+	first := bh.j.View(testViewKey).MsgID
+	for i := 0; i < viewMaxEdits; i++ {
+		bh.conv(t, fmt.Sprintf("t%d", i), journal.StateBlocked, journal.SetByUser, "", 0)
+		bh.h.RefreshViews(ctx)
+	}
+	if rec := bh.j.View(testViewKey); rec.MsgID != first || rec.Edits != viewMaxEdits {
+		t.Fatalf("after %d edits: %+v", viewMaxEdits, rec)
+	}
+	bh.conv(t, "last", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.h.RefreshViews(ctx)
+	rec := bh.j.View(testViewKey)
+	if rec.MsgID == first || rec.Edits != 0 || !strings.Contains(bh.viewBody(t), "fleet>last") {
+		t.Fatalf("not rotated: %+v", rec)
+	}
+	if _, ok := bh.z.bodies[first]; ok {
+		t.Fatal("old board kept")
 	}
 }
