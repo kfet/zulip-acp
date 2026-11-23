@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.8] - 2026-11-23
+
+### Fixed
+
+- A board (view) message rotates once the summed text of its edits reaches 256 KiB, not only after 50 edits. Zulip rewrites the whole edit history on each edit, so a big board caused heavy disk writes. A board from an older release rotates once at start.
+
 ## [0.84.7] - 2026-11-22
 
 ### Fixed

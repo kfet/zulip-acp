@@ -457,6 +457,11 @@ type ViewRecord struct {
 	// Edits counts the edits of MsgID. publishView posts a new view
 	// message once it reaches viewMaxEdits.
 	Edits int `json:"edits,omitempty"`
+	// HistBytes sums the text of every edit of MsgID: about the size
+	// of the edit history Zulip stores in the message row, which it
+	// rewrites on each edit. publishView posts a new view message once
+	// it reaches viewMaxHistBytes.
+	HistBytes int `json:"hist_bytes,omitempty"`
 	// Notices maps a conv-id to its notice message.
 	Notices map[string]int64 `json:"notices,omitempty"`
 }

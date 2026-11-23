@@ -595,3 +595,38 @@ func TestViewRotatesAfterMaxEdits(t *testing.T) {
 		t.Fatal("old board kept")
 	}
 }
+
+func TestViewRotatesLegacyRecordAndBigHistory(t *testing.T) {
+	bh := newViewHarness(t)
+	ctx := context.Background()
+	bh.h.RefreshViews(ctx)
+	first := bh.j.View(testViewKey).MsgID
+	// A record from a release that did not count bytes rotates at once.
+	if err := bh.j.SetView(testViewKey, journal.ViewRecord{MsgID: first, Edits: 3}); err != nil {
+		t.Fatal(err)
+	}
+	bh.conv(t, "a", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.h.RefreshViews(ctx)
+	rec := bh.j.View(testViewKey)
+	if rec.MsgID == first || rec.Edits != 0 || rec.HistBytes != 0 {
+		t.Fatalf("legacy not rotated: %+v", rec)
+	}
+	// An edit counts its bytes.
+	second := rec.MsgID
+	bh.conv(t, "b", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.h.RefreshViews(ctx)
+	rec = bh.j.View(testViewKey)
+	if rec.MsgID != second || rec.Edits != 1 || rec.HistBytes != len(bh.z.bodies[second]) {
+		t.Fatalf("edit not counted: %+v", rec)
+	}
+	// A big history rotates.
+	rec.HistBytes = viewMaxHistBytes
+	if err := bh.j.SetView(testViewKey, rec); err != nil {
+		t.Fatal(err)
+	}
+	bh.conv(t, "c", journal.StateBlocked, journal.SetByUser, "", 0)
+	bh.h.RefreshViews(ctx)
+	if rec = bh.j.View(testViewKey); rec.MsgID == second || rec.HistBytes != 0 {
+		t.Fatalf("big history not rotated: %+v", rec)
+	}
+}

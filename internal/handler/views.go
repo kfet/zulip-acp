@@ -67,6 +67,11 @@ const viewGroupMax = 15
 // SQLite-backed server that was gigabytes of disk writes a day.
 const viewMaxEdits = 50
 
+// viewMaxHistBytes caps the summed text of a view message's edits.
+// Zulip keeps every old text in the message row and rewrites the whole
+// row on each edit, so a big history costs disk writes on every edit.
+const viewMaxHistBytes = 256 << 10
+
 // viewMaxRunes bounds a view message under Zulip's limit.
 const viewMaxRunes = 9000
 
@@ -129,7 +134,7 @@ func (h *Handler) RefreshViews(ctx context.Context) {
 	convs := h.cfg.Journal.Convs()
 	for _, v := range h.cfg.Views {
 		rec := h.cfg.Journal.View(v.Key)
-		rec.MsgID, rec.Edits = h.publishView(ctx, v, rec.MsgID, rec.Edits, h.renderView(v, convs))
+		rec = h.publishView(ctx, v, rec, h.renderView(v, convs))
 		h.saveView(v.Key, rec)
 	}
 	for _, n := range h.cfg.Notifies {
@@ -151,28 +156,35 @@ func (h *Handler) saveView(key string, rec journal.ViewRecord) {
 // how late a message can be deleted, so a view that moved on each post
 // left old views behind that the relay could no longer remove. It
 // returns the view message id now and its edit count.
-func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, msgID int64, edits int, text string) (int64, int) {
+func (h *Handler) publishView(ctx context.Context, v config.ResolvedView, rec journal.ViewRecord, text string) journal.ViewRecord {
+	msgID := rec.MsgID
 	if h.viewText[v.Key] == text && msgID != 0 {
-		return msgID, edits
+		return rec
 	}
-	if msgID != 0 && edits < viewMaxEdits {
+	// A record with edits but no HistBytes is from a release that did
+	// not count bytes: its history size is unknown and may be large.
+	legacy := rec.Edits > 0 && rec.HistBytes == 0
+	if msgID != 0 && !legacy && rec.Edits < viewMaxEdits && rec.HistBytes < viewMaxHistBytes {
 		err := h.cfg.Client.EditMessage(ctx, msgID, text)
 		if err == nil {
 			h.viewText[v.Key] = text
-			return msgID, edits + 1
+			rec.Edits++
+			rec.HistBytes += len(text)
+			return rec
 		}
 		h.cfg.Logf("handler: editing %s message %d: %v; posting a new one", v.Key, msgID, err)
 	}
 	id, err := h.cfg.Client.SendMessage(ctx, v.StreamID, v.Topic, text)
 	if err != nil {
 		h.cfg.Logf("handler: posting %s: %v", v.Key, err)
-		return msgID, edits
+		return rec
 	}
 	h.viewText[v.Key] = text
 	if msgID != 0 {
 		h.dropMessage(ctx, msgID, "old "+v.Key+" message", viewGone(v))
 	}
-	return id, 0
+	rec.MsgID, rec.Edits, rec.HistBytes = id, 0, 0
+	return rec
 }
 
 // staleViewScan is how many of its own newest messages dropStaleViews
