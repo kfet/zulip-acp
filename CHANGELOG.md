@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.7] - 2026-11-22
+
+### Fixed
+
+- Release: v0.84.6 has no release assets because a view test depended on topic order. The test is fixed.
+
 ## [0.84.6] - 2026-11-22
 
 ### Fixed

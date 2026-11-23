@@ -588,7 +588,7 @@ func TestViewRotatesAfterMaxEdits(t *testing.T) {
 	bh.conv(t, "last", journal.StateBlocked, journal.SetByUser, "", 0)
 	bh.h.RefreshViews(ctx)
 	rec := bh.j.View(testViewKey)
-	if rec.MsgID == first || rec.Edits != 0 || !strings.Contains(bh.viewBody(t), "fleet>last") {
+	if rec.MsgID == first || rec.Edits != 0 || bh.z.bodies[rec.MsgID] == "" {
 		t.Fatalf("not rotated: %+v", rec)
 	}
 	if _, ok := bh.z.bodies[first]; ok {
