@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/rollover"
 )
@@ -49,7 +51,7 @@ func TestSinkDropsRewordedRestatement(t *testing.T) {
 }
 
 func TestSinkKeepsDistinctSegments(t *testing.T) {
-	b := "The build passed on hpbox. All 412 tests are green, and the coverage gate held at the same level as before. I tagged v1.2.3 and pushed it to the remote, so the release workflow now runs on CI and will publish the binaries."
+	b := "The build passed on the build box. All 412 tests are green, and the coverage gate held at the same level as before. I tagged v1.2.3 and pushed it to the remote, so the release workflow now runs on CI and will publish the binaries."
 	got, _ := runRestate(t, restateA, b)
 	if !strings.Contains(got, "Nothing is built") || !strings.Contains(got, "release workflow") {
 		t.Fatalf("distinct text lost: %q", got)
@@ -78,5 +80,53 @@ func TestSplitterRewriteShrinksChain(t *testing.T) {
 	_ = split.Close(ctx, "")
 	if n < 2 || len(split.IDs()) != 1 || split.Transcript() != "short\n" {
 		t.Fatalf("before %d ids, after %v, raw %q", n, split.IDs(), split.Transcript())
+	}
+}
+
+func TestSinkRecordsDrops(t *testing.T) {
+	z := newZulip()
+	split, _ := rollover.New(rollover.Config{Poster: &convPoster{client: z, key: journal.Channel(4, "t")}})
+	ctx := context.Background()
+	s := newStreamingSink(split, true)
+	_ = s.OnUpdate(ctx, chunkNotification(restateA, nil))
+	_ = s.OnUpdate(ctx, toolCallNote())
+	_ = s.OnUpdate(ctx, chunkNotification(restateB, nil))
+	s.dropRestatement(ctx)
+	if d := s.Dropped(); len(d) != 1 || !strings.HasPrefix(d[0], "I researched") {
+		t.Fatalf("dropped = %q", d)
+	}
+}
+
+func TestDropNotes(t *testing.T) {
+	if !strings.Contains(dropUserNote(1), "a passage") || !strings.Contains(dropUserNote(2), "2 passages") {
+		t.Fatal("user note")
+	}
+	n := dropAgentNote([]string{strings.Repeat("x", 200), "line\nbreak"})
+	if !strings.Contains(n, "[relay]") || !strings.Contains(n, "…") || !strings.Contains(n, "> line break") {
+		t.Fatalf("agent note = %q", n)
+	}
+}
+
+func TestHandlerReportsDroppedRestatement(t *testing.T) {
+	agent := newAgent(restateB)
+	agent.updates = []acp.SessionUpdate{toolCallNote().Update}
+	agent.during = func() {
+		agent.mu.Lock()
+		sink := agent.sink
+		agent.mu.Unlock()
+		_ = sink.OnUpdate(context.Background(), chunkNotification(restateA, nil))
+	}
+	hh := newHarness(t, agent, nil)
+	hh.deliver(t, "t", mention("design?"))
+	all := strings.Join(hh.z.stored(), "\n")
+	if !strings.Contains(all, "relay: removed a passage") || strings.Count(all, "I researched each harness") != 1 {
+		t.Fatalf("stored = %q", all)
+	}
+	agent.mu.Lock()
+	agent.during, agent.updates, agent.chunks = nil, nil, []string{"ok"}
+	agent.mu.Unlock()
+	hh.deliver(t, "t", mention("next"))
+	if p := agent.prompts[1]; !strings.Contains(p, "[relay] In your last answer") {
+		t.Fatalf("prompt = %q", p)
 	}
 }

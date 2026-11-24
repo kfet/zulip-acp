@@ -77,6 +77,16 @@ type streamingSink struct {
 	// text between tool calls. newSeg starts the next one.
 	segs   []span
 	newSeg bool
+	// dropped is the answer text the repeat filters took out this
+	// turn. The relay tells the user and the agent about it.
+	dropped []string
+}
+
+// Dropped is the answer text the repeat filters removed this turn.
+func (s *streamingSink) Dropped() []string {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	return slices.Clone(s.dropped)
 }
 
 // span is a byte range of the splitter transcript.
@@ -223,6 +233,7 @@ func (s *streamingSink) appendMessage(chunk string) {
 	}
 	for _, p := range s.repeatables() {
 		if rest, ok := strings.CutPrefix(h, p); ok && strings.HasPrefix(rest, "\n") {
+			s.dropped = append(s.dropped, p)
 			s.held.Reset()
 			s.afterTool = false
 			s.showSegment(rest)
@@ -255,6 +266,7 @@ func (s *streamingSink) releaseHeld() {
 	s.held.Reset()
 	s.afterTool = false
 	if t := strings.TrimSpace(held); t != "" && slices.Contains(s.repeatables(), t) {
+		s.dropped = append(s.dropped, t)
 		return
 	}
 	s.showSegment(held)
@@ -326,6 +338,7 @@ func (s *streamingSink) dropRestatement(ctx context.Context) {
 		}
 		cut := raw[:a.start] + strings.TrimLeft(raw[a.end:], "\n")
 		if err := s.split.Rewrite(ctx, cut); err == nil {
+			s.dropped = append(s.dropped, strings.TrimSpace(raw[a.start:a.end]))
 			s.segs = append(s.segs[:i:i], s.segs[i+1:]...)
 		}
 		return

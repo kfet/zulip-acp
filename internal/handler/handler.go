@@ -640,6 +640,10 @@ type inflightEntry struct {
 type Handler struct {
 	cfg Config
 
+	// dropNotes holds, per session key, a note for the agent's next
+	// prompt: the answer text the relay removed as a repeat.
+	dropNotes sync.Map
+
 	// viewArmed is true while a debounced view refresh is pending.
 	viewArmed atomic.Bool
 	// viewMu serialises view refreshes and guards viewText, the last
@@ -1635,6 +1639,9 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 		// Side Q&A the agent could not take mid-turn (see
 		// interject.go) goes first, so the new message stays last.
 		text := h.cfg.Interject.Take(conv.SessionKey()) + prompt
+		if n, ok := h.dropNotes.LoadAndDelete(conv.SessionKey()); ok {
+			text += n.(string)
+		}
 		if prefix := h.cfg.Sessions.TakePendingSystemPrompt(sess); prefix != "" {
 			text = prefix + "\n\n" + text
 		}
@@ -1694,6 +1701,10 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 	fctx := context.WithoutCancel(ctx)
 	sink.dropRestatement(fctx)
 	suffix := h.uploadOutbox(fctx, h.localDir(conv, sess.Cwd))
+	if d := sink.Dropped(); len(d) > 0 {
+		suffix = dropUserNote(len(d)) + suffix
+		h.dropNotes.Store(conv.SessionKey(), dropAgentNote(d))
+	}
 	// The safety net: an agent that answers with nothing but the
 	// sentinel on a path that could not abstain (an addressed turn)
 	// must not have the sentinel posted verbatim. After the outbox
@@ -2636,4 +2647,37 @@ func prefixedBudget(budget int, prefix string) int {
 		budget = rollover.DefaultBudget
 	}
 	return budget - utf8.RuneCountInString(prefix)
+}
+
+// dropUserNote tells the user that the relay removed repeated text
+// from the answer, so a missing passage is never a silent loss.
+func dropUserNote(n int) string {
+	w := "a passage"
+	if n > 1 {
+		w = fmt.Sprintf("%d passages", n)
+	}
+	return "\n\n*(relay: removed " + w + " that the agent wrote twice)*"
+}
+
+// dropAgentNote tells the agent, on its next prompt, which text the
+// relay removed, so it knows what the user did not see twice and can
+// stop restating its answer after a tool call.
+func dropAgentNote(d []string) string {
+	var b strings.Builder
+	b.WriteString("\n\n[relay] In your last answer you wrote the same text twice, before and after a tool call. " +
+		"The relay showed it once and removed this repeat:")
+	for _, t := range d {
+		b.WriteString("\n> " + capRunes(strings.ReplaceAll(t, "\n", " "), 160))
+	}
+	b.WriteString("\nWrite the answer once, after your last tool call.")
+	return b.String()
+}
+
+// capRunes cuts s to n code points, marking a cut with "…".
+func capRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
