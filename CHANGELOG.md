@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `!login` uses the new acp-kit v0.52.3 text. When the agent sends its own instructions, the lead line is neutral, and the paste prompt asks for the "code or redirect URL".
+
 ## [0.84.8] - 2026-11-23
 
 ### Fixed

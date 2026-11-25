@@ -304,7 +304,7 @@ offer the same surface.
 | `!state` | show what you must do with this topic: its state, reason, who set it and when |
 | `!state <needs_you\|fyi\|waiting\|blocked\|done> [reason]` | set it yourself; it overrides the agent's |
 | `!inbox` | list the open topics of this channel (an owner in `update_owner_ids`: of every channel), grouped needs_you, blocked, fyi, waiting, then no state; done topics are left out |
-| `!login [provider]` | connect an LLM provider by OAuth; paste the redirect URL back as your next message |
+| `!login [provider]` | connect an LLM provider by OAuth; paste the code or redirect URL back as your next message |
 | `!login cancel` | abort a login in progress |
 
 Older spellings still work and are not going away: `!models`, `!relay`,
