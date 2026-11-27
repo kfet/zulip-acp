@@ -669,3 +669,9 @@ func TestPromptFile(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfUpdateArgsSkipPrompt(t *testing.T) {
+	if strings.Join(selfUpdateArgs, " ") != "update -y" {
+		t.Fatal(selfUpdateArgs)
+	}
+}

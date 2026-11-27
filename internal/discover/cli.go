@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/kfet/distkit"
+	"golang.org/x/term"
 )
 
 // Deps is what the commands need from outside this package. Production
@@ -48,10 +49,9 @@ func Default(cfg func(string) distkit.Config, legacy func([]string, io.Writer, i
 		},
 		Swap:   distkit.Update,
 		Legacy: legacy,
-		Interactive: func() bool {
-			fi, err := os.Stdin.Stat()
-			return err == nil && fi.Mode()&os.ModeCharDevice != 0
-		},
+		// A character device is not enough: /dev/null is one, and it is
+		// the stdin of every exec.Command child (the `!update` hook).
+		Interactive: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
 	}
 }
 

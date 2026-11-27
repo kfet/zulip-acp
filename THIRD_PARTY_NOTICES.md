@@ -4,3 +4,5 @@ github.com/kfet/acp-kit,https://github.com/kfet/acp-kit/blob/v0.52.3/LICENSE,MIT
 github.com/kfet/distkit,https://github.com/kfet/distkit/blob/v0.1.10/LICENSE,MIT
 github.com/kfet/zulip-acp,https://github.com/kfet/zulip-acp/blob/HEAD/LICENSE,MIT
 golang.org/x/image,https://cs.opensource.google/go/x/image/+/v0.31.0:LICENSE,BSD-3-Clause
+golang.org/x/sys/unix,https://cs.opensource.google/go/x/sys/+/v0.41.0:LICENSE,BSD-3-Clause
+golang.org/x/term,https://cs.opensource.google/go/x/term/+/v0.40.0:LICENSE,BSD-3-Clause

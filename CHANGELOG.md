@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `!update` no longer stops at "proceed? [y/N]" and reports "nothing was changed": the relay runs its own `update` with `-y`, and `update` no longer takes a `/dev/null` stdin for a terminal (it uses a real terminal check).
+
 ## [0.84.10] - 2026-11-25
 
 ### Fixed

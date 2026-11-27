@@ -592,10 +592,18 @@ func TestUpdateNonInteractiveIsLegacy(t *testing.T) {
 	if rc := Update([]string{"-version", "v1.1.0"}, "v1", nil, &out, io.Discard, d); rc != 7 || out.String() != `legacy ["-version" "v1.1.0"]` {
 		t.Fatal(rc, out.String())
 	}
-	if d := Default(nil, nil); d.Interactive == nil {
-		t.Fatal()
-	} else {
-		d.Interactive() // go test's stdin is not a terminal; must not panic
+	// /dev/null is a character device but no terminal: the `!update` hook
+	// child gets it as stdin and must not see a prompt.
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	old := os.Stdin
+	os.Stdin = null
+	defer func() { os.Stdin = old }()
+	if Default(nil, nil).Interactive() {
+		t.Fatal("/dev/null reported as a terminal")
 	}
 }
 
