@@ -670,8 +670,8 @@ func TestPromptFile(t *testing.T) {
 	}
 }
 
-func TestSelfUpdateArgsSkipPrompt(t *testing.T) {
-	if strings.Join(selfUpdateArgs, " ") != "update -y" {
-		t.Fatal(selfUpdateArgs)
+func TestSelfUpdateArgsSwapOnlySelf(t *testing.T) {
+	if got := strings.Join(selfUpdateArgs("/bin/z"), " "); got != "update -binary /bin/z" {
+		t.Fatal(got)
 	}
 }

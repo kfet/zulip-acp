@@ -335,11 +335,11 @@ func buildSkillsCatalog(builtin []skills.Skill, hostDir string) string {
 	return skills.FormatCatalog(merged)
 }
 
-// selfUpdateArgs runs the relay's own `update` from `!update`. The hook
-// has no terminal, so -y is required: without it the plan waits for an
-// answer nobody can give. The agent hooks get no -y: `fir update` has no
-// prompt and rejects every flag but -check.
-var selfUpdateArgs = []string{"update", "-y"}
+// selfUpdateArgs is the relay's own `update` for `!update`: swap only
+// this binary, ask nothing, reload nothing. The Updater owns the one
+// reload; discovery would SIGHUP this relay (and others) a second time,
+// before the reload marker exists.
+func selfUpdateArgs(self string) []string { return []string{"update", "-binary", self} }
 
 // newUpdater builds the `!update` command for this relay, or nil when no
 // owner is configured (the command then stays unrecognised).
@@ -365,7 +365,7 @@ func newUpdater(cfg *config.Config, version string, agentBin string, agentVersio
 		// The job needs no relay credential; same list the agent loses.
 		SecretEnvNames: cfg.AgentClientConfig(nil).SecretEnvNames,
 		Logf:           log.Printf,
-		UpdateSelf:     update.CommandHook(self, selfUpdateArgs...),
+		UpdateSelf:     update.CommandHook(self, selfUpdateArgs(self)...),
 		AgentVersion:   agentVersion,
 		AgentPID:       func() int { return childPID(procRoot, os.Getpid(), agentBin) },
 		CancelAll:      cancelAll,
