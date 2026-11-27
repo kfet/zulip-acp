@@ -4,12 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/kfet/zulip-acp/internal/journal"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
+
+var pngSizes = regexp.MustCompile(`\d+(\.\d+)? KB`)
 
 var updateGolden = flag.Bool("update", false, "rewrite testdata/prompts.golden")
 
@@ -62,7 +65,9 @@ func TestPromptNotesGolden(t *testing.T) {
 		{ref: uploadRef{Path: "/user_uploads/1/c/p.png"}, name: "p.png", local: "/in/p.png", mime: "image/png",
 			size: len(realPNG(t, 600, 450)), data: realPNG(t, 600, 450)},
 	})
-	add("attachments", note)
+	// The PNG encoder's output size changes between Go releases, so
+	// the sizes of the image line are not part of the golden.
+	add("attachments", pngSizes.ReplaceAllString(note, "N KB"))
 
 	many := make([]string, MaxCatchupPerTopic+2)
 	for i := range many {

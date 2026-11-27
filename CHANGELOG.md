@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.13] - 2026-11-27
+
+### Fixed
+
+- The prompt golden test no longer depends on the PNG encoder of the Go release, which failed the v0.84.12 release build. v0.84.12 has no release assets; use v0.84.13.
+
 ## [0.84.12] - 2026-11-27
 
 ### Changed

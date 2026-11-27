@@ -54,7 +54,7 @@ go on
 [relay] This message has attachments. They have been downloaded into this conversation's working directory — read them from the local paths below, do not fetch the Zulip links.
 - x.bin — too big. Zulip link: /user_uploads/1/a/x.bin
 - y.txt — local path: /in/y.txt (text/plain, 12 bytes). Zulip link: /user_uploads/1/b/y.txt
-- p.png — local path: /in/p.png (image/png, 4.6 KB). Zulip link: /user_uploads/1/c/p.png [shown to you downscaled to 2.6 KB; open the local path for full resolution]
+- p.png — local path: /in/p.png (image/png, N KB). Zulip link: /user_uploads/1/c/p.png [shown to you downscaled to N KB; open the local path for full resolution]
 === catchup/few
 [catch-up] 2 messages arrived while the relay was offline (first at 2026-11-27T17:20:00Z)
 
