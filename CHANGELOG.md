@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.12] - 2026-11-27
+
 ### Changed
 
 - Every text a model reads (system prompt, `[relay]` notes, MCP tool and parameter descriptions) is now an embedded file in `internal/prompts`. Golden tests prove the output did not change.
