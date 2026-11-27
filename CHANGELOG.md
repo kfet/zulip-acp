@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.15] - 2026-11-27
+
+### Fixed
+
+- A turn that ends with no reply text, posts nothing through `post` or `send_file` and leaves no outbox file now gets one more prompt, which says the topic shows nothing for that turn. Only if that is empty too does the relay post `_(no output)_`. Seen in real sessions right after a `topic_state` call: 53 empty turns, every one of them just after that call. Cancelled, failed and abstained turns are not prompted again.
+
 ## [0.84.14] - 2026-11-27
 
 ### Fixed

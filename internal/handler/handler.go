@@ -644,6 +644,9 @@ type Handler struct {
 	// dropNotes holds, per session key, a note for the agent's next
 	// prompt: the answer text the relay removed as a repeat.
 	dropNotes sync.Map
+	// outOfBand marks, per conversation token, a turn that already put
+	// something in the topic through the post or send_file tool.
+	outOfBand sync.Map
 
 	// viewArmed is true while a debounced view refresh is pending.
 	viewArmed atomic.Bool
@@ -1663,38 +1666,51 @@ func (h *Handler) runOpts(ctx context.Context, conv journal.Conv, prompt string,
 
 	var stop acp.StopReason
 	var leaf string
-	if abstaining {
-		res, perr := client.PromptAbstainable(lctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
-		wcancel()
-		if perr != nil {
-			sink.flushThought()
-			return h.failTurn(lctx, conv, split, sink, post.prefix, sched, perr)
+	h.outOfBand.Delete(token)
+	promptOnce := func(blocks []acp.ContentBlock) (abstained bool, err error) {
+		if abstaining {
+			res, perr := client.PromptAbstainable(lctx, h.cfg.Agent, sess.SessionID, blocks, vs, h.cfg.SilentSentinel)
+			if perr != nil {
+				return false, perr
+			}
+			if res.Abstained {
+				leaf = res.LeafID
+				return true, nil
+			}
+			stop, leaf = res.Stop, res.LeafID
+			return false, nil
 		}
-		if res.Abstained {
-			h.cfg.Logf("handler: agent abstained in %s", conv.ID)
-			h.recordTurn(conv.ID, msgID, 0, res.LeafID)
-			h.clearTail(conv.ID)
-			h.heartbeat(context.WithoutCancel(ctx), conv, sched)
-			return nil
-		}
-		stop, leaf = res.Stop, res.LeafID
-		stopLive()
-	} else {
-		var tr client.TurnResult
-		tr, err = h.cfg.Agent.PromptTurn(lctx, sess.SessionID, blocks)
+		tr, perr := h.cfg.Agent.PromptTurn(lctx, sess.SessionID, blocks)
 		stop, leaf = tr.Stop, tr.LeafID
-		wcancel()
-		if err != nil {
-			sink.flushThought()
-			return h.failTurn(lctx, conv, split, sink, post.prefix, sched, err)
-		}
-		// The bound covers the prompt and nothing after it. Disarming
-		// here rather than only on the deferred path keeps the clock
-		// and the thing it measures the same length; the flush,
-		// upload and repost below run detached and must never be cut.
-		// It must come AFTER failTurn, which reads the cause.
-		stopLive()
+		return false, perr
 	}
+	abstained, err := promptOnce(blocks)
+	if err == nil && !abstained && h.emptyTurn(token, stop, sink, h.localDir(conv, sess.Cwd)) {
+		// The agent ended a turn it could not abstain from with no
+		// reply at all. Observed on real models right after a
+		// topic_state call: the turn reads as closed. One more prompt
+		// costs a few tokens; posting "(no output)" costs the answer.
+		h.cfg.Logf("handler: empty turn in %s; prompting once more", conv.ID)
+		abstained, err = promptOnce([]acp.ContentBlock{acp.TextBlock(EmptyTurnNote)})
+	}
+	wcancel()
+	if err != nil {
+		sink.flushThought()
+		return h.failTurn(lctx, conv, split, sink, post.prefix, sched, err)
+	}
+	if abstained {
+		h.cfg.Logf("handler: agent abstained in %s", conv.ID)
+		h.recordTurn(conv.ID, msgID, 0, leaf)
+		h.clearTail(conv.ID)
+		h.heartbeat(context.WithoutCancel(ctx), conv, sched)
+		return nil
+	}
+	// The bound covers the prompt and nothing after it. Disarming
+	// here rather than only on the deferred path keeps the clock
+	// and the thing it measures the same length; the flush,
+	// upload and repost below run detached and must never be cut.
+	// It must come AFTER failTurn, which reads the cause.
+	stopLive()
 
 	fctx := context.WithoutCancel(ctx)
 	sink.dropRestatement(fctx)

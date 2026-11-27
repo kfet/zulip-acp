@@ -49,6 +49,7 @@ func (h *Handler) PostFileTo(token string, f command.OutFile) ([]string, error) 
 	if _, err := journal.ParseToken(token); err != nil {
 		return nil, err
 	}
+	h.outOfBand.Store(token, true)
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ZulipCallTimeout)
 	defer cancel()
 	p, err := h.cfg.Client.Upload(ctx, f.Name, zulipproto.ContentType(f.Name, f.Data), bytes.NewReader(f.Data))

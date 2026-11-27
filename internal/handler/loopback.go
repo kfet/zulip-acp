@@ -253,6 +253,7 @@ func (h *Handler) PostToIDs(token, text string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	h.outOfBand.Store(token, true)
 	// The token holds the base topic; post where the topic is now.
 	key = h.cfg.Journal.Current(key)
 	post := &convPoster{client: h.cfg.Client, key: key}
