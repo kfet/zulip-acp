@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.14] - 2026-11-27
+
 ### Fixed
 
 - `!update` swaps only the relay's own binary and reloads once. Since v0.84.11 it ran the full host update, which reloaded every relay on the host and this relay a second time.
