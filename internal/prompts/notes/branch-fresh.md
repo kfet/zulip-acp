@@ -1,0 +1,1 @@
+[relay] This topic was branched out of another conversation, which you have NOT seen. Call the relay `{{.History}}` tool with origin=true to read it — that reads the origin conversation up to the moment of the branch, and it is the only other conversation you can read. Do it when the message above leans on context you do not have, not reflexively.

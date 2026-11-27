@@ -1,24 +1,25 @@
 // Package sysprompt composes the durable per-session system prompt.
 //
-// The built-in block lives in sysprompt.md, a text/template embedded
-// into the binary. The config key system_prompt_file can replace it
-// with an operator file, so a wording change needs no rebuild.
+// The built-in block is internal/prompts/system/prompt.md, a
+// text/template embedded into the binary. The config key
+// system_prompt_file can replace it with an operator file, so a
+// wording change needs no rebuild.
 // Persona and project rules belong in the operator's system_prompt,
 // which is appended to the rendered block.
 package sysprompt
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
 	"strings"
 	"text/template"
 
 	kit "github.com/kfet/acp-kit/sysprompt"
+
+	"github.com/kfet/zulip-acp/internal/prompts"
 )
 
-//go:embed sysprompt.md
-var embedded string
+var embedded = prompts.SystemPrompt()
 
 // Template is a parsed system-prompt template.
 type Template struct{ t *template.Template }
@@ -60,7 +61,8 @@ func Load(path string) (*Template, error) {
 	return t, nil
 }
 
-// data holds the template fields. sysprompt.md documents them.
+// data holds the template fields. internal/prompts/system/prompt.md
+// documents them.
 type data struct {
 	Sentinel    string
 	Reactions   bool

@@ -74,6 +74,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/zulip-acp/internal/imagefit"
+	"github.com/kfet/zulip-acp/internal/prompts"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -388,14 +389,13 @@ func (h *Handler) renderAttachments(results []ingested) (string, []acp.ContentBl
 					// it can SEE is not the version on disk: fine
 					// detail — a page of text in a photo — is in the
 					// file, not in the block.
-					line += fmt.Sprintf(" [shown to you downscaled to %s; open the local path for full resolution]", humanBytes(int64(len(data))))
+					line += " " + prompts.Note("downscaled", struct{ Size string }{humanBytes(int64(len(data)))})
 				}
 			}
 		}
 		lines = append(lines, line)
 	}
-	note := "\n\n[relay] This message has attachments. They have been downloaded into this " +
-		"conversation's working directory — read them from the local paths below, do not fetch the Zulip links.\n" +
+	note := "\n\n" + prompts.Note("attachments", nil) + "\n" +
 		strings.Join(lines, "\n")
 	return note, blocks
 }

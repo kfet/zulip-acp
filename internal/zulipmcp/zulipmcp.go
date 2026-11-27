@@ -22,6 +22,9 @@ import (
 	"path/filepath"
 
 	"github.com/kfet/acp-kit/mcphost"
+
+	"github.com/kfet/zulip-acp/internal/prompts"
+	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
 // Env var names the main process sets on the spawned redirector (via
@@ -78,3 +81,25 @@ func RedirConfig() mcphost.RedirConfig {
 		EnvToken:   EnvToken,
 	}
 }
+
+// toolData holds the values that the tool texts in internal/prompts
+// interpolate.
+var toolData = struct {
+	History, ListChildren                  string
+	DefaultLimit, MaxLimit, MaxBranchTasks int
+	MaxChildren, MaxTopicLength            int
+}{
+	History:        ToolHistory,
+	ListChildren:   ToolListChildren,
+	DefaultLimit:   DefaultLimit,
+	MaxLimit:       MaxLimit,
+	MaxBranchTasks: MaxBranchTasks,
+	MaxChildren:    MaxChildren,
+	MaxTopicLength: zulipproto.MaxTopicLength,
+}
+
+// toolText is the description of tool, from internal/prompts.
+func toolText(tool string) string { return prompts.Tool(tool, toolData) }
+
+// paramText is the description of param of tool, from internal/prompts.
+func paramText(tool, param string) string { return prompts.Param(tool, param, toolData) }

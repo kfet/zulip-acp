@@ -102,8 +102,13 @@ internal/reload/        graceful reload: drain + re-exec in place, cursor handof
 internal/rollover/      pure 10k-code-point message splitter (NO Zulip imports)
 internal/statusline/    Zulip-markdown status-line renderer (live spinner +
                         italic footer under the finished answer)
-internal/sysprompt/     built-in Zulip system prompt: sysprompt.md (embedded
-                        text/template; edit the prompt THERE, not in Go)
+internal/prompts/       EVERY text a model reads, one embedded file each:
+                        system/ (system prompt parts), notes/ (per-turn
+                        `[relay]` notes), tools/<tool>/ (MCP tool and param
+                        descriptions); edit wording THERE, never in Go.
+                        Goldens in handler, zulipmcp and sysprompt pin bytes
+internal/sysprompt/     renders the system prompt from prompts/system/ (plus
+                        the operator's system_prompt_file override)
 internal/updater/       the four strings that name THIS binary for
                         `zulip-acp update`; the mechanism (GitHub API fetch,
                         sha256 verify, ETXTBSY-safe atomic swap, brew keg

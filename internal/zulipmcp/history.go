@@ -240,44 +240,26 @@ func (t *Tools) Tools() []Tool {
 // coreTools is every tool the relay always offers.
 func (t *Tools) coreTools() []Tool {
 	return []Tool{{
-		Name: ToolHistory,
-		Description: "Read earlier messages of THIS conversation, oldest first, as raw markdown — " +
-			"including your own past replies. Use it to recover what was said before your current " +
-			"session started, or before the context was cleared. Long replies are truncated: page " +
-			"further back with before_id. With origin=true it instead reads the conversation THIS " +
-			"topic was branched out of, up to the moment of the branch — available only when the relay " +
-			"opened this topic with `!branch`, the fork reaction or the `branch` tool. With child=<conv_id or topic> it " +
-			"instead reads, in full, a topic branched DIRECTLY out of this one (see " + ToolListChildren + "). " +
-			"This conversation, its origin and its direct children are the only conversations it can ever read; " +
-			"there is no way to address any other topic or DM, and neither the origin's origin nor a child's " +
-			"children are reachable.",
+		Name:        ToolHistory,
+		Description: toolText(ToolHistory),
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"limit": map[string]any{
-					"type": "integer",
-					"description": fmt.Sprintf(
-						"How many messages to fetch, newest-most first. Default %d, maximum %d.",
-						DefaultLimit, MaxLimit),
+					"type":        "integer",
+					"description": paramText(ToolHistory, "limit"),
 				},
 				"before_id": map[string]any{
-					"type": "integer",
-					"description": "Return only messages OLDER than this message id, exclusive. " +
-						"Pass the oldest id from a previous call to page further back. " +
-						"Omit to start from the newest message.",
+					"type":        "integer",
+					"description": paramText(ToolHistory, "before_id"),
 				},
 				"origin": map[string]any{
-					"type": "boolean",
-					"description": "Read the conversation this topic was branched out of, instead of " +
-						"this one. Only messages at or before the branch point are returned — the " +
-						"origin's later messages are not yours to read. Fails when this topic was not " +
-						"branched from anything.",
+					"type":        "boolean",
+					"description": paramText(ToolHistory, "origin"),
 				},
 				"child": map[string]any{
-					"type": "string",
-					"description": "Read a topic branched DIRECTLY out of this one, in full — not clamped. " +
-						"Give its conv_id or its topic name, as " + ToolListChildren + " shows them. " +
-						"Fails for anything that is not a direct child. Cannot be combined with origin.",
+					"type":        "string",
+					"description": paramText(ToolHistory, "child"),
 				},
 			},
 		},

@@ -5,9 +5,10 @@ import (
 	"io/fs"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/kfet/zulip-acp/internal/prompts"
 )
 
 // Notes index limits. They bound what the index can add to EVERY
@@ -43,11 +44,7 @@ func NotesIndex(fsys fs.FS, dir string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Notes — your persistent memory, in `" + dir + "`:\n")
-	b.WriteString("- Earlier sessions, the operator and you wrote these down because the obvious guess was wrong or unknown. A note OVERRIDES your assumptions.\n")
-	b.WriteString("- Before you act on any fact about the environment — which host, where code lives, how to build, deploy, update, configure or reach something, what the user prefers — find the notes below that cover it and read them. Do this also when you feel sure: that feeling is how notes get skipped.\n")
-	b.WriteString("- Ask the user only what the notes do not answer. When you learn such a fact, write or update a note.\n")
-	b.WriteString("\nIndex (file — summary):\n")
+	b.WriteString(prompts.System("notes-index", struct{ Dir string }{dir}) + "\n")
 	shown := 0
 	for _, f := range files {
 		line := "- " + f
@@ -62,7 +59,7 @@ func NotesIndex(fsys fs.FS, dir string) string {
 		shown++
 	}
 	if more := len(files) - shown; more > 0 {
-		b.WriteString("- … " + strconv.Itoa(more) + " more: list or grep the dir.\n")
+		b.WriteString(prompts.System("notes-more", struct{ More int }{more}) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

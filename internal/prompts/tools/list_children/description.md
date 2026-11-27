@@ -1,0 +1,1 @@
+List the topics branched DIRECTLY out of this conversation — by the `branch` tool, `!branch` or the fork reaction — with each one's topic, conv_id, #channel>topic link and last activity. Read one in full with history(child=<conv_id>). A child's own children are not listed. At most the {{.MaxChildren}} most recently active children are shown.

@@ -35,17 +35,6 @@ const (
 	ToolInbox      = "inbox"
 )
 
-// topicStateDescription is the tool description. It was tested on a
-// cheap model; do not reword it.
-const topicStateDescription = "Record this topic's state when it changes. The state lasts across turns and feeds the user's !inbox, where they pick which of many topics to open. A new topic has no state. Call this tool only when this turn changes what the user must do with the topic:\n" +
-	"- needs_you: you wait for their answer or decision.\n" +
-	"- fyi: you delivered a result or answer; they should read it, but you need nothing from them.\n" +
-	"- waiting: work goes on without them (a build, a branched agent, a schedule).\n" +
-	"- blocked: you cannot continue, and an answer alone will not fix it (for example, an expired credential only they can renew).\n" +
-	"- done: nothing is left to read or do.\n" +
-	"If the state is the same as before, do not call it. The user can override it with !state.\n" +
-	"The reason is shown only in the inbox, never in the topic. Write your answer, plan or question in your reply text; this tool does not deliver it."
-
 // topicStateTool is the tool as data.
 func (t *Tools) topicStateTool() Tool {
 	enum := make([]any, len(journal.States))
@@ -54,14 +43,14 @@ func (t *Tools) topicStateTool() Tool {
 	}
 	return Tool{
 		Name:        ToolTopicState,
-		Description: topicStateDescription,
+		Description: toolText(ToolTopicState),
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"state": map[string]any{"type": "string", "enum": enum},
 				"reason": map[string]any{
 					"type":        "string",
-					"description": "One line for the inbox only; the user does not see it in the topic. Say what the user must do, or the outcome.",
+					"description": paramText(ToolTopicState, "reason"),
 				},
 			},
 			"required": []any{"state", "reason"},
@@ -95,12 +84,9 @@ func (t *Tools) topicStateTool() Tool {
 // inboxTool is the tool as data.
 func (t *Tools) inboxTool() Tool {
 	return Tool{
-		Name: ToolInbox,
-		Description: "Read the user's inbox for this channel: its open topics, grouped by state " +
-			"(needs_you, blocked, fyi, waiting, then topics with no state), each with the age of its last " +
-			"activity and its reason. It is the list the user's !inbox shows in this channel. Read-only. " +
-			"From a direct message it is refused: a DM is in no channel.",
-		Schema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Name:        ToolInbox,
+		Description: toolText(ToolInbox),
+		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
 		Handler: t.wrap(func(c caller, _ json.RawMessage) (string, error) {
 			return t.cfg.Inbox(c.session)
 		}),

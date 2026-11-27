@@ -23,7 +23,7 @@ go on
 [branched from #**fleet>planning@3**]
 go on
 
-[relay] This topic was branched out of another conversation, and this session is a fork of that conversation's session: you already carry its context, up to its latest turn. Call the relay `history` tool with origin=true only to read what the humans wrote there that your session did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read. The origin session still runs and owns its work (subagents, jobs, schedules). Leave that work alone unless the user moves it here.
+[relay] This topic was branched out of another conversation, and this session is a fork of that conversation's session: you already carry its context, up to its latest turn. Call the relay `history` tool with origin=true only to read what the humans wrote there that your session did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read. The origin session still runs. Its work and open questions stay there and it answers them itself.
 
 [relay] This message opened a new topic. The relay auto-named it "a topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
 === branch/loopback/other
@@ -47,7 +47,7 @@ go on
 [branched from #**fleet>planning@3**]
 go on
 
-[relay] The origin session still runs and owns its work (subagents, jobs, schedules). Leave that work alone unless the user moves it here.
+[relay] The origin session still runs. Its work and open questions stay there and it answers them itself.
 === attachments
 
 

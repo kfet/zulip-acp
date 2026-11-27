@@ -319,7 +319,7 @@ it would swallow the reaction that actually meant something and let through the
 ones that did not, and neither failure would be visible to anyone.
 
 So the posture is set where the judgement lives, in the injected system prompt
-(`internal/sysprompt.reactionInstruction`), and it is written as a norm rather
+(`internal/prompts/system/prompt.md`), and it is written as a norm rather
 than a suggestion:
 
 - a reaction is ambient **signal, not a request**, and most deserve no reply at
@@ -1336,7 +1336,7 @@ renders a `widget-html` block in a bot message as a sandboxed frame, so the
 only gap was that the agent did not know. `"widgets": true` closes it with
 two pieces, both gated on the key:
 
-- a short note in the system prompt (`sysprompt.widgetsInstruction`), so the
+- a short note in the system prompt (`internal/prompts/system/prompt.md`), so the
   agent knows the option exists when it chooses a deliverable. It carries the
   realm root from `site`, which the unpatched-client fallback links to;
 - the bundled `widgets` skill, which holds the full format. `gateWidgets` in
@@ -2306,7 +2306,10 @@ internal/reload/        graceful reload: drain in-flight turns, then re-exec in
                         (see docs/graceful-reload.md)
 internal/rollover/      pure code-point splitter — NO Zulip imports
 internal/statusline/    Zulip-markdown model/mood/plan line (spinner + footer)
-internal/sysprompt/     built-in Zulip formatting block
+internal/prompts/       every model-facing text as an embedded file: the
+                        system prompt, the per-turn `[relay]` notes, the
+                        MCP tool and parameter descriptions
+internal/sysprompt/     renders the built-in system prompt block
 internal/zulipmcp/      MCP server identity (socket path under the state dir,
                         env vars, subcommand)
                         and the Zulip-specific loopback tools, `history` and

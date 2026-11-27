@@ -8,7 +8,7 @@ import (
 // Regression: an agent put its question only in the reason and the user
 // never saw it. The prompt must say the reason is not posted to the topic.
 func TestTopicStateSaysReasonIsInboxOnly(t *testing.T) {
-	if !strings.Contains(topicStateDescription, "never in the topic") {
+	if !strings.Contains(toolText(ToolTopicState), "never in the topic") {
 		t.Fatal("description must say the reason is not shown in the topic")
 	}
 	tool := (&Tools{}).topicStateTool()

@@ -92,6 +92,7 @@ import (
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/zulip-acp/internal/autotopic"
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/prompts"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
@@ -729,29 +730,29 @@ func (h *Handler) branchPrompt(p branchPlan, title string, forked bool) string {
 	prompt := fmt.Sprintf("[branched from %s]%s\n%s", origin, h.branchAttribution(p), text)
 	if h.cfg.Loopback != nil {
 		if forked {
-			prompt += "\n\n[relay] This topic was branched out of another conversation, and this session is a fork of " +
-				"that conversation's session: you already carry its context, up to its latest turn. Call the relay `" +
-				zulipmcp.ToolHistory + "` tool with origin=true only to read what the humans wrote there that your session " +
-				"did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read." +
-				" " + forkOriginLive
+			prompt += "\n\n" + prompts.Note("branch-forked", historyTool) + " " + forkOriginLive()
 		} else {
-			prompt += "\n\n[relay] This topic was branched out of another conversation, which you have NOT seen. " +
-				"Call the relay `" + zulipmcp.ToolHistory + "` tool with origin=true to read it — that reads the origin " +
-				"conversation up to the moment of the branch, and it is the only other conversation you can read. Do it " +
-				"when the message above leans on context you do not have, not reflexively."
+			prompt += "\n\n" + prompts.Note("branch-fresh", historyTool)
 		}
 		prompt += renameHint(title)
 	} else if forked {
-		prompt += "\n\n[relay] " + forkOriginLive
+		prompt += "\n\n[relay] " + forkOriginLive()
 	}
 	return prompt
 }
 
+// historyTool is the data of the branch notes: the name of the tool
+// that reads the origin.
+var historyTool = struct{ History string }{zulipmcp.ToolHistory}
+
 // forkOriginLive tells a forked session that the session it was forked
-// from still runs. Without it, a forked session took a bare "stop" as
-// an order to stop the origin's subagent. Few words, by request.
-const forkOriginLive = "The origin session still runs and owns its work (subagents, jobs, schedules). " +
-	"Leave that work alone unless the user moves it here."
+// from still runs, and that the origin's work and open questions stay
+// there. Without it, a forked session took a bare "stop" as an order to
+// stop the origin's subagent, and an earlier wording that named only
+// "subagents, jobs, schedules" let a fork finish the origin topic's open
+// question in the branch topic. The text informs; it does not instruct.
+// It was tested on a cheap model: do not reword it.
+func forkOriginLive() string { return prompts.Note("fork-origin-live", nil) }
 
 // branchAttribution is the clause that keeps the prompt honest about
 // who wrote the text below it.
@@ -773,9 +774,9 @@ func (h *Handler) branchAttribution(p branchPlan) string {
 		return ""
 	}
 	if p.Author == h.cfg.BotFullName {
-		return " [the text below is an earlier message of your own, which the user asked to spin out]"
+		return " " + prompts.Note("branch-by-self", nil)
 	}
-	return " [the text below was written by somebody other than the user who branched it]"
+	return " " + prompts.Note("branch-by-other", nil)
 }
 
 // originLink renders the place a branch came from as a Zulip message

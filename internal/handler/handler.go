@@ -40,6 +40,7 @@ import (
 	"github.com/kfet/zulip-acp/internal/autotopic"
 	"github.com/kfet/zulip-acp/internal/config"
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/prompts"
 	"github.com/kfet/zulip-acp/internal/rollover"
 	"github.com/kfet/zulip-acp/internal/statusline"
 	"github.com/kfet/zulip-acp/internal/zulipmcp"
@@ -1409,10 +1410,7 @@ func (h *Handler) route(ctx context.Context, m *zulipproto.Message, cu *catchupR
 // its topic is a placeholder is how a relay ends up renaming the
 // channel out from under people.
 func renameHint(topic string) string {
-	return "\n\n[relay] This message opened a new topic. The relay auto-named it \"" + topic +
-		"\" from the message's first line, which is a placeholder, not a title. Once you know what this " +
-		"conversation is about, call the relay `" + zulipmcp.ToolRenameTopic + "` tool with a better one. " +
-		"Do not mention the rename in your reply."
+	return "\n\n" + prompts.Note("rename-hint", struct{ Topic, Tool string }{topic, zulipmcp.ToolRenameTopic})
 }
 
 // startTurn supersedes whatever is running in the conversation and
@@ -2622,16 +2620,13 @@ func isSlashPrompt(prompt string) bool {
 	return strings.HasPrefix(prompt, "/")
 }
 
-// literalSlashNote marks prose that a user typed with a leading "/".
-const literalSlashNote = "[relay] The user typed the text below. It is a message, not a command:\n"
-
 // literalSlash keeps a user's own "/x" prose from being run as an
 // agent slash command: the agent runs one only when the prompt STARTS
 // with "/". A real command reaches the agent through the passthrough
 // (`!reload` → `/reload`), never through this path.
 func literalSlash(prompt string) string {
 	if isSlashPrompt(prompt) {
-		return literalSlashNote + prompt
+		return prompts.Note("literal-slash", nil) + "\n" + prompt
 	}
 	return prompt
 }
@@ -2663,14 +2658,11 @@ func dropUserNote(n int) string {
 // relay removed, so it knows what the user did not see twice and can
 // stop restating its answer after a tool call.
 func dropAgentNote(d []string) string {
-	var b strings.Builder
-	b.WriteString("\n\n[relay] In your last answer you wrote the same text twice, before and after a tool call. " +
-		"The relay showed it once and removed this repeat:")
-	for _, t := range d {
-		b.WriteString("\n> " + capRunes(strings.ReplaceAll(t, "\n", " "), 160))
+	repeats := make([]string, len(d))
+	for i, t := range d {
+		repeats[i] = capRunes(strings.ReplaceAll(t, "\n", " "), 160)
 	}
-	b.WriteString("\nWrite the answer once, after your last tool call.")
-	return b.String()
+	return "\n\n" + prompts.Note("dropped-repeat", struct{ Repeats []string }{repeats})
 }
 
 // capRunes cuts s to n code points, marking a cut with "…".

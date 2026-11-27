@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/kfet/zulip-acp/internal/prompts"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -84,7 +86,7 @@ func TestWithOriginOfNeedsASender(t *testing.T) {
 // TestLiteralSlashProseIsMarked: without the old name prefix, a user's
 // own "/x" would start the prompt and the agent would run it.
 func TestLiteralSlashProseIsMarked(t *testing.T) {
-	if got := literalSlash("/reload"); got != literalSlashNote+"/reload" {
+	if got := literalSlash("/reload"); got != prompts.Note("literal-slash", nil)+"\n/reload" {
 		t.Fatalf("got %q", got)
 	}
 	if got := literalSlash("hi /x"); got != "hi /x" {

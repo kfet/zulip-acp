@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every text a model reads (system prompt, `[relay]` notes, MCP tool and parameter descriptions) is now an embedded file in `internal/prompts`. Golden tests prove the output did not change.
+- A forked session is now told: "The origin session still runs. Its work and open questions stay there and it answers them itself." The old wording let a fork answer the origin topic's open question in the branch topic.
+
 ## [0.84.11] - 2026-11-27
 
 ### Fixed

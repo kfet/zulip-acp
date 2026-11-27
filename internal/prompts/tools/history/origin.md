@@ -1,0 +1,1 @@
+Read the conversation this topic was branched out of, instead of this one. Only messages at or before the branch point are returned — the origin's later messages are not yours to read. Fails when this topic was not branched from anything.

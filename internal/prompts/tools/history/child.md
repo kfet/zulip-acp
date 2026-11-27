@@ -1,0 +1,1 @@
+Read a topic branched DIRECTLY out of this one, in full — not clamped. Give its conv_id or its topic name, as {{.ListChildren}} shows them. Fails for anything that is not a direct child. Cannot be combined with origin.

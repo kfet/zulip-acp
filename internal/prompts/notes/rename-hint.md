@@ -1,0 +1,1 @@
+[relay] This message opened a new topic. The relay auto-named it "{{.Topic}}" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `{{.Tool}}` tool with a better one. Do not mention the rename in your reply.

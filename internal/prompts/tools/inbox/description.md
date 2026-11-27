@@ -1,0 +1,1 @@
+Read the user's inbox for this channel: its open topics, grouped by state (needs_you, blocked, fyi, waiting, then topics with no state), each with the age of its last activity and its reason. It is the list the user's !inbox shows in this channel. Read-only. From a direct message it is refused: a DM is in no channel.

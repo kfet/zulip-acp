@@ -1435,10 +1435,10 @@ func TestForkedPromptWithoutLoopbackStillSaysTheOriginRuns(t *testing.T) {
 		Parent: journal.Parent{Key: journal.Channel(4, "planning"), MessageID: 3},
 		Text:   "go on",
 	}
-	if p := hh.h.branchPrompt(plan, "a topic", true); !strings.HasSuffix(p, "\n\n[relay] "+forkOriginLive) {
+	if p := hh.h.branchPrompt(plan, "a topic", true); !strings.HasSuffix(p, "\n\n[relay] "+forkOriginLive()) {
 		t.Fatalf("forked prompt = %q", p)
 	}
-	if p := hh.h.branchPrompt(plan, "a topic", false); strings.Contains(p, forkOriginLive) {
+	if p := hh.h.branchPrompt(plan, "a topic", false); strings.Contains(p, forkOriginLive()) {
 		t.Fatalf("fresh prompt = %q", p)
 	}
 }

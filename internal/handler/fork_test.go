@@ -99,7 +99,7 @@ func TestBranchForksAReapedOrigin(t *testing.T) {
 	}
 	// The fork is told that the origin session still runs, so a bare
 	// "stop" does not reach into the origin's work.
-	if p := hh.a.prompted(); !strings.Contains(p[len(p)-1], forkOriginLive) {
+	if p := hh.a.prompted(); !strings.Contains(p[len(p)-1], forkOriginLive()) {
 		t.Fatalf("prompt = %q", p[len(p)-1])
 	}
 }
@@ -152,7 +152,7 @@ func TestBranchFallsBackToAFreshSession(t *testing.T) {
 			if !strings.Contains(p[len(p)-1], "which you have NOT seen") {
 				t.Fatalf("prompt = %q", p[len(p)-1])
 			}
-			if strings.Contains(p[len(p)-1], forkOriginLive) {
+			if strings.Contains(p[len(p)-1], forkOriginLive()) {
 				t.Fatalf("a fresh session was told it is a fork: %q", p[len(p)-1])
 			}
 		})

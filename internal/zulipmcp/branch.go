@@ -61,18 +61,8 @@ type BranchResult struct {
 // branchTool is the tool as data.
 func (t *Tools) branchTool() Tool {
 	return Tool{
-		Name: ToolBranch,
-		Description: "Spin work out of THIS conversation into new Zulip topics, one per task, in the same " +
-			"channel. Each new topic gets its own agent session, which starts working on its seed at once and " +
-			"can read this conversation up to the branch point with history(origin=true). Use it to fan out " +
-			"independent pieces of work. Per task: `seed` is the new session's first message (omit it to use " +
-			"the text of `from_msg`); `title` is the topic name (omit it to derive one from the seed); " +
-			"`from_msg` is the id of a message in THIS topic that is the branch point (omit it for the latest " +
-			"message not sent by the relay). Get message ids from the `" + ToolHistory + "` tool: each message " +
-			"there starts with [#<id> …]. A `from_msg` from another topic is refused. At most " +
-			fmt.Sprint(MaxBranchTasks) + " tasks per call. The relay posts the links in this topic itself, so " +
-			"do not repeat them. Returns, per task, the topic, its #**channel>topic** link and its conv_id, " +
-			"or an error.",
+		Name:        ToolBranch,
+		Description: toolText(ToolBranch),
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -83,9 +73,9 @@ func (t *Tools) branchTool() Tool {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"title":    map[string]any{"type": "string", "description": "The new topic's name."},
-							"seed":     map[string]any{"type": "string", "description": "The new session's first message."},
-							"from_msg": map[string]any{"type": "integer", "description": "Branch point: a message id in this topic."},
+							"title":    map[string]any{"type": "string", "description": paramText(ToolBranch, "title")},
+							"seed":     map[string]any{"type": "string", "description": paramText(ToolBranch, "seed")},
+							"from_msg": map[string]any{"type": "integer", "description": paramText(ToolBranch, "from_msg")},
 						},
 					},
 				},

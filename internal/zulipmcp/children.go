@@ -50,12 +50,9 @@ func (c caller) child(name string) (Child, error) {
 // listChildrenTool is the `list_children` tool.
 func (t *Tools) listChildrenTool() Tool {
 	return Tool{
-		Name: ToolListChildren,
-		Description: "List the topics branched DIRECTLY out of this conversation — by the `branch` tool, " +
-			"`!branch` or the fork reaction — with each one's topic, conv_id, #channel>topic link and last " +
-			"activity. Read one in full with history(child=<conv_id>). A child's own children are not listed. " +
-			fmt.Sprintf("At most the %d most recently active children are shown.", MaxChildren),
-		Schema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Name:        ToolListChildren,
+		Description: toolText(ToolListChildren),
+		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
 		Handler: t.wrap(func(c caller, _ json.RawMessage) (string, error) {
 			kids, ok := c.children()
 			if !ok {

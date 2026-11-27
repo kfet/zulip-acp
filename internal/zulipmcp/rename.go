@@ -35,7 +35,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -78,22 +77,14 @@ func checkTitle(s string) (string, error) {
 // reach the configured Rename hook.
 func (t *Tools) renameTool() Tool {
 	return Tool{
-		Name: ToolRenameTopic,
-		Description: "Rename the Zulip topic THIS conversation lives in. Use it when the topic's " +
-			"name does not describe what the conversation is about — most importantly when the relay " +
-			"opened the topic for you and auto-named it after the first line of the opening message, " +
-			"which is a placeholder, not a title. Write the title a human scanning the channel would " +
-			"want: short, specific, noun-heavy, no trailing punctuation, at most " +
-			strconv.Itoa(zulipproto.MaxTopicLength) + " characters. The rename is applied when your turn ends, " +
-			"and it moves the whole topic, so the conversation and your session follow it. It renames " +
-			"the topic you are in; there is no way to name another one. Call it at most once per turn, " +
-			"and do not mention having done it in your reply.",
+		Name:        ToolRenameTopic,
+		Description: toolText(ToolRenameTopic),
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"title": map[string]any{
 					"type":        "string",
-					"description": "The new topic name.",
+					"description": paramText(ToolRenameTopic, "title"),
 				},
 			},
 			"required": []any{"title"},
