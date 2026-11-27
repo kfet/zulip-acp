@@ -1,0 +1,141 @@
+[
+  {
+    "name": "history",
+    "description": "Read earlier messages of THIS conversation, oldest first, as raw markdown — including your own past replies. Use it to recover what was said before your current session started, or before the context was cleared. Long replies are truncated: page further back with before_id. With origin=true it instead reads the conversation THIS topic was branched out of, up to the moment of the branch — available only when the relay opened this topic with `!branch`, the fork reaction or the `branch` tool. With child=\u003cconv_id or topic\u003e it instead reads, in full, a topic branched DIRECTLY out of this one (see list_children). This conversation, its origin and its direct children are the only conversations it can ever read; there is no way to address any other topic or DM, and neither the origin's origin nor a child's children are reachable.",
+    "schema": {
+      "properties": {
+        "before_id": {
+          "description": "Return only messages OLDER than this message id, exclusive. Pass the oldest id from a previous call to page further back. Omit to start from the newest message.",
+          "type": "integer"
+        },
+        "child": {
+          "description": "Read a topic branched DIRECTLY out of this one, in full — not clamped. Give its conv_id or its topic name, as list_children shows them. Fails for anything that is not a direct child. Cannot be combined with origin.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "How many messages to fetch, newest-most first. Default 20, maximum 200.",
+          "type": "integer"
+        },
+        "origin": {
+          "description": "Read the conversation this topic was branched out of, instead of this one. Only messages at or before the branch point are returned — the origin's later messages are not yours to read. Fails when this topic was not branched from anything.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_children",
+    "description": "List the topics branched DIRECTLY out of this conversation — by the `branch` tool, `!branch` or the fork reaction — with each one's topic, conv_id, #channel\u003etopic link and last activity. Read one in full with history(child=\u003cconv_id\u003e). A child's own children are not listed. At most the 20 most recently active children are shown.",
+    "schema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "rename_topic",
+    "description": "Rename the Zulip topic THIS conversation lives in. Use it when the topic's name does not describe what the conversation is about — most importantly when the relay opened the topic for you and auto-named it after the first line of the opening message, which is a placeholder, not a title. Write the title a human scanning the channel would want: short, specific, noun-heavy, no trailing punctuation, at most 60 characters. The rename is applied when your turn ends, and it moves the whole topic, so the conversation and your session follow it. It renames the topic you are in; there is no way to name another one. Call it at most once per turn, and do not mention having done it in your reply.",
+    "schema": {
+      "properties": {
+        "title": {
+          "description": "The new topic name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "branch",
+    "description": "Spin work out of THIS conversation into new Zulip topics, one per task, in the same channel. Each new topic gets its own agent session, which starts working on its seed at once and can read this conversation up to the branch point with history(origin=true). Use it to fan out independent pieces of work. Per task: `seed` is the new session's first message (omit it to use the text of `from_msg`); `title` is the topic name (omit it to derive one from the seed); `from_msg` is the id of a message in THIS topic that is the branch point (omit it for the latest message not sent by the relay). Get message ids from the `history` tool: each message there starts with [#\u003cid\u003e …]. A `from_msg` from another topic is refused. At most 10 tasks per call. The relay posts the links in this topic itself, so do not repeat them. Returns, per task, the topic, its #**channel\u003etopic** link and its conv_id, or an error.",
+    "schema": {
+      "properties": {
+        "tasks": {
+          "items": {
+            "properties": {
+              "from_msg": {
+                "description": "Branch point: a message id in this topic.",
+                "type": "integer"
+              },
+              "seed": {
+                "description": "The new session's first message.",
+                "type": "string"
+              },
+              "title": {
+                "description": "The new topic's name.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "tasks"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "react",
+    "description": "Add an emoji reaction, as the bot, to a message in THIS conversation. When the user must choose between options, post the choices with one emoji per option, then call react on that message once per option emoji so the user only taps. Prefer this over free-text replies. `post` returns the message id; the user's tap reaches you as a reaction line and is their answer. `msg_id` must be a message in this conversation (from `post` or the `history` tool); an id from anywhere else is refused. `emoji` is a Zulip emoji name such as one, two or thumbs_up, with or without colons. Adding a reaction that is already there succeeds.",
+    "schema": {
+      "properties": {
+        "emoji": {
+          "description": "Zulip emoji name, e.g. one or thumbs_up.",
+          "type": "string"
+        },
+        "msg_id": {
+          "description": "A message id in this conversation.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "msg_id",
+        "emoji"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "topic_state",
+    "description": "Record this topic's state when it changes. The state lasts across turns and feeds the user's !inbox, where they pick which of many topics to open. A new topic has no state. Call this tool only when this turn changes what the user must do with the topic:\n- needs_you: you wait for their answer or decision.\n- fyi: you delivered a result or answer; they should read it, but you need nothing from them.\n- waiting: work goes on without them (a build, a branched agent, a schedule).\n- blocked: you cannot continue, and an answer alone will not fix it (for example, an expired credential only they can renew).\n- done: nothing is left to read or do.\nIf the state is the same as before, do not call it. The user can override it with !state.\nThe reason is shown only in the inbox, never in the topic. Write your answer, plan or question in your reply text; this tool does not deliver it.",
+    "schema": {
+      "properties": {
+        "reason": {
+          "description": "One line for the inbox only; the user does not see it in the topic. Say what the user must do, or the outcome.",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "needs_you",
+            "fyi",
+            "waiting",
+            "blocked",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "inbox",
+    "description": "Read the user's inbox for this channel: its open topics, grouped by state (needs_you, blocked, fyi, waiting, then topics with no state), each with the age of its last activity and its reason. It is the list the user's !inbox shows in this channel. Read-only. From a direct message it is refused: a DM is in no channel.",
+    "schema": {
+      "properties": {},
+      "type": "object"
+    }
+  }
+]

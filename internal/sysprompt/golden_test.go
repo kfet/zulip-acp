@@ -1,12 +1,16 @@
 package sysprompt
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+var updateGolden = flag.Bool("update", false, "rewrite testdata/notes.golden")
 
 // TestGolden proves the embedded template renders byte-identical text
 // to the prompt that Go code built before the move. The files in
@@ -56,5 +60,29 @@ func TestLoad(t *testing.T) {
 		if _, err := Load(p); err == nil || !strings.Contains(err.Error(), p) {
 			t.Errorf("Load(%q) err = %v", bad, err)
 		}
+	}
+}
+
+// TestNotesIndexGolden pins the notes block, rule lines included,
+// byte for byte. testdata/notes.golden was made before the rule text
+// moved out of Go literals.
+func TestNotesIndexGolden(t *testing.T) {
+	fsys := fstest.MapFS{"a.md": {Data: []byte("# A")}}
+	for i := range 25 {
+		fsys[fmt.Sprintf("n%02d.md", i)] = &fstest.MapFile{Data: []byte("# t")}
+	}
+	got := NotesIndex(fsys, "/n")
+	const path = "testdata/notes.golden"
+	if *updateGolden {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		t.Errorf("notes index differs from %s:\n%s", path, got)
 	}
 }

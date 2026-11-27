@@ -1,0 +1,57 @@
+=== renameHint
+
+
+[relay] This message opened a new topic. The relay auto-named it "an auto topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
+=== literalSlash
+[relay] The user typed the text below. It is a message, not a command:
+/x is a path
+=== dropAgentNote
+
+
+[relay] In your last answer you wrote the same text twice, before and after a tool call. The relay showed it once and removed this repeat:
+> first repeat
+> yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…
+Write the answer once, after your last tool call.
+=== branch/loopback/fresh
+[branched from #**fleet>planning@3**]
+go on
+
+[relay] This topic was branched out of another conversation, which you have NOT seen. Call the relay `history` tool with origin=true to read it — that reads the origin conversation up to the moment of the branch, and it is the only other conversation you can read. Do it when the message above leans on context you do not have, not reflexively.
+
+[relay] This message opened a new topic. The relay auto-named it "a topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
+=== branch/loopback/forked
+[branched from #**fleet>planning@3**]
+go on
+
+[relay] This topic was branched out of another conversation, and this session is a fork of that conversation's session: you already carry its context, up to its latest turn. Call the relay `history` tool with origin=true only to read what the humans wrote there that your session did not see — it reads the origin topic up to the branch point, and it is the only other conversation you can read. The origin session still runs and owns its work (subagents, jobs, schedules). Leave that work alone unless the user moves it here.
+
+[relay] This message opened a new topic. The relay auto-named it "a topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
+=== branch/loopback/other
+[branched from #**fleet>planning@3**] [the text below was written by somebody other than the user who branched it]
+go on
+
+[relay] This topic was branched out of another conversation, which you have NOT seen. Call the relay `history` tool with origin=true to read it — that reads the origin conversation up to the moment of the branch, and it is the only other conversation you can read. Do it when the message above leans on context you do not have, not reflexively.
+
+[relay] This message opened a new topic. The relay auto-named it "a topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
+=== branch/loopback/own
+[branched from #**fleet>planning@3**] [the text below is an earlier message of your own, which the user asked to spin out]
+go on
+
+[relay] This topic was branched out of another conversation, which you have NOT seen. Call the relay `history` tool with origin=true to read it — that reads the origin conversation up to the moment of the branch, and it is the only other conversation you can read. Do it when the message above leans on context you do not have, not reflexively.
+
+[relay] This message opened a new topic. The relay auto-named it "a topic" from the message's first line, which is a placeholder, not a title. Once you know what this conversation is about, call the relay `rename_topic` tool with a better one. Do not mention the rename in your reply.
+=== branch/bare/fresh
+[branched from #**fleet>planning@3**]
+go on
+=== branch/bare/forked
+[branched from #**fleet>planning@3**]
+go on
+
+[relay] The origin session still runs and owns its work (subagents, jobs, schedules). Leave that work alone unless the user moves it here.
+=== attachments
+
+
+[relay] This message has attachments. They have been downloaded into this conversation's working directory — read them from the local paths below, do not fetch the Zulip links.
+- x.bin — too big. Zulip link: /user_uploads/1/a/x.bin
+- y.txt — local path: /in/y.txt (text/plain, 12 bytes). Zulip link: /user_uploads/1/b/y.txt
+- p.png — local path: /in/p.png (image/png, 4.6 KB). Zulip link: /user_uploads/1/c/p.png [shown to you downscaled to 2.6 KB; open the local path for full resolution]
