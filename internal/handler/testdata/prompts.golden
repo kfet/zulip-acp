@@ -55,3 +55,112 @@ go on
 - x.bin — too big. Zulip link: /user_uploads/1/a/x.bin
 - y.txt — local path: /in/y.txt (text/plain, 12 bytes). Zulip link: /user_uploads/1/b/y.txt
 - p.png — local path: /in/p.png (image/png, 4.6 KB). Zulip link: /user_uploads/1/c/p.png [shown to you downscaled to 2.6 KB; open the local path for full resolution]
+=== catchup/few
+[catch-up] 2 messages arrived while the relay was offline (first at 2026-11-27T17:20:00Z)
+
+[Ada] m0
+
+[Ada] m1
+=== catchup/many
+[catch-up] 52 messages arrived while the relay was offline (first at 2026-11-27T17:20:00Z)
+[catch-up] Only the newest 50 are below; the oldest 2 are left out.
+
+[Ada] m2
+
+[Ada] m3
+
+[Ada] m4
+
+[Ada] m5
+
+[Ada] m6
+
+[Ada] m7
+
+[Ada] m8
+
+[Ada] m9
+
+[Ada] m10
+
+[Ada] m11
+
+[Ada] m12
+
+[Ada] m13
+
+[Ada] m14
+
+[Ada] m15
+
+[Ada] m16
+
+[Ada] m17
+
+[Ada] m18
+
+[Ada] m19
+
+[Ada] m20
+
+[Ada] m21
+
+[Ada] m22
+
+[Ada] m23
+
+[Ada] m24
+
+[Ada] m25
+
+[Ada] m26
+
+[Ada] m27
+
+[Ada] m28
+
+[Ada] m29
+
+[Ada] m30
+
+[Ada] m31
+
+[Ada] m32
+
+[Ada] m33
+
+[Ada] m34
+
+[Ada] m35
+
+[Ada] m36
+
+[Ada] m37
+
+[Ada] m38
+
+[Ada] m39
+
+[Ada] m40
+
+[Ada] m41
+
+[Ada] m42
+
+[Ada] m43
+
+[Ada] m44
+
+[Ada] m45
+
+[Ada] m46
+
+[Ada] m47
+
+[Ada] m48
+
+[Ada] m49
+
+[Ada] m50
+
+[Ada] m51

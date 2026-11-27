@@ -2,6 +2,7 @@ package handler
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -62,6 +63,13 @@ func TestPromptNotesGolden(t *testing.T) {
 			size: len(realPNG(t, 600, 450)), data: realPNG(t, 600, 450)},
 	})
 	add("attachments", note)
+
+	many := make([]string, MaxCatchupPerTopic+2)
+	for i := range many {
+		many[i] = fmt.Sprintf("[Ada] m%d", i)
+	}
+	add("catchup/few", catchupPrompt(&catchupTopic{prompts: many[:2], first: 1795800000}))
+	add("catchup/many", catchupPrompt(&catchupTopic{prompts: many, first: 1795800000}))
 
 	got := b.String()
 	const path = "testdata/prompts.golden"
