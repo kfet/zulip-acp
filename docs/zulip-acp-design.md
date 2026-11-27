@@ -2312,8 +2312,10 @@ internal/prompts/       every model-facing text as an embedded file: the
 internal/sysprompt/     renders the built-in system prompt block
 internal/zulipmcp/      MCP server identity (socket path under the state dir,
                         env vars, subcommand)
-                        and the Zulip-specific loopback tools, `history` and
-                        `rename_topic`
+                        and the Zulip-specific loopback tools (`history`,
+                        `list_children`, `rename_topic`, `branch`, `react`,
+                        `topic_state`, `inbox`); their descriptions live in
+                        internal/prompts/tools/
 internal/zulipproto/    HTTP Basic client + /events long-poll runner
 internal/zulipproto/zform.go
                         the ONLY coupling to Zulip's widget subsystem

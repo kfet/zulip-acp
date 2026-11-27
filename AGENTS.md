@@ -227,8 +227,9 @@ Zulip wire protocol it stays here.
 - **The topic state is change-only, and `topic_state` is its only agent
   tool.** Do not bring back a per-turn status tool or a sysprompt line that
   asks for a state every turn — the user rejected that as too invasive — and
-  do not reword the `topic_state` description: it was tested on a cheap
-  model. `import-states` STAGES a file for the relay to apply; it must never
+  do not reword the `topic_state` description
+  (`internal/prompts/tools/topic_state/description.md`): it was tested on a
+  cheap model. The same holds for `internal/prompts/notes/fork-origin-live.md`. `import-states` STAGES a file for the relay to apply; it must never
   write `journal.json`, which the running relay owns.
 - **A listing is a read: same channel only, owner excepted.** `!inbox` and
   the `inbox` tool follow the link-hydration rule (`link.go`). Never make

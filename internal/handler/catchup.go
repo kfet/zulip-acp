@@ -10,6 +10,7 @@ import (
 	"github.com/kfet/acp-kit/command"
 
 	"github.com/kfet/zulip-acp/internal/journal"
+	"github.com/kfet/zulip-acp/internal/prompts"
 	"github.com/kfet/zulip-acp/internal/zulipproto"
 )
 
@@ -162,12 +163,14 @@ func (h *Handler) startCatchups(ctx context.Context, turns []*catchupTopic) {
 func catchupPrompt(t *catchupTopic) string {
 	n := len(t.prompts)
 	var b strings.Builder
-	fmt.Fprintf(&b, "[catch-up] %d messages arrived while the relay was offline (first at %s)",
-		n, time.Unix(t.first, 0).UTC().Format(time.RFC3339))
+	b.WriteString(prompts.Note("catchup", struct {
+		N     int
+		First string
+	}{n, time.Unix(t.first, 0).UTC().Format(time.RFC3339)}))
 	kept := t.prompts
 	if n > MaxCatchupPerTopic {
 		kept = kept[n-MaxCatchupPerTopic:]
-		fmt.Fprintf(&b, "\n[catch-up] Only the newest %d are below; the oldest %d are left out.", MaxCatchupPerTopic, n-MaxCatchupPerTopic)
+		b.WriteString("\n" + prompts.Note("catchup-trimmed", struct{ Kept, Dropped int }{MaxCatchupPerTopic, n - MaxCatchupPerTopic}))
 	}
 	for _, p := range kept {
 		b.WriteString("\n\n")

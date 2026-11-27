@@ -17,6 +17,11 @@
 // (the blank line before a note, a leading space) stay in the Go code
 // that joins the texts, because they are layout, not wording.
 //
+// What stays in Go: the envelope tags that only label data ("[linked]",
+// "[reaction]", "[branched from …]", a sender in brackets), the
+// rendering of facts such as a reaction or an attachment list line, and
+// the error results of tool calls. They are formats, not wording.
+//
 // Keep wording changes here, and keep the goldens of the callers
 // (internal/handler, internal/zulipmcp, internal/sysprompt) in step:
 // they prove which bytes the model gets.
